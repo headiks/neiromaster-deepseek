@@ -1,0 +1,395 @@
+"""
+Оркестрация пайплайна: docling -> префильтр -> проход 1 (карточка) -> проход 2 (разметка
+секций) -> мелкий чанкинг -> эмбеддинги -> запись в PG и Qdrant. Плюс асинхронная очередь
+разметки с retry/backoff и возобновлением с последней размеченной секции.
+
+Публичный API: ingest, reindex, relabel_candidates, retrieve, enqueue, worker управление.
+"""
+
+import os
+import time
+import queue
+import hashlib
+import threading
+from pathlib import Path
+
+from config import get_embedding
+from . import core, llm, store, professions, qdrant_sink
+from .qdrant_sink import EMBED_VERSION
+
+# Блоки (секции) для разметки делаем КРУПНЕЕ, чем эмбеддинг-чанки indexing (512 токенов):
+# у docpipe своя задача — дать LLM связный кусок с контекстом, а не короткий вектор.
+# merge_peers склеивает соседние мелкие фрагменты одного уровня заголовков.
+SECTION_MAX_TOKENS = int(os.environ.get("NEIROMASTER_DOCPIPE_SECTION_TOKENS", "1800"))
+# Верхний предел размера чанка: сверх него режем по предложениям (окно эмбеддера bge-m3 ~4096).
+CHUNK_MAX_TOKENS = int(os.environ.get("NEIROMASTER_DOCPIPE_CHUNK_MAX_TOKENS", "1200"))
+_section_chunker = None
+
+
+def _get_section_chunker():
+    """Ленивая инициализация: docling импортируем только при реальном разборе документа,
+    чтобы `import docpipe` (core/store/тесты) не требовал тяжёлый docling."""
+    global _section_chunker
+    if _section_chunker is None:
+        from docling.chunking import HybridChunker
+        _section_chunker = HybridChunker(max_tokens=SECTION_MAX_TOKENS, merge_peers=True)
+    return _section_chunker
+
+
+def _hash_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:32]
+
+
+# ---------- Разбор docling: секции по заголовкам + страницы для колонтитулов ----------
+def _parse(filepath: Path):
+    """Возвращает (title, toc, head_text, sections, repeated, docling_version).
+    Переиспуем конвертер/чанкер из indexing (тот же docling, с кэшом разбора)."""
+    import indexing
+    import docling
+    doc = indexing.convert_document(filepath)
+
+    # Секции = крупные чанки (свой HybridChunker на SECTION_MAX_TOKENS, не 512 от indexing),
+    # сгруппированы по заголовкам; очень крупные при необходимости дробим по предложениям.
+    sections = []
+    for ch in _get_section_chunker().chunk(doc):
+        heading_path = [h for h in (getattr(ch.meta, "headings", None) or []) if h]
+        page = indexing.extract_page_no(ch)
+        for piece in core.split_section_text(ch.text, max_tokens=SECTION_MAX_TOKENS):
+            sections.append({"heading_path": heading_path, "text": piece,
+                             "page_from": page, "page_to": page})
+
+    # Страницы (для детекции колонтитулов) — из сырых текстовых элементов документа.
+    pages = {}
+    for t in getattr(doc, "texts", None) or []:
+        try:
+            pg = t.prov[0].page_no
+        except Exception:
+            pg = None
+        line = (getattr(t, "text", "") or "").strip()
+        if line:
+            pages.setdefault(pg, []).append(line)
+    repeated = core.repeated_lines([pages[k] for k in sorted(pages, key=lambda x: (x is None, x))])
+
+    title = filepath.name
+    md = doc.export_to_markdown()
+    toc = "\n".join(l for l in md.splitlines() if l.startswith("#"))[:2000]
+    head_text = md[:12000]
+    docling_version = getattr(docling, "__version__", "docling")
+    return title, toc, head_text, sections, repeated, docling_version
+
+
+def _label_section(sec: dict, repeated: set, card: dict, structure: dict, positions: list) -> dict:
+    """
+    Разметка одной секции по чанкам. Возвращает {"section": <метка секции>, "chunks": <чанки
+    со своими метками>}. Каждый чанк несёт СВОИ подэтапы (LLM размечает их отдельно), а метка
+    секции — их объединение (для доски и section_labels).
+    """
+    text = sec.get("text") or ""
+    ok, reason = core.prefilter(text)
+    if ok and text.strip() in repeated:
+        ok, reason = False, "running_header"
+    if not ok:
+        junk = {"is_meaningful": False, "reject_reason": reason, "substages": [], "stages": [],
+                "professions": [], "is_general": False, "prof_conf": None, "why": None}
+        return {"section": junk, "chunks": []}
+
+    # Сбой/таймаут LLM на одной секции НЕ должен ронять весь документ (важно для пакетной
+    # обработки сотен файлов): помечаем секцию как неразмеченную и идём дальше. Текст всё
+    # равно режется на чанки (без меток) — попадёт в общий поиск, не потеряется.
+    try:
+        raw = llm.section_labels(text, sec.get("heading_path") or [], card, structure, positions)
+    except Exception as e:
+        chunks = [{"text": p, "substages": [], "stages": [], "is_general": False}
+                  for p in core.to_chunks(text)] or [{"text": text, "substages": [], "stages": [], "is_general": False}]
+        section = {"is_meaningful": True, "reject_reason": f"llm_error: {type(e).__name__}",
+                   "substages": [], "stages": [], "professions": [], "is_general": False,
+                   "prof_conf": None, "why": None}
+        return {"section": section, "chunks": chunks}
+    chunk_labels = core.split_labeled_chunks(text, raw.get("chunks"), structure,
+                                             max_tokens=CHUNK_MAX_TOKENS)
+    matched, prof_conf = professions.match_to_staffing(
+        [str(p).strip() for p in (raw.get("professions") or []) if str(p).strip()], positions)
+    section = core.section_from_chunks(chunk_labels, structure, {
+        "is_meaningful": bool(raw.get("is_meaningful", True)),
+        "professions": matched, "prof_conf": prof_conf, "why": raw.get("why"),
+        "reject_reason": None,
+    })
+    # Страховка от пропусков: чанк, который модель оставила БЕЗ подэтапа и НЕ пометила
+    # общим (т.е. «не решила» — типично для строк таблиц, продолжений перечней, формул),
+    # наследует подэтапы секции. Явно общие чанки (is_general) НЕ трогаем.
+    core.fill_undecided_chunks(chunk_labels, section)
+    return {"section": section, "chunks": chunk_labels}
+
+
+def ingest(filepath, filename: str = None, plan_version: str = "current",
+           job_id: str = None, force: bool = False) -> dict:
+    """Полный приём одного документа. Идемпотентно по content_hash (force — переразбор).
+    job_id — если передан, прогресс пишется в задачу и разметка возобновляется с last_seq."""
+    filepath = Path(filepath)
+    filename = filename or filepath.name
+    data = filepath.read_bytes()
+    content_hash = _hash_bytes(data)
+
+    existing = store.find_by_hash(content_hash)
+    if existing and not force:
+        return {"doc_id": existing["id"], "status": "unchanged", "content_hash": content_hash}
+
+    structure = store.get_plan_structure(plan_version)
+    positions = professions.staffing_positions()
+
+    title, toc, head_text, sections, repeated, docling_version = _parse(filepath)
+    card = llm.doc_card(title, toc, head_text)
+    doc_id, _ = store.upsert_document(filename, content_hash, card, docling_version, llm.MODEL)
+    section_ids = store.replace_sections(doc_id, sections)
+
+    if job_id is None:
+        job_id = store.create_job(doc_id, filename, total=len(sections))
+    store.update_job(job_id, status="running", total=len(sections))
+    resume_from = (store.get_job(job_id) or {}).get("last_seq", -1)
+
+    for seq, (sec, sid) in enumerate(zip(sections, section_ids)):
+        if seq <= resume_from:
+            continue                                   # уже размечено — возобновление
+        result = _label_section(sec, repeated, card, structure, positions)
+        store.upsert_section_label(sid, result["section"], source="llm", plan_version=plan_version,
+                                   model=llm.MODEL, prompt_version=llm.PROMPT_VERSION)
+        # Чанки со СВОИМИ метками (LLM разметил каждый отдельно). Служебная секция -> без чанков.
+        store.replace_chunks(sid, result["chunks"], EMBED_VERSION)
+        store.update_job(job_id, done=seq + 1, last_seq=seq)
+
+    qdrant_sink.sink_document(doc_id)                  # запись производной копии в Qdrant
+    store.update_job(job_id, status="done")
+    return {"doc_id": doc_id, "status": "indexed", "sections": len(sections), "content_hash": content_hash}
+
+
+def reindex() -> dict:
+    """Пересборка Qdrant из PG без обращений к LLM."""
+    return qdrant_sink.reindex()
+
+
+def relabel_candidates(substage_id: str, plan_version: str = "current", top_k: int = 3000) -> dict:
+    """При добавлении подэтапа: отбираем топ-K секций по косинусу к его описанию и
+    переразмечаем только их (правки человека не трогаем)."""
+    structure = store.get_plan_structure(plan_version)
+    positions = professions.staffing_positions()
+    # описание подэтапа как запрос
+    query = substage_id
+    for st in structure.get("stages") or []:
+        for sub in st.get("substages") or []:
+            if sub.get("id") == substage_id:
+                query = f"{st.get('title')} {sub.get('title')} {sub.get('description') or sub.get('brief') or ''}"
+    vec = get_embedding(query)
+    from qdrant_client.models import Filter, FieldCondition, MatchValue
+    hits = qdrant_sink.client.query_points(
+        qdrant_sink.COLLECTION, query=vec, limit=top_k, with_payload=True,
+        query_filter=Filter(must=[FieldCondition(key="level", match=MatchValue(value="section"))]),
+    ).points
+    section_ids = {(h.payload or {}).get("section_id") for h in hits if (h.payload or {}).get("section_id")}
+
+    touched = 0
+    for sid in section_ids:
+        if store.get_label_source(sid) == "human":
+            continue                                   # правки человека не трогаем
+        sec = _section_row(sid)
+        if not sec:
+            continue
+        result = _label_section(sec, set(), _doc_card_for(sec["doc_id"]), structure, positions)
+        store.upsert_section_label(sid, result["section"], source="llm", plan_version=plan_version,
+                                   model=llm.MODEL, prompt_version=llm.PROMPT_VERSION)
+        store.replace_chunks(sid, result["chunks"], EMBED_VERSION)
+        touched += 1
+    qdrant_sink.reindex()
+    return {"relabeled": touched, "candidates": len(section_ids)}
+
+
+def _section_row(section_id: str):
+    import db
+    r = db.query("SELECT id, doc_id, heading_path, text, page_from, page_to FROM sections WHERE id = %s",
+                 (section_id,), fetch="one")
+    return dict(r) if r else None
+
+
+def _doc_card_for(doc_id: str) -> dict:
+    import db
+    r = db.query("SELECT doc_card FROM documents WHERE id = %s", (doc_id,), fetch="one")
+    return (r or {}).get("doc_card") or {}
+
+
+def retrieve(substage_id: str, position: str = "", plan_version: str = "current", limit: int = 8) -> list:
+    return qdrant_sink.retrieve(substage_id, position, plan_version, limit)
+
+
+def document_breakdown(filename: str, plan_version: str = "current") -> dict:
+    """Полный разбор документа для просмотра человеком: карточка документа + блоки (секции)
+    с их метками, обоснованием и НАЗВАНИЯМИ/ОПИСАНИЯМИ этапов и подэтапов + чанки блока.
+    None — если документ ещё не размечен docpipe."""
+    doc = store.find_by_filename(filename)
+    if not doc:
+        return None
+    structure = store.get_plan_structure(plan_version)
+    stage_lut, sub_lut = {}, {}
+    for st in structure.get("stages") or []:
+        stage_lut[st["id"]] = {"id": st["id"], "title": st.get("title", ""),
+                               "description": st.get("description", "")}
+        for sub in st.get("substages") or []:
+            sub_lut[sub["id"]] = {"id": sub["id"], "title": sub.get("title", ""),
+                                  "description": sub.get("description", ""), "stage_id": st["id"]}
+
+    rows = [dict(r) for r in store.sections_with_labels(doc["id"])]
+    # чанки каждой секции (с их PG-id для сопоставления с векторами Qdrant)
+    sec_chunks = {r["section_id"]: store.list_chunks(r["section_id"]) for r in rows}
+    all_chunk_ids = [c["id"] for chs in sec_chunks.values() for c in chs]
+    try:
+        sec_vecs, chunk_vecs = qdrant_sink.document_vectors(list(sec_chunks.keys()), all_chunk_ids)
+    except Exception:
+        sec_vecs, chunk_vecs = {}, {}   # Qdrant недоступен — разбор без векторов
+
+    sections = []
+    for r in rows:
+        subs = []
+        for s in (r.get("substages") or []):
+            meta = sub_lut.get(s.get("id"), {"id": s.get("id"), "title": "", "description": ""})
+            subs.append({**meta, "confidence": s.get("confidence")})
+        stages = [stage_lut.get(sid, {"id": sid, "title": "", "description": ""})
+                  for sid in (r.get("stages") or [])]
+        chunks = [{"seq": c["seq"], "text": c["text"], "chunk_id": c["id"],
+                   "embedding_version": c.get("embedding_version"),
+                   "vector": chunk_vecs.get(c["id"])}
+                  for c in sec_chunks[r["section_id"]]]
+        sections.append({
+            "seq": r["seq"], "section_id": r["section_id"],
+            "heading_path": r.get("heading_path") or [], "page": r.get("page_from"),
+            "text": r.get("text") or "", "is_meaningful": r.get("is_meaningful"),
+            "reject_reason": r.get("reject_reason"), "is_general": r.get("is_general"),
+            "why": r.get("why"), "professions": r.get("professions") or [],
+            "prof_conf": r.get("prof_conf"), "source": r.get("source"),
+            "vector": sec_vecs.get(r["section_id"]),
+            "substages": subs, "stages": stages, "chunks": chunks,
+        })
+    return {"filename": filename, "doc_card": doc.get("doc_card") or {}, "sections": sections}
+
+
+def document_assignments(filenames=None, plan_version: str = "current") -> tuple:
+    """
+    Привязка документов к подэтапам ПЛАНА по LLM-разметке (без косинуса) — данные для
+    доски «этапы ↔ документы». Документ отнесён к подэтапу, если хотя бы один его блок
+    размечен этим подэтапом; score = максимальная уверенность модели среди таких блоков.
+
+    Возвращает (plan_stages, docs) в формате documents.build_board:
+      plan_stages — структура плана (этапы с подэтапами);
+      docs — [{filename, mime, status, keywords, stage_ids, substages:[{stage_id, substage_id, score}]}].
+    filenames — ограничить набор (для разграничения видимости админов); None — все.
+    """
+    import docregistry
+    structure = store.get_plan_structure(plan_version)
+    sub_parent = {}                      # substage_id -> stage_id (для build_board)
+    for st in structure.get("stages") or []:
+        for sub in st.get("substages") or []:
+            sub_parent[sub["id"]] = st["id"]
+
+    reg = {d.get("filename"): d for d in docregistry.list_documents()}
+    allow = set(filenames) if filenames is not None else None
+
+    docs = []
+    for fname in store.list_documents():
+        if allow is not None and fname not in allow:
+            continue
+        d = store.find_by_filename(fname)
+        if not d:
+            continue
+        best = {}                        # substage_id -> максимальная уверенность
+        for r in store.sections_with_labels(d["id"]):
+            for s in (r.get("substages") or []):
+                sid = s.get("id")
+                conf = s.get("confidence") or 0.0
+                if sid in sub_parent and conf > best.get(sid, -1.0):
+                    best[sid] = conf
+        subs = [{"stage_id": sub_parent[sid], "substage_id": sid, "score": round(c, 3)}
+                for sid, c in best.items()]
+        e = reg.get(fname, {})
+        docs.append({
+            "filename": fname, "mime": e.get("mime"), "status": e.get("status"),
+            "keywords": e.get("keywords") or [],
+            "stage_ids": sorted({a["stage_id"] for a in subs}),
+            "substages": subs,
+        })
+    return structure.get("stages") or [], docs
+
+
+# ---------- Асинхронная очередь разметки (retry + backoff + возобновление) ----------
+_queue: "queue.Queue" = queue.Queue()
+_worker_started = False
+_worker_lock = threading.Lock()
+MAX_ATTEMPTS = 3
+
+
+def _worker():
+    while True:
+        task = _queue.get()
+        filepath, filename, job_id = task["filepath"], task["filename"], task["job_id"]
+        force = task.get("force", False)
+        attempt = 0
+        while attempt < MAX_ATTEMPTS:
+            try:
+                ingest(filepath, filename=filename, job_id=job_id, force=force)
+                break
+            except Exception as e:
+                attempt += 1
+                store.update_job(job_id, status="error", attempts=attempt, error=str(e))
+                if attempt >= MAX_ATTEMPTS:
+                    break
+                time.sleep(2 ** attempt)               # backoff; возобновление с last_seq в ingest
+        _queue.task_done()
+
+
+def _ensure_worker():
+    global _worker_started
+    with _worker_lock:
+        if not _worker_started:
+            threading.Thread(target=_worker, name="docpipe-worker", daemon=True).start()
+            _worker_started = True
+
+
+def requeue_stranded() -> int:
+    """Возобновляет разметку docpipe, зависшую после рестарта: in-memory очередь
+    (_queue) теряется при перезапуске процесса, а задачи остаются в label_jobs в
+    статусе queued/running навсегда — документ не появляется на доске «этапы↔документы».
+    Берём последнюю задачу по каждому файлу; если она не done/error — ставим заново
+    (force=True: полный перепрогон, идемпотентно по content_hash)."""
+    import db
+    from config import DOCS_DIR
+    rows = db.query("SELECT DISTINCT ON (filename) filename, status FROM label_jobs "
+                    "ORDER BY filename, updated_at DESC")
+    # Файлы, у которых уже была успешная разметка: их не переразмечаем, даже если позже
+    # осталась висящая queued-строка (повторная постановка при загрузке, которая не
+    # выполнилась) — иначе каждый рестарт впустую гоняет LLM по готовым документам.
+    done_files = {r["filename"] for r in
+                  db.query("SELECT DISTINCT filename FROM label_jobs WHERE status = 'done'") or []}
+    n = 0
+    for r in rows or []:
+        if r.get("status") in ("done", "error") or r["filename"] in done_files:
+            continue
+        fp = DOCS_DIR / r["filename"]
+        if not fp.exists():
+            print(f"[docpipe] возобновление пропущено — нет оригинала: {r['filename']}")
+            continue
+        _ensure_worker()
+        existing = store.find_by_hash(_hash_bytes(fp.read_bytes()))
+        job_id = store.create_job(existing["id"] if existing else None, r["filename"], total=0)
+        _queue.put({"filepath": str(fp), "filename": r["filename"], "job_id": job_id, "force": True})
+        n += 1
+    if n:
+        print(f"[docpipe] возвращено в очередь разметки зависших документов: {n}")
+    return n
+
+
+def enqueue(filepath, filename: str = None) -> str:
+    """Ставит документ в очередь разметки. Возвращает job_id; прогресс — store.get_job(job_id)."""
+    _ensure_worker()
+    filepath = Path(filepath)
+    data = filepath.read_bytes()
+    existing = store.find_by_hash(_hash_bytes(data))
+    doc_id = existing["id"] if existing else None
+    job_id = store.create_job(doc_id, filename or filepath.name, total=0)
+    _queue.put({"filepath": str(filepath), "filename": filename or filepath.name, "job_id": job_id})
+    return job_id
