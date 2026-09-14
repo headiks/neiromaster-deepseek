@@ -40,10 +40,15 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     Слово «JSON» должно присутствовать в промпте (требование API) — в наших
     системных промптах оно есть. При обрыве по длине или пустом ответе — ошибка.
     """
-    if not API_KEY or API_KEY.startswith("sk-клю") or API_KEY in ("sk-ключ", "sk-key"):
+    # ВАЖНО: ключ/URL/модель читаем в момент ВЫЗОВА, а не импорта. Иначе, если модуль
+    # импортируется до того, как config загрузит .env, ключ был бы пустым навсегда.
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "") or API_KEY
+    base_url = (os.environ.get("DEEPSEEK_BASE_URL") or BASE_URL).rstrip("/")
+    use_model = model or os.environ.get("DEEPSEEK_MODEL") or MODEL
+    if not api_key or api_key.startswith("sk-клю") or api_key in ("sk-ключ", "sk-key"):
         raise RuntimeError("DEEPSEEK_API_KEY не задан (env или .env).")
     body = {
-        "model": model or MODEL,
+        "model": use_model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "temperature": temperature,
@@ -60,8 +65,8 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             r = requests.post(
-                f"{BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {API_KEY}",
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}",
                          "Content-Type": "application/json"},
                 json=body, timeout=timeout or TIMEOUT,
             )
