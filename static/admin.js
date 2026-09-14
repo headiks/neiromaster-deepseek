@@ -24,6 +24,41 @@
             return api(url, options).then(res => res.json().then(data => ({ ok: res.ok, data })));
         }
 
+        // ---- Контроллер состояний для динамического обновления UI по кнопкам ----
+        // Единая точка: занятость кнопки (спиннер+блокировка), именованный опрос
+        // (гарантирует один таймер на ключ) и запуск фоновой задачи с прогрессом.
+        const NM = {
+            _timers: {},
+            busy(el, on, text) {
+                if (typeof el === 'string') el = document.getElementById(el);
+                if (!el) return;
+                if (on) {
+                    if (el.dataset.orig === undefined) el.dataset.orig = el.innerHTML;
+                    el.disabled = true;
+                    if (text) el.innerHTML = `<i data-lucide="loader"></i> ${text}`;
+                } else {
+                    el.disabled = false;
+                    if (el.dataset.orig !== undefined) { el.innerHTML = el.dataset.orig; delete el.dataset.orig; }
+                }
+                refreshIcons();
+            },
+            startPoll(key, fn, interval) { this.stopPoll(key); this._timers[key] = setInterval(fn, interval); fn(); },
+            stopPoll(key) { if (this._timers[key]) { clearInterval(this._timers[key]); delete this._timers[key]; } },
+            // Опрос фоновой задачи через /documents/jobs/{id} до терминального статуса.
+            runJob(key, jobId, { onProgress, onDone, interval = 1500 } = {}) {
+                this.startPoll(key, () => {
+                    api(`/documents/jobs/${encodeURIComponent(jobId)}`).then(r => r.ok ? r.json() : null).then(job => {
+                        if (!job) return;
+                        if (onProgress) onProgress(job);
+                        if (['done', 'error', 'cancelled'].includes(job.status)) {
+                            this.stopPoll(key);
+                            if (onDone) onDone(job);
+                        }
+                    }).catch(() => {});
+                }, interval);
+            },
+        };
+
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -641,7 +676,7 @@
 
         function reanalyzeDoc(filename) {
             api('/documents/' + encodeURIComponent(filename) + '/reanalyze', { method: 'POST' })
-                .then(() => { anyReanalyzing = true; bumpDocPolling(); });   // статус подтянется опросом
+                .then(() => { anyReanalyzing = true; loadDocuments(); bumpDocPolling(); });   // мгновенный рефреш + опрос
         }
 
         function clarifyDoc(filename) {
@@ -655,21 +690,41 @@
 
         function reprocessDoc(filename) {
             api('/documents/' + encodeURIComponent(filename) + '/reprocess', { method: 'POST' })
-                .then(() => { pendingDocs.add(filename); bumpDocPolling(); })
+                .then(() => { pendingDocs.add(filename); loadDocuments(); bumpDocPolling(); })
                 .catch(err => alert('Не удалось переиндексировать: ' + err.message));
         }
 
         function reanalyzeAll() {
             if (!confirm('Запустить повторный анализ всей базы под текущую структуру папок?')) return;
+            const btn = document.getElementById('btn-reanalyze-all');
+            NM.busy(btn, true, 'Запуск…');
             api('/documents/reanalyze', { method: 'POST' })
-                .then(() => { anyReanalyzing = true; bumpDocPolling(); });   // статусы «Переанализ…» подтянутся опросом
+                .then(() => { anyReanalyzing = true; loadDocuments(); bumpDocPolling(); })   // прогресс — в списке документов
+                .finally(() => NM.busy(btn, false));
         }
 
-        function assignChunksToStages() {
+        // Раскладка чанков по этапам: фоновая задача с живым прогресс-баром (NM.runJob).
+        function assignChunksToStages(ev) {
             if (!confirm('Разложить все чанки по этапам адаптации? Нужно после загрузки документов, чтобы генерация плана брала чанки нужного этапа.')) return;
+            const btn = (ev && ev.currentTarget) || document.querySelector('[onclick^="assignChunksToStages"]');
+            NM.busy(btn, true, 'Раскладка…');
             setStatus('Раскладываю чанки по этапам…');
-            api('/chunks/assign-stages', { method: 'POST' })
-                .then(() => setStatus('Раскладка чанков по этапам запущена (идёт в фоне)'));
+            apiJson('/chunks/assign-stages', { method: 'POST' }).then(({ ok, data }) => {
+                if (!ok || !data.job_id) { setStatus('Не удалось запустить раскладку'); NM.busy(btn, false); return; }
+                NM.runJob('assign-stages', data.job_id, {
+                    onProgress: (job) => {
+                        const pct = job.total ? Math.round(100 * job.done / job.total) : 0;
+                        setStatus(`Раскладка чанков по этапам: ${job.done}/${job.total} (${pct}%)`);
+                    },
+                    onDone: (job) => {
+                        NM.busy(btn, false);
+                        setStatus(job.status === 'done'
+                            ? `Готово: разложено чанков — ${(job.result || {}).chunks ?? job.done}`
+                            : `Ошибка раскладки: ${job.error || ''}`);
+                        loadStageBoard();   // доска «этапы ↔ документы» обновляется динамически
+                    },
+                });
+            }).catch(err => { setStatus(err.message); NM.busy(btn, false); });
         }
 
         // ---------------- Штатное расписание ----------------

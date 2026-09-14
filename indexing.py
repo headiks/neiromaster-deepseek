@@ -573,43 +573,64 @@ def _stage_tags(vec):
     return stages, subs
 
 
-def assign_chunks_to_stages() -> dict:
+def assign_chunks_to_stages(job_id: str = None) -> dict:
     """Раскладывает содержательные чанки по этапам И подэтапам каталога адаптации: каждому
     чанку проставляет payload.plan_stages и payload.plan_substages — id, смыслу которых он
     соответствует (по близости к «запросу этапа/подэтапа»). Мульти-лейбл: один чанк (и один
     документ) может относиться к нескольким этапам и подэтапам. Служебный мусор (meaningful=False)
-    пропускается — метки пустые. Дёшево: эмбеддинги этапов/подэтапов + косинус к готовым векторам."""
-    reset_stage_vectors()                       # каталог мог измениться — пересчитать векторы
-    stage_vecs, sub_vecs = _catalog_stage_vectors()
-    for field in ("plan_stages", "plan_substages"):
-        try:
-            client.create_payload_index(COLLECTION_NAME, field_name=field,
-                                         field_schema=PayloadSchemaType.KEYWORD)
-        except Exception:
-            pass
+    пропускается — метки пустые. Дёшево: эмбеддинги этапов/подэтапов + косинус к готовым векторам.
 
-    offset = None
-    touched = 0
-    while True:
-        batch, offset = client.scroll(
-            collection_name=COLLECTION_NAME, limit=256,
-            with_payload=True, with_vectors=True, offset=offset,
-        )
-        for p in batch:
-            if (p.payload or {}).get("meaningful") is False:   # мусор не распределяем
+    job_id — если задан, прогресс пишется в стор задач (_index_jobs), фронт тянет его
+    через GET /documents/jobs/{job_id} и рисует живой прогресс-бар."""
+    try:
+        reset_stage_vectors()                   # каталог мог измениться — пересчитать векторы
+        stage_vecs, sub_vecs = _catalog_stage_vectors()
+        for field in ("plan_stages", "plan_substages"):
+            try:
+                client.create_payload_index(COLLECTION_NAME, field_name=field,
+                                             field_schema=PayloadSchemaType.KEYWORD)
+            except Exception:
+                pass
+
+        try:
+            total = client.count(collection_name=COLLECTION_NAME).count or 0
+        except Exception:
+            total = 0
+        if job_id:
+            _set_index_job(job_id, status="processing", done=0, total=total,
+                           started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+
+        offset = None
+        touched = 0
+        while True:
+            batch, offset = client.scroll(
+                collection_name=COLLECTION_NAME, limit=256,
+                with_payload=True, with_vectors=True, offset=offset,
+            )
+            for p in batch:
+                if (p.payload or {}).get("meaningful") is False:   # мусор не распределяем
+                    client.set_payload(collection_name=COLLECTION_NAME,
+                                       payload={"plan_stages": [], "plan_substages": []}, points=[p.id])
+                    touched += 1
+                    continue
+                plan_stages, plan_substages = _stage_tags(p.vector)
                 client.set_payload(collection_name=COLLECTION_NAME,
-                                   payload={"plan_stages": [], "plan_substages": []}, points=[p.id])
+                                   payload={"plan_stages": plan_stages, "plan_substages": plan_substages},
+                                   points=[p.id])
                 touched += 1
-                continue
-            plan_stages, plan_substages = _stage_tags(p.vector)
-            client.set_payload(collection_name=COLLECTION_NAME,
-                               payload={"plan_stages": plan_stages, "plan_substages": plan_substages},
-                               points=[p.id])
-            touched += 1
-        if offset is None:
-            break
-    _log("STAGES", f"чанков разложено: {touched} (этапов {len(stage_vecs)}, подэтапов {len(sub_vecs)})")
-    return {"chunks": touched, "stages": len(stage_vecs), "substages": len(sub_vecs)}
+            if job_id:
+                _set_index_job(job_id, done=touched, total=max(total, touched))
+            if offset is None:
+                break
+        _log("STAGES", f"чанков разложено: {touched} (этапов {len(stage_vecs)}, подэтапов {len(sub_vecs)})")
+        result = {"chunks": touched, "stages": len(stage_vecs), "substages": len(sub_vecs)}
+        if job_id:
+            _set_index_job(job_id, status="done", done=touched, total=touched, result=result)
+        return result
+    except Exception as e:
+        if job_id:
+            _set_index_job(job_id, status="error", error=str(e))
+        raise
 
 
 def delete_document_vectors(filename: str):
