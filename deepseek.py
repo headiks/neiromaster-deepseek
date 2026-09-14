@@ -53,7 +53,10 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     if json_mode:
         body["response_format"] = {"type": "json_object"}
 
-    last = None
+    # 429/5xx у DeepSeek транзиентны (их API часто отдаёт 503 «Service is too busy»)
+    # — повторяем с нарастающей паузой, как и сетевые сбои.
+    RETRY_STATUS = {429, 500, 502, 503, 504}
+    r = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             r = requests.post(
@@ -62,14 +65,18 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
                          "Content-Type": "application/json"},
                 json=body, timeout=timeout or TIMEOUT,
             )
-            break
         except _RETRYABLE as e:
-            last = e
             if attempt == MAX_RETRIES:
                 raise RuntimeError(f"DeepSeek: сеть недоступна после {MAX_RETRIES} попыток: {e}")
             time.sleep(2 * attempt)
+            continue
+        if r.status_code in RETRY_STATUS and attempt < MAX_RETRIES:
+            time.sleep(2 * attempt)          # перегрузка/лимит — ждём и повторяем
+            continue
+        break
     if r.status_code >= 400:
-        raise RuntimeError(f"DeepSeek API {r.status_code}: {r.text[:500]}")
+        hint = " (DeepSeek перегружен — повторите позже)" if r.status_code in RETRY_STATUS else ""
+        raise RuntimeError(f"DeepSeek API {r.status_code}{hint}: {r.text[:300]}")
     ch = r.json()["choices"][0]
     content = (ch.get("message") or {}).get("content") or ""
     if ch.get("finish_reason") == "length":
