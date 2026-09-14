@@ -43,7 +43,11 @@ DOC_SUMMARIES = "doc_summaries"  # вектор краткого описани�
 # Модель для смысловых описаний и уточнения выбора папок. Крупная — операция
 # редкая (раз на документ) и требует надёжного следования инструкции.
 LLM_MODEL = os.environ.get("DEEPSEEK_CLASSIFY_MODEL", "") or None   # None -> дефолт deepseek.MODEL
-LLM_TIMEOUT = int(os.environ.get("NEIROMASTER_CLASSIFY_TIMEOUT", "180"))
+# Классификация — некритичный путь: при любом ответе есть векторный фолбэк. Поэтому
+# короткий таймаут и 1 попытка: если DeepSeek недоступен/перегружен, быстро падаем на
+# векторные кандидаты, а не держим переанализ минутами на висящем LLM.
+LLM_TIMEOUT = int(os.environ.get("NEIROMASTER_CLASSIFY_TIMEOUT", "60"))
+LLM_RETRIES = int(os.environ.get("NEIROMASTER_CLASSIFY_RETRIES", "1"))
 
 DOC_MATCH_THRESHOLD = 0.30    # кандидат-папка для документа (широкий отбор, потом уточняет LLM)
 CHUNK_MATCH_THRESHOLD = 0.45  # кандидат-папка для чанка по вектору (дальше подтверждает LLM)
@@ -144,7 +148,7 @@ SUMMARY_SYSTEM = """Ты — аналитик базы знаний предпр
 
 def _llm(system: str, user: str) -> str:
     return deepseek.chat(system, user, model=LLM_MODEL, temperature=0,
-                         timeout=LLM_TIMEOUT).strip()
+                         timeout=LLM_TIMEOUT, retries=LLM_RETRIES).strip()
 
 
 def summarize_document(markdown_text: str, filename: str) -> str:

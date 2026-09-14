@@ -33,7 +33,8 @@ _RETRYABLE = (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
 
 
 def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
-         temperature: float = 0.0, max_tokens: int = 8192, timeout: int = None) -> str:
+         temperature: float = 0.0, max_tokens: int = 8192, timeout: int = None,
+         retries: int = None) -> str:
     """Один запрос к DeepSeek, возвращает message.content.
 
     json_mode=True — response_format=json_object (строгий JSON без ```-заборов).
@@ -61,8 +62,12 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     # 429/5xx у DeepSeek транзиентны (их API часто отдаёт 503 «Service is too busy»)
     # — повторяем с нарастающей паузой, как и сетевые сбои.
     RETRY_STATUS = {429, 500, 502, 503, 504}
+    # retries — переопределение числа попыток на вызов: некритичным путям (классификация
+    # с векторным фолбэком) хватает 1, чтобы быстро деградировать при недоступности DeepSeek,
+    # а не ждать полный бюджет ретраев. Генерация оставляет дефолт (устойчивость).
+    max_att = max(1, retries) if retries else MAX_RETRIES
     r = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(1, max_att + 1):
         try:
             r = requests.post(
                 f"{base_url}/chat/completions",
@@ -71,11 +76,11 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
                 json=body, timeout=timeout or TIMEOUT,
             )
         except _RETRYABLE as e:
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(f"DeepSeek: сеть недоступна после {MAX_RETRIES} попыток: {e}")
+            if attempt == max_att:
+                raise RuntimeError(f"DeepSeek: сеть недоступна после {max_att} попыток: {e}")
             time.sleep(2 * attempt)
             continue
-        if r.status_code in RETRY_STATUS and attempt < MAX_RETRIES:
+        if r.status_code in RETRY_STATUS and attempt < max_att:
             time.sleep(2 * attempt)          # перегрузка/лимит — ждём и повторяем
             continue
         break
