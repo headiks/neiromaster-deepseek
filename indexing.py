@@ -263,6 +263,21 @@ def sectionize_by_clause(text: str) -> list:
 
 
 # ---------- Индексация одного документа ----------
+def _docpipe_progress_cb(filename: str):
+    """Колбэк прогресса docpipe-разметки -> прогресс-бар на карточке документа.
+    Троттлинг раз в секунду; секции маппим в 10..95%, чтобы бар двигался и не выглядел
+    зависшим на больших документах (десятки секций × вызов DeepSeek на секцию)."""
+    last = [0.0]
+    def cb(done, total):
+        now = time.time()
+        if done < total and now - last[0] < 1.0:
+            return
+        last[0] = now
+        pct = min(95, 10 + int(85 * done / max(total, 1)))
+        _update_registry(filename, progress=pct, phase=f"Классификация docpipe: {done}/{total}")
+    return cb
+
+
 def index_document(filepath: Path) -> dict:
     """Приём документа: docling-разбор + классификация/разметка через docpipe
     (этапы/подэтапы, метки в Postgres). Векторов/эмбеддингов нет — ретрив идёт по
@@ -273,7 +288,8 @@ def index_document(filepath: Path) -> dict:
     try:
         import docpipe
         start = time.time()
-        res = docpipe.ingest(str(filepath), filename=filename, force=True)
+        res = docpipe.ingest(str(filepath), filename=filename, force=True,
+                             progress_cb=_docpipe_progress_cb(filename))
         sections = res.get("sections") or 0
         elapsed = round(time.time() - start, 2)
         _update_registry(filename, status="indexed", chunks=sections, error=None,
@@ -735,7 +751,8 @@ def reanalyze_document(filename: str) -> dict:
         fp = DOCS_DIR / filename
         if not fp.exists():
             raise FileNotFoundError(f"нет оригинала {filename} в data/documents")
-        res = docpipe.ingest(str(fp), filename=filename, force=True)
+        res = docpipe.ingest(str(fp), filename=filename, force=True,
+                             progress_cb=_docpipe_progress_cb(filename))
         sections = res.get("sections") or 0
         _update_registry(filename, status="indexed", chunks=sections, error=None,
                          phase=None, progress=100)

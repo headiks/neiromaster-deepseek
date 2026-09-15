@@ -124,9 +124,10 @@ def _label_section(sec: dict, repeated: set, card: dict, structure: dict, positi
 
 
 def ingest(filepath, filename: str = None, plan_version: str = "current",
-           job_id: str = None, force: bool = False) -> dict:
+           job_id: str = None, force: bool = False, progress_cb=None) -> dict:
     """Полный приём одного документа. Идемпотентно по content_hash (force — переразбор).
-    job_id — если передан, прогресс пишется в задачу и разметка возобновляется с last_seq."""
+    job_id — если передан, прогресс пишется в задачу и разметка возобновляется с last_seq.
+    progress_cb(done, total) — колбэк прогресса по секциям (для бара на карточке документа)."""
     filepath = Path(filepath)
     filename = filename or filepath.name
     data = filepath.read_bytes()
@@ -148,6 +149,7 @@ def ingest(filepath, filename: str = None, plan_version: str = "current",
         job_id = store.create_job(doc_id, filename, total=len(sections))
     store.update_job(job_id, status="running", total=len(sections))
     resume_from = (store.get_job(job_id) or {}).get("last_seq", -1)
+    total = len(sections)
 
     for seq, (sec, sid) in enumerate(zip(sections, section_ids)):
         if seq <= resume_from:
@@ -158,6 +160,11 @@ def ingest(filepath, filename: str = None, plan_version: str = "current",
         # Чанки со СВОИМИ метками (LLM разметил каждый отдельно). Служебная секция -> без чанков.
         store.replace_chunks(sid, result["chunks"], EMBED_VERSION)
         store.update_job(job_id, done=seq + 1, last_seq=seq)
+        if progress_cb:
+            try:
+                progress_cb(seq + 1, total)
+            except Exception:
+                pass
 
     store.update_job(job_id, status="done")
     return {"doc_id": doc_id, "status": "indexed", "sections": len(sections), "content_hash": content_hash}
