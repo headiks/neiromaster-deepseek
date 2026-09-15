@@ -11,13 +11,13 @@ pipeline (оркестрация, очередь).
 
 from .schema import init_schema
 from .store import save_plan_version, get_plan_structure, get_job
-from .pipeline import (ingest, reindex, relabel_candidates, retrieve, enqueue,
-                       requeue_stranded, document_breakdown, document_assignments)
+from .pipeline import (ingest, reindex, relabel_candidates, retrieve, chunks_for_substage,
+                       enqueue, requeue_stranded, document_breakdown, document_assignments)
 
 __all__ = [
     "init_schema", "sync_plan_from_catalog", "save_plan_version", "get_plan_structure",
-    "get_job", "ingest", "reindex", "relabel_candidates", "retrieve", "enqueue",
-    "requeue_stranded", "document_breakdown",
+    "get_job", "ingest", "reindex", "relabel_candidates", "retrieve", "chunks_for_substage",
+    "enqueue", "requeue_stranded", "document_breakdown",
     "document_assignments",
 ]
 

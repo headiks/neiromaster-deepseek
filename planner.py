@@ -20,6 +20,7 @@
 переиспользуется для любого новичка.
 """
 
+import os
 import json
 import math
 import time
@@ -45,6 +46,8 @@ DEFAULT_TIMEZONE = "Europe/Moscow"
 
 # Сколько чанков базы знаний уходит в контекст генерации одного подэтапа
 CONTEXT_CHUNKS = 6
+# Бюджет символов контекста генерации (чанки подэтапа режем под окно модели DeepSeek).
+CONTEXT_CHAR_BUDGET = int(os.environ.get("NEIROMASTER_GEN_CONTEXT_CHARS", "24000"))
 
 UNIT_DAYS = {"hours": 0, "days": 1, "weeks": 7, "months": 30}
 KIND_IDS = {"message", "checklist", "survey", "quiz", "reminder", "system_check", "handover"}
@@ -755,42 +758,44 @@ def generate_substage_message(stage: dict, substage: dict, topic_list: list, pos
     без источника генерировать нечего, подэтап ждёт загрузки документа и догенерации.
     docs_present — заранее посчитанное множество подэтапов-с-документами (для пакетной
     генерации, чтобы не дёргать docpipe на каждый подэтап); None -> считаем на месте."""
-    import indexing
+    import docpipe
     from rag import big_llm, parse_json_response
 
     result = {"topics_used": [], "sources": [], "status": "generated", "error": None,
               "content": {"format": "unified/1", "text": ""}}
     try:
+        # id подэтапа в классификации docpipe — составной: "<этап>.<подэтап>" (catalog_id).
+        stage_cat, sub_cat = stage.get("catalog_id"), substage.get("catalog_id")
+        key = f"{stage_cat}.{sub_cat}" if stage_cat and sub_cat else None
         if require_document:
             present = docs_present if docs_present is not None else substages_with_docs()
-            # id подэтапа в классификации docpipe — составной: "<этап>.<подэтап>" (catalog_id).
-            stage_cat, sub_cat = stage.get("catalog_id"), substage.get("catalog_id")
-            key = f"{stage_cat}.{sub_cat}" if stage_cat and sub_cat else None
             if not key or key not in present:
                 result["status"] = "skipped"
                 result["error"] = NO_DOC_REASON
                 return result
 
-        picked = pick_topics(stage, substage, topic_list)
-        result["topics_used"] = picked
+        # Контекст для генерации — чанки, размеченные ЭТИМ подэтапом (LLM-метки docpipe,
+        # без векторов). Режем под контекст модели по бюджету символов.
+        chunks = docpipe.chunks_for_substage(key) if key else []
+        seen_src, budget, ctx_parts = [], CONTEXT_CHAR_BUDGET, []
+        for c in chunks:
+            piece = c["text"]
+            if budget - len(piece) < 0 and ctx_parts:
+                break
+            budget -= len(piece)
+            ctx_parts.append(f"--- Фрагмент (документ: {c['source']}) ---\n{piece}")
+            if c["source"] and c["source"] not in seen_src:
+                seen_src.append(c["source"])
+        result["sources"] = [{"source": s, "folders": [], "page": None, "score": 1.0} for s in seen_src]
 
-        chunks = indexing.search_chunks(_substage_query(stage, substage), picked, limit=CONTEXT_CHUNKS,
-                                        plan_stage=stage.get("catalog_id"),
-                                        plan_substage=substage.get("catalog_id"), position=position)
-        result["sources"] = [{"source": c["source"], "folders": c.get("folders") or [],
-                              "page": c["page"], "score": round(c["score"], 3)} for c in chunks]
-
-        if not chunks:
-            # Документ отнесён (гейт пройден), но подходящих фрагментов нет -> тоже в
-            # «пропущено», чтобы догенерация подхватила после переиндексации/новых документов.
+        if not ctx_parts:
+            # Документ отнесён (гейт пройден), но размеченных фрагментов нет -> «пропущено»,
+            # чтобы догенерация подхватила после переразметки/новых документов.
             result["status"] = "skipped"
-            result["error"] = "Документ отнесён к подэтапу, но подходящих фрагментов не найдено"
+            result["error"] = "Документ отнесён к подэтапу, но размеченных фрагментов не найдено"
             return result
 
-        context = "\n\n".join(
-            f"--- Фрагмент {i + 1} (документ: {c['source']}) ---\n{c['text']}"
-            for i, c in enumerate(chunks)
-        )
+        context = "\n\n".join(ctx_parts)
         kind = substage.get("kind") or "message"
         user = (
             f"Этап программы адаптации: {stage.get('title')}\n"

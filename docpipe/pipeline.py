@@ -219,6 +219,24 @@ def retrieve(substage_id: str, position: str = "", plan_version: str = "current"
     return qdrant_sink.retrieve(substage_id, position, plan_version, limit)
 
 
+def chunks_for_substage(substage_id: str, plan_version: str = "current", limit: int = 40) -> list:
+    """Чанки, размеченные подэтапом (LLM-метки в Postgres, БЕЗ векторов) — источник
+    контекста для генерации и Q&A. Возвращает [{text, source, page, is_general}] в порядке
+    документ→секция→чанк. Дедуп по тексту, ограничение количества."""
+    rows = store.chunks_for_substage(substage_id, plan_version)
+    out, seen = [], set()
+    for r in rows:
+        text = (r.get("text") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append({"text": text, "source": r.get("filename") or "",
+                    "page": r.get("page_from"), "is_general": bool(r.get("is_general"))})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def document_breakdown(filename: str, plan_version: str = "current") -> dict:
     """Полный разбор документа для просмотра человеком: карточка документа + блоки (секции)
     с их метками, обоснованием и НАЗВАНИЯМИ/ОПИСАНИЯМИ этапов и подэтапов + чанки блока.

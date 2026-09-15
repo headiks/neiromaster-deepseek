@@ -616,6 +616,56 @@ def generate_answer(question, context_fragments):
     log("GENERATE", f"Сгенерированный ответ: {answer}")
     return answer
 
+# ---------- Маршрутизация вопроса по подэтапам (без векторов) ----------
+ROUTE_SUBSTAGE_SYSTEM = """Ты — маршрутизатор вопросов нового сотрудника по базе знаний
+адаптации. Дан вопрос и список подэтапов (id — тема/описание). Выбери до 3 подэтапов,
+к теме которых вопрос ближе всего по СМЫСЛУ. Верни СТРОГО JSON:
+{"substages": ["<id>", ...]} — id ТОЛЬКО из списка, самый релевантный первым.
+Если вопрос не относится ни к одному — {"substages": []}."""
+
+
+def _substage_catalog_lines() -> str:
+    import planner
+    lines = []
+    for st in (planner.load_catalog().get("stages") or []):
+        for sub in st.get("substage_templates") or []:
+            desc = (sub.get("brief") or sub.get("title") or "")[:160]
+            lines.append(f"{st['id']}.{sub['id']} — {st.get('title')} / {sub.get('title')}: {desc}")
+    return "\n".join(lines)
+
+
+def route_substages(question, top=3):
+    """DeepSeek выбирает топ-N подэтапов, к теме которых вопрос ближе всего (без эмбеддингов)."""
+    try:
+        raw = small_llm(ROUTE_SUBSTAGE_SYSTEM,
+                        f"Вопрос: {question}\n\nПодэтапы:\n{_substage_catalog_lines()}", "ROUTE_SUB")
+        data = parse_json_response(raw)
+        ids = [s for s in (data.get("substages") or []) if isinstance(s, str) and s.strip()]
+        return ids[:top]
+    except Exception as e:
+        log("ROUTE_SUB", f"не удалось определить подэтапы: {e}")
+        return []
+
+
+def fetch_by_substages(substage_ids, budget=None):
+    """Фрагменты документов, размеченных этими подэтапами (docpipe/Postgres), под бюджет символов."""
+    import docpipe
+    budget = budget or int(os.environ.get("NEIROMASTER_QA_CONTEXT_CHARS", "24000"))
+    frags, sources, seen = [], [], set()
+    for sid in substage_ids:
+        for c in docpipe.chunks_for_substage(sid):
+            t = c["text"]
+            if not t or t in seen:
+                continue
+            if budget - len(t) < 0 and frags:
+                return frags, sources
+            seen.add(t); budget -= len(t)
+            frags.append(t)
+            if c["source"] and c["source"] not in sources:
+                sources.append(c["source"])
+    return frags, sources
+
+
 # ---------- Основная функция ----------
 def handle_question(question, history=None, current_stage_ids=None, position=None):
     """
@@ -687,53 +737,26 @@ def handle_question(question, history=None, current_stage_ids=None, position=Non
             "error": None
         }
 
-    candidates = cascade_search(effective_question, current_stage_ids=current_stage_ids, position=position)
-    if not candidates:
-        return {
-            **base_result,
-            "candidates": [],
-            "top_fragments": [],
-            "answer": None,
-            "elapsed_time": time.time() - total_start,
-            "error": "Нет кандидатов в Qdrant"
-        }
-
-    ranked = rerank(effective_question, candidates)
-    top = [r for r in ranked if r["relevance"] >= CONFIDENCE_THRESHOLD]
-    top_fragments = [r["text"] for r in top[:MAX_CONTEXT_FRAGMENTS]]
-
-    # L2 — контекст исходных документов: добавляем соседние чанки лучших фрагментов,
-    # чтобы не отвечать по вырванному куску без учёта исключений/ограничений рядом.
-    context_fragments = list(top_fragments)
-    for cand in candidates[:MAX_CONTEXT_FRAGMENTS]:
-        pl = cand.get("payload") or {}
-        if pl.get("text") in top_fragments:
-            # span=4: перечни/приложения разбиты на несколько соседних чанков — берём широко,
-            # чтобы в контекст попал ВЕСЬ список, даже если найден только его фрагмент.
-            for neigh in fetch_neighbors(pl.get("source"), pl.get("chunk_index"), span=4):
-                if neigh and neigh not in context_fragments:
-                    context_fragments.append(neigh)
-
-    # Лог источников (ТЗ 1.6): какие чанки (файл + раздел + страница) пошли в ответ —
-    # ответ становится проверяемым. Собираем из кандидатов, попавших в top_fragments.
-    sources = []
-    for cand in candidates:
-        pl = cand.get("payload") or {}
-        if pl.get("text") in top_fragments:
-            sources.append({"source": pl.get("source"), "section": pl.get("section"), "page": pl.get("page")})
+    # Новый поиск без векторов: DeepSeek выбирает топ-3 подэтапа по смыслу вопроса,
+    # затем берём документы, размеченные этими подэтапами (docpipe/Postgres), и по ним
+    # генерируем ответ. Разбивка под контекст модели — в fetch_by_substages.
+    picked = route_substages(effective_question)
+    log("HANDLE", f"Подэтапы для вопроса: {picked}")
+    context_fragments, source_names = fetch_by_substages(picked)
+    sources = [{"source": s, "section": None, "page": None} for s in source_names]
 
     answer = None
-    if top_fragments:
+    if context_fragments:
         answer = generate_answer(effective_question, context_fragments)
-        log("SOURCES", "; ".join(f"{s['source']} / {s.get('section') or '—'}"
-                                 f"{' стр.'+str(s['page']) if s.get('page') else ''}" for s in sources) or "(нет)")
+        log("SOURCES", "; ".join(source_names) or "(нет)")
     else:
-        log("HANDLE", "Confidence gate не пройден")
+        log("HANDLE", "Нет размеченных документов под тему вопроса")
 
     return {
         **base_result,
-        "candidates": ranked,
-        "top_fragments": top_fragments,
+        "candidates": [],
+        "route_substages": picked,
+        "top_fragments": context_fragments,
         "sources": sources,
         "answer": answer,
         "elapsed_time": time.time() - total_start,
