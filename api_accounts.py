@@ -58,6 +58,8 @@ async def api_login(req: LoginRequest, request: Request, response: Response):
         "username": user["username"],
         "role": user["role"],
         "must_change_credentials": bool(user.get("must_change_credentials")),
+        # Токен в теле — для нативных приложений (Bearer). Браузер использует cookie выше.
+        "token": token,
     }
 
 

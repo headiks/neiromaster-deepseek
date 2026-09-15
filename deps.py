@@ -43,9 +43,19 @@ def _set_session_cookie(response: Response, token: str):
 
 
 # ---------- Доступ ----------
+def _session_token(request: Request) -> str | None:
+    """Токен сессии: заголовок Authorization: Bearer <token> (нативные приложения,
+    хранят токен в SecureStore) ИЛИ cookie nm_session (браузер). Один опаковый токен
+    из таблицы sessions — источник один, доставка две."""
+    h = request.headers.get("authorization") or request.headers.get("Authorization")
+    if h and h.lower().startswith("bearer "):
+        return h[7:].strip()
+    return request.cookies.get(auth.COOKIE_NAME)
+
+
 def current_user(request: Request) -> dict:
     """Любой вошедший пользователь. Без валидной сессии — 401."""
-    user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+    user = auth.get_session_user(_session_token(request))
     if user is None:
         raise HTTPException(status_code=401, detail="Требуется вход")
     return user

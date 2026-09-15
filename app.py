@@ -129,6 +129,23 @@ async def lifespan(app: FastAPI):
 # открыты анониму и раскрывают полный список ручек — на проде не нужны.
 app = FastAPI(title="RAG Assistant API", lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+
+# CORS — для веб-сборки мобильного приложения (react-native-web), которая ходит к API
+# с другого origin. Нативные iOS/Android не подчиняются CORS. Приложение авторизуется
+# по Bearer-токену (не cookie), поэтому allow_credentials не нужен; список origin —
+# из NEIROMASTER_CORS_ORIGINS (через запятую), плюс локальные порты Expo для разработки.
+import os as _os
+from fastapi.middleware.cors import CORSMiddleware
+_cors = [o.strip() for o in _os.environ.get("NEIROMASTER_CORS_ORIGINS", "").split(",") if o.strip()]
+_cors += ["http://localhost:8081", "http://localhost:19006", "http://localhost:3000"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
+)
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
