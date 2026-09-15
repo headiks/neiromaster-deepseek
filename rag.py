@@ -648,12 +648,12 @@ def route_substages(question, top=3):
 
 
 def fetch_by_substages(substage_ids, budget=None):
-    """Фрагменты документов, размеченных этими подэтапами (docpipe/Postgres), под бюджет символов."""
+    """Блоки документов, размеченных этими подэтапами (docpipe/Postgres), под бюджет символов."""
     import docpipe
     budget = budget or int(os.environ.get("NEIROMASTER_QA_CONTEXT_CHARS", "24000"))
     frags, sources, seen = [], [], set()
     for sid in substage_ids:
-        for c in docpipe.chunks_for_substage(sid):
+        for c in docpipe.blocks_for_substage(sid):
             t = c["text"]
             if not t or t in seen:
                 continue

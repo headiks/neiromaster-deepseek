@@ -201,7 +201,7 @@
                     pendingDocs.delete(name);
                     settled = true;
                 } else if (doc.status === 'processing') {
-                    uploadStatus[name] = 'разбор docling → чанкинг → эмбеддинги...';
+                    uploadStatus[name] = 'разбор docling → классификация по блокам (docpipe)...';
                 } else {
                     uploadStatus[name] = 'в очереди на обработку...';
                 }
@@ -628,7 +628,7 @@
                 const fmt = docFormat(doc);
                 const meta = [
                     doc.size_bytes !== undefined ? formatSize(doc.size_bytes) : null,
-                    doc.chunks ? `${doc.chunks} чанков` : null,
+                    doc.chunks ? `${doc.chunks} блоков` : null,
                     doc.uploaded_at ? doc.uploaded_at.replace('T', ' ') : null,
                 ].filter(Boolean).join(' · ');
                 const folderSlugs = doc.folders || [];
@@ -1427,9 +1427,27 @@
         function ptSetStatus(text) { document.getElementById('pt-status').textContent = text || ''; }
         function ptSetBusy(busy) {
             document.getElementById('pt-generate-btn').disabled = busy;
+            const rb = document.getElementById('pt-regen-plan-btn'); if (rb) rb.disabled = busy;
             document.getElementById('pt-generate-missing-btn').disabled = busy;
             document.getElementById('pt-generate-all-btn').disabled = busy;
             document.getElementById('pt-cancel-btn').style.display = busy ? '' : 'none';
+        }
+
+        // Перегенерация ВСЕГО выбранного плана — все должности сразу (без profession -> backend
+        // генерирует под каждую должность из штатки + общее расписание).
+        function ptRegenPlan() {
+            const pid = document.getElementById('pt-plan').value;
+            if (!pid) { ptSetStatus('Выберите план.'); return; }
+            if (!confirm('Перегенерировать ВЕСЬ выбранный план — все должности? Это может занять время.')) return;
+            ptSetBusy(true);
+            ptSetStatus('Перегенерация всего плана…');
+            apiJson(`/plans/${encodeURIComponent(pid)}/generate`, { method: 'POST' })
+                .then(({ ok, data }) => {
+                    if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить'); ptSetBusy(false); return; }
+                    currentGenJob = data.job_id;
+                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); });
+                })
+                .catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
         }
 
         function ptGeneratePlan() {

@@ -145,18 +145,18 @@ def list_chunks(section_id: str) -> list:
     return db.query("SELECT * FROM chunks WHERE section_id = %s ORDER BY seq", (section_id,))
 
 
-def chunks_for_substage(substage_id: str, plan_version: str = "current") -> list:
-    """ВСЕ чанки, размеченные данным подэтапом (per-chunk метка содержит его id) — источник
-    для «вычленить все чанки на подэтап». Джойн до документа для имени файла и заголовков."""
+def blocks_for_substage(substage_id: str, plan_version: str = "current") -> list:
+    """ВСЕ блоки (секции), размеченные данным подэтапом (метка секции содержит его id) —
+    источник контекста для генерации и Q&A. Чанков больше нет: работаем на уровне блоков
+    от нейросети. Джойн до документа для имени файла и заголовков."""
     return db.query(
-        "SELECT c.id AS chunk_id, c.text, c.substages, c.is_general, "
-        "       s.heading_path, s.page_from, d.filename, d.id AS doc_id "
-        "FROM chunks c "
-        "JOIN sections s ON s.id = c.section_id "
-        "JOIN documents d ON d.id = s.doc_id "
+        "SELECT s.id AS section_id, s.text, s.heading_path, s.page_from, l.is_general, "
+        "       l.why, d.filename, d.id AS doc_id "
+        "FROM sections s "
         "JOIN section_labels l ON l.section_id = s.id "
-        "WHERE c.substages @> %s::jsonb AND COALESCE(l.plan_version, %s) = %s "
-        "ORDER BY d.filename, s.seq, c.seq",
+        "JOIN documents d ON d.id = s.doc_id "
+        "WHERE l.substages @> %s::jsonb AND COALESCE(l.plan_version, %s) = %s "
+        "ORDER BY d.filename, s.seq",
         (json.dumps([{"id": substage_id}]), plan_version, plan_version),
     )
 

@@ -97,7 +97,7 @@ function render(d){
     h+=`<div class="card block ${junk?'junk':''}">
       <div class="h2">Блок ${i+1}${s.heading_path&&s.heading_path.length?': '+esc(s.heading_path.join(' / ')):''}
         ${s.page?`<span class="muted">стр. ${esc(s.page)}</span>`:''}</div>`;
-    h+=`<div class="meta-row"><b>ID блока:</b> ${esc(s.section_id||'')} · <b>источник метки:</b> ${esc(s.source||'—')} · <b>чанков:</b> ${(s.chunks||[]).length} · <b>содержательный:</b> ${s.is_meaningful===false?'нет':'да'}</div>`;
+    h+=`<div class="meta-row"><b>ID блока:</b> ${esc(s.section_id||'')} · <b>источник метки:</b> ${esc(s.source||'—')} · <b>содержательный:</b> ${s.is_meaningful===false?'нет':'да'}</div>`;
     if(junk){
       h+=`<div class="muted">Служебный фрагмент (не размечается): ${esc(s.reject_reason||'')}</div>`;
     } else {
@@ -126,17 +126,8 @@ function render(d){
       }
     }
 
-    // текст блока + его вектор
+    // текст блока — то, что нейросеть разметила и что идёт в генерацию/Q&A
     h+=`<div class="lbl">Текст блока (кусок документа)</div><div class="txt">${esc(s.text||'')}</div>`;
-    h+= vecHtml(s.vector);
-
-    // чанки блока — всегда видимы, каждый со своим вектором
-    const ch=s.chunks||[];
-    h+=`<div class="lbl">Чанки этого блока (${ch.length}) — то, что идёт в RAG-поиск; метки наследуются от блока</div>`;
-    h+= ch.length? ch.map((k,j)=>
-          `<div class="chunk"><b>Чанк ${j+1}</b> <span class="muted">id ${esc(k.chunk_id||'')} · эмбеддинг ${esc(k.embedding_version||'')}</span>
-           <div style="margin-top:4px;">${esc(k.text)}</div>${vecHtml(k.vector)}</div>`).join('')
-        : '<div class="muted">нет чанков (служебный блок)</div>';
     h+=`</div>`;
   });
 

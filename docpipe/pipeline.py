@@ -12,12 +12,15 @@ import queue
 import hashlib
 import threading
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import core, llm, store, professions
 
 # Векторов больше нет (Qdrant удалён): метка версии эмбеддинга в чанках — заглушка,
 # поле сохраняется для совместимости схемы store.
 EMBED_VERSION = "none"
+# Параллельная разметка блоков одного документа (вызовы DeepSeek — I/O-bound).
+_INGEST_WORKERS = int(os.environ.get("NEIROMASTER_DOCPIPE_WORKERS", "6"))
 
 # Блоки (секции) для разметки делаем КРУПНЕЕ, чем эмбеддинг-чанки indexing (512 токенов):
 # у docpipe своя задача — дать LLM связный кусок с контекстом, а не короткий вектор.
@@ -151,20 +154,35 @@ def ingest(filepath, filename: str = None, plan_version: str = "current",
     resume_from = (store.get_job(job_id) or {}).get("last_seq", -1)
     total = len(sections)
 
-    for seq, (sec, sid) in enumerate(zip(sections, section_ids)):
-        if seq <= resume_from:
-            continue                                   # уже размечено — возобновление
-        result = _label_section(sec, repeated, card, structure, positions)
-        store.upsert_section_label(sid, result["section"], source="llm", plan_version=plan_version,
-                                   model=llm.MODEL, prompt_version=llm.PROMPT_VERSION)
-        # Чанки со СВОИМИ метками (LLM разметил каждый отдельно). Служебная секция -> без чанков.
-        store.replace_chunks(sid, result["chunks"], EMBED_VERSION)
-        store.update_job(job_id, done=seq + 1, last_seq=seq)
-        if progress_cb:
+    # Многопоточная разметка: каждый блок (секцию) размечает отдельный вызов DeepSeek —
+    # гоняем их параллельно (I/O-bound, GIL не мешает). Запись меток в БД — по мере
+    # готовности. Чанки больше не храним: оставляем метки и описание блока от нейросети.
+    todo = [(seq, sec, sid) for seq, (sec, sid) in enumerate(zip(sections, section_ids))
+            if seq > resume_from]
+    done = resume_from + 1
+    import threading as _th
+    _lock = _th.Lock()
+    with ThreadPoolExecutor(max_workers=_INGEST_WORKERS) as ex:
+        futs = {ex.submit(_label_section, sec, repeated, card, structure, positions): (seq, sid)
+                for seq, sec, sid in todo}
+        for fut in as_completed(futs):
+            seq, sid = futs[fut]
             try:
-                progress_cb(seq + 1, total)
-            except Exception:
-                pass
+                result = fut.result()
+            except Exception as e:
+                result = {"section": {"is_meaningful": True, "reject_reason": f"error: {e}",
+                                      "substages": [], "stages": [], "professions": [],
+                                      "is_general": False, "prof_conf": None, "why": None}}
+            store.upsert_section_label(sid, result["section"], source="llm", plan_version=plan_version,
+                                       model=llm.MODEL, prompt_version=llm.PROMPT_VERSION)
+            with _lock:
+                done += 1
+                store.update_job(job_id, done=done, last_seq=done - 1)
+                if progress_cb:
+                    try:
+                        progress_cb(done, total)
+                    except Exception:
+                        pass
 
     store.update_job(job_id, status="done")
     return {"doc_id": doc_id, "status": "indexed", "sections": len(sections), "content_hash": content_hash}
@@ -200,22 +218,26 @@ def retrieve(substage_id: str, position: str = "", plan_version: str = "current"
     return chunks_for_substage(substage_id, plan_version, limit)
 
 
-def chunks_for_substage(substage_id: str, plan_version: str = "current", limit: int = 40) -> list:
-    """Чанки, размеченные подэтапом (LLM-метки в Postgres, БЕЗ векторов) — источник
-    контекста для генерации и Q&A. Возвращает [{text, source, page, is_general}] в порядке
-    документ→секция→чанк. Дедуп по тексту, ограничение количества."""
-    rows = store.chunks_for_substage(substage_id, plan_version)
+def blocks_for_substage(substage_id: str, plan_version: str = "current", limit: int = 30) -> list:
+    """Блоки (секции), размеченные подэтапом (LLM-метки в Postgres, без векторов и чанков) —
+    источник контекста для генерации и Q&A. Возвращает [{text, source, page, is_general, why}]
+    в порядке документ→секция. Дедуп по тексту, ограничение количества."""
+    rows = store.blocks_for_substage(substage_id, plan_version)
     out, seen = [], set()
     for r in rows:
         text = (r.get("text") or "").strip()
         if not text or text in seen:
             continue
         seen.add(text)
-        out.append({"text": text, "source": r.get("filename") or "",
-                    "page": r.get("page_from"), "is_general": bool(r.get("is_general"))})
+        out.append({"text": text, "source": r.get("filename") or "", "page": r.get("page_from"),
+                    "is_general": bool(r.get("is_general")), "why": r.get("why")})
         if len(out) >= limit:
             break
     return out
+
+
+# Совместимость со старым именем (планировщик/rag): блоки вместо чанков.
+chunks_for_substage = blocks_for_substage
 
 
 def document_breakdown(filename: str, plan_version: str = "current") -> dict:

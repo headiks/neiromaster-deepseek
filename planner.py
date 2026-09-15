@@ -26,6 +26,7 @@ import math
 import time
 import uuid
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import unicodedata
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -46,8 +47,10 @@ DEFAULT_TIMEZONE = "Europe/Moscow"
 
 # Сколько чанков базы знаний уходит в контекст генерации одного подэтапа
 CONTEXT_CHUNKS = 6
-# Бюджет символов контекста генерации (чанки подэтапа режем под окно модели DeepSeek).
+# Бюджет символов контекста генерации (блоки подэтапа режем под окно модели DeepSeek).
 CONTEXT_CHAR_BUDGET = int(os.environ.get("NEIROMASTER_GEN_CONTEXT_CHARS", "24000"))
+# Параллельная генерация подэтапов (каждый — вызов DeepSeek).
+_GEN_WORKERS = int(os.environ.get("NEIROMASTER_GEN_WORKERS", "6"))
 
 UNIT_DAYS = {"hours": 0, "days": 1, "weeks": 7, "months": 30}
 KIND_IDS = {"message", "checklist", "survey", "quiz", "reminder", "system_check", "handover"}
@@ -776,14 +779,14 @@ def generate_substage_message(stage: dict, substage: dict, topic_list: list, pos
 
         # Контекст для генерации — чанки, размеченные ЭТИМ подэтапом (LLM-метки docpipe,
         # без векторов). Режем под контекст модели по бюджету символов.
-        chunks = docpipe.chunks_for_substage(key) if key else []
+        blocks = docpipe.blocks_for_substage(key) if key else []
         seen_src, budget, ctx_parts = [], CONTEXT_CHAR_BUDGET, []
-        for c in chunks:
+        for c in blocks:
             piece = c["text"]
             if budget - len(piece) < 0 and ctx_parts:
                 break
             budget -= len(piece)
-            ctx_parts.append(f"--- Фрагмент (документ: {c['source']}) ---\n{piece}")
+            ctx_parts.append(f"--- Блок (документ: {c['source']}) ---\n{piece}")
             if c["source"] and c["source"] not in seen_src:
                 seen_src.append(c["source"])
         result["sources"] = [{"source": s, "folders": [], "page": None, "score": 1.0} for s in seen_src]
@@ -936,37 +939,56 @@ def start_generation(plan: dict, positions: Optional[list] = None, include_gener
                     existing = {m.get("message_id"): m for m in (sch.get("messages") or [])}
                 label = prof or "общее"
                 cancelled = False
+                # Готовые (при догенерации) оставляем как есть; остальное — параллельно.
+                to_gen = []
                 for item in items:
-                    if (get_job(job_id) or {}).get("cancel"):   # запрошена отмена — стоп
-                        cancelled = True
-                        break
                     mid = item["message_id"]
                     prev = existing.get(mid)
                     if only_missing and prev and prev.get("status") in KEEP:
-                        generated[mid] = {   # оставляем готовый текст как есть
+                        generated[mid] = {
                             "content": prev.get("content", {}), "topics_used": prev.get("topics_used", []),
                             "sources": prev.get("sources", []), "status": prev.get("status"),
                             "error": prev.get("error"), "actions": prev.get("actions", []),
                         }
                         done += 1
                         _set_job(job_id, done=done)
-                        continue
+                    else:
+                        to_gen.append(item)
+
+                def _gen_one(item):
                     stage = stages_by_id.get(item["stage"]["id"], {})
                     substage = next(
                         (s for s in stage.get("substages", []) if s["id"] == item["substage"]["id"]),
                         item["substage"],
                     )
-                    _set_job(job_id, current=f"[{label}] {item['stage']['title']} → {item['substage']['title']}",
-                             done=done)
-                    payload = generate_substage_message(stage, substage, topic_list, position=prof,
-                                                        docs_present=docs_present)
-                    if payload["status"] == "error":
-                        errors += 1
-                    elif payload["status"] == "skipped":
-                        skipped += 1
-                    generated[mid] = payload
-                    done += 1
-                    _set_job(job_id, done=done, errors=errors, skipped=skipped)
+                    return item["message_id"], item, generate_substage_message(
+                        stage, substage, topic_list, position=prof, docs_present=docs_present)
+
+                # Параллельная генерация подэтапов (каждый — вызов DeepSeek, I/O-bound).
+                _lock = threading.Lock()
+                with ThreadPoolExecutor(max_workers=_GEN_WORKERS) as ex:
+                    futs = [ex.submit(_gen_one, it) for it in to_gen]
+                    for fut in as_completed(futs):
+                        if (get_job(job_id) or {}).get("cancel"):
+                            cancelled = True
+                            ex.shutdown(wait=False, cancel_futures=True)
+                            break
+                        try:
+                            mid, item, payload = fut.result()
+                        except Exception as e:
+                            with _lock:
+                                errors += 1; done += 1
+                                _set_job(job_id, done=done, errors=errors)
+                            continue
+                        with _lock:
+                            if payload["status"] == "error":
+                                errors += 1
+                            elif payload["status"] == "skipped":
+                                skipped += 1
+                            generated[mid] = payload
+                            done += 1
+                            _set_job(job_id, done=done, errors=errors, skipped=skipped,
+                                     current=f"[{label}] {item['stage']['title']} → {item['substage']['title']}")
                 if generated:   # сохраняем, что успели (частичное расписание не теряем)
                     save_schedule(plan["plan_id"], build_schedule(plan, generated, profession=prof), profession=prof)
                 if cancelled:
