@@ -13,6 +13,8 @@ import threading
 
 _client = None
 _checked = False
+_raw_client = None
+_raw_checked = False
 _lock = threading.Lock()
 
 # По умолчанию пробуем локальный Redis. Пустая строка в REDIS_URL — явно выключить.
@@ -48,13 +50,43 @@ def get_redis():
         return _client
 
 
+def get_redis_raw():
+    """Клиент БЕЗ decode_responses (байты). Нужен RQ: он хранит pickled-данные задач,
+    и decode_responses=True ломает их чтение (UnicodeDecodeError). Для нашего кода
+    (jobstore/ratelimit/история) используем get_redis() с декодом — там строки/JSON."""
+    global _raw_client, _raw_checked
+    if _raw_checked:
+        return _raw_client
+    with _lock:
+        if _raw_checked:
+            return _raw_client
+        _raw_checked = True
+        url = os.environ.get("REDIS_URL", REDIS_URL)
+        if not url:
+            _raw_client = None
+            return None
+        try:
+            import redis
+            c = redis.from_url(url, decode_responses=False,
+                               socket_connect_timeout=2, socket_timeout=5,
+                               health_check_interval=30)
+            c.ping()
+            _raw_client = c
+        except Exception as e:
+            print(f"[redis] raw-клиент недоступен ({e})")
+            _raw_client = None
+        return _raw_client
+
+
 def redis_available() -> bool:
     return get_redis() is not None
 
 
 def reset():
     """Сброс кэша коннекта (для тестов)."""
-    global _client, _checked
+    global _client, _checked, _raw_client, _raw_checked
     with _lock:
         _client = None
         _checked = False
+        _raw_client = None
+        _raw_checked = False

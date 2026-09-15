@@ -12,7 +12,7 @@ Worker-процесс для тяжёлых задач (разбор+класс�
 import os
 
 import config  # noqa: F401  — импорт грузит .env (ключ DeepSeek, DSN БД, REDIS_URL)
-from redis_conn import get_redis
+from redis_conn import get_redis, get_redis_raw
 from jobs import QUEUE_NAME
 
 
@@ -53,13 +53,14 @@ def main():
     _requeue_once(r)
 
     from rq import Queue, SimpleWorker
-    q = Queue(QUEUE_NAME, connection=r)
+    rq_conn = get_redis_raw()   # RQ хранит pickled-данные — клиент без decode_responses
+    q = Queue(QUEUE_NAME, connection=rq_conn)
     print(f"[worker] старт RQ SimpleWorker на очереди '{QUEUE_NAME}' (pid {os.getpid()})")
     # SimpleWorker (без fork) намеренно: дефолтный форкающийся Worker наследовал бы в
     # дочернем процессе пул psycopg (сокеты БД не переживают fork -> порча соединений).
     # Одна задача на процесс; масштаб — числом процессов rag-worker@N, а внутри задачи
     # параллелят ThreadPoolExecutor'ы (NEIROMASTER_DOCPIPE_WORKERS / _GEN_WORKERS).
-    SimpleWorker([q], connection=r).work()
+    SimpleWorker([q], connection=rq_conn).work()
 
 
 if __name__ == "__main__":

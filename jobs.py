@@ -15,7 +15,7 @@ worker-процессы (`python worker.py` → RQ worker), которых мо�
 import os
 import threading
 
-from redis_conn import get_redis
+from redis_conn import get_redis, get_redis_raw
 
 QUEUE_NAME = os.environ.get("NEIROMASTER_QUEUE", "nm")
 # Потолок времени на одну задачу. Реанализ всей базы длиннее — свой таймаут ниже.
@@ -24,7 +24,7 @@ REANALYZE_ALL_TIMEOUT = int(os.environ.get("NEIROMASTER_REANALYZE_TIMEOUT", str(
 
 
 def _queue():
-    r = get_redis()
+    r = get_redis_raw()   # RQ хранит pickled-данные — нужен клиент без decode_responses
     if r is None:
         return None
     from rq import Queue
