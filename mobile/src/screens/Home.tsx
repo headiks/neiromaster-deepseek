@@ -48,12 +48,14 @@ export default function Home() {
   }, [load]);
 
   async function open(m: any) {
-    if (!m?.read && m?.message_id) {
-      try {
-        await api.markRead(String(m.message_id));
-        setMsgs((cur) => cur.map((x) => (x.message_id === m.message_id ? { ...x, read: true } : x)));
-      } catch {}
-    }
+    // markRead ждёт id СТРОКИ инбокса (<employee_id>:<message_id>), а не bare message_id,
+    // иначе сервер отвечает 404 и «прочитано» не проставляется. Непрочитанное = status != 'read'.
+    const id = m?.id;
+    if (!id || m?.status === "read") return;
+    try {
+      await api.markRead(String(id));
+      setMsgs((cur) => cur.map((x) => (x.id === id ? { ...x, status: "read" } : x)));
+    } catch {}
   }
 
   if (loading) {
@@ -79,10 +81,10 @@ export default function Home() {
         <Text style={st.empty}>Пока нет сообщений плана.</Text>
       ) : (
         msgs.map((m, i) => (
-          <TouchableOpacity key={m.message_id || i} style={st.card} onPress={() => open(m)} activeOpacity={0.7}>
+          <TouchableOpacity key={m.id || m.message_id || i} style={st.card} onPress={() => open(m)} activeOpacity={0.7}>
             <View style={st.rowBetween}>
               <Text style={st.cardTitle}>{pickTitle(m)}</Text>
-              {!m.read ? <View style={st.dot} /> : null}
+              {m.status !== "read" ? <View style={st.dot} /> : null}
             </View>
             {pickDate(m) ? <Text style={st.date}>{pickDate(m)}</Text> : null}
             {pickBody(m) ? <Text style={st.body}>{pickBody(m)}</Text> : null}
