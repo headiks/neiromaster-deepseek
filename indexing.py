@@ -19,6 +19,8 @@
 «Все документы» (вся коллекция) независимо от папок.
 """
 
+from __future__ import annotations  # аннотации-строки: тип DoclingDocument не грузит docling при импорте
+
 import re
 import time
 import uuid
@@ -34,9 +36,9 @@ from qdrant_client.models import (
     PayloadSchemaType,
 )
 
-from docling.document_converter import DocumentConverter
-from docling.chunking import HybridChunker
-from docling_core.types.doc.document import DoclingDocument
+# docling НЕ импортируем на уровне модуля: он тяжёлый (модели разметки, ~ГБ RAM), а
+# нужен только при разборе документа, что теперь делают worker-процессы, а не web.
+# Ленивая загрузка ниже (_converter) — web-воркеры не платят за docling памятью/стартом.
 
 import classify
 import folders
@@ -63,8 +65,22 @@ MERGE_PEERS = True   # склеивать соседние мелкие чанк
 UPSERT_BATCH = 64
 
 client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-converter = DocumentConverter()
-chunker = HybridChunker(max_tokens=MAX_TOKENS, merge_peers=MERGE_PEERS)
+_converter = None
+_chunker = None
+_docling_lock = threading.Lock()
+
+
+def _get_converter():
+    """Ленивый singleton docling — грузится при первом разборе (в worker-процессе)."""
+    global _converter, _chunker
+    if _converter is None:
+        with _docling_lock:
+            if _converter is None:
+                from docling.document_converter import DocumentConverter
+                from docling.chunking import HybridChunker
+                _chunker = HybridChunker(max_tokens=MAX_TOKENS, merge_peers=MERGE_PEERS)
+                _converter = DocumentConverter()
+    return _converter
 
 # Межпроцессная блокировка реестра: read-modify-write registry.json безопасен и при
 # нескольких uvicorn-воркерах (см. config.FileGuard). Раньше был обычный threading.Lock,
@@ -216,6 +232,7 @@ def convert_document(filepath: Path) -> DoclingDocument:
     """
     # если локальной копии нет — тянем оригинал из S3 по ключу из реестра
     # (структура <суперадмин>/<админ>/<файл>; у старых записей ключа нет — плоский)
+    from docling_core.types.doc.document import DoclingDocument
     storage.pull(filepath, _load_registry().get(filepath.name, {}).get("s3_key") or "")
     cache_path = CACHE_DIR / f"{filepath.stem}__{file_hash(filepath)}.json"
     if cache_path.exists():
@@ -224,7 +241,7 @@ def convert_document(filepath: Path) -> DoclingDocument:
     # Повёрнутые страницы (боком-нарисованные таблицы) выправляем до docling.
     src, is_tmp = _normalize_rotation(filepath)
     try:
-        result = converter.convert(str(src))
+        result = _get_converter().convert(str(src))
     finally:
         if is_tmp:
             try:
