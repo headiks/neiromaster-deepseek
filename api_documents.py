@@ -301,10 +301,13 @@ class ClarifyRequest(BaseModel):
 @router.post("/documents/reanalyze", dependencies=owner_only)
 def reanalyze_documents():
     """Полный повторный анализ ВСЕЙ базы под текущую структуру папок (фоново).
-    Только суперадмин: операция задевает документы всех администраторов."""
-    classify.sync_folder_vectors()
-    _bg(indexing.reanalyze_all)
-    return {"started": True}
+    Только суперадмин: операция задевает документы всех администраторов.
+    Прогресс пакета — GET /documents/jobs/{job_id} (документ i из N)."""
+    import uuid
+    job_id = f"reanalyze-{uuid.uuid4().hex[:8]}"
+    indexing._set_index_job(job_id, status="queued", done=0, total=0)
+    _bg(indexing.reanalyze_all, job_id)
+    return {"started": True, "job_id": job_id}
 
 
 @router.post("/documents/{filename}/reanalyze")

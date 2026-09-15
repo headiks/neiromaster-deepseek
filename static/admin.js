@@ -231,15 +231,19 @@
             el.innerHTML = parts.join(' · ');
             el.style.display = 'block';
 
-            // Общий прогресс: доля завершённых документов + дробный вклад активных по их %.
-            if (overall) {
-                const total = docs.length || 1;
+            // Общий прогресс НЕ считаем по статусам во время полной переклассификации:
+            // там и готовые, и ещё не тронутые документы одинаково «indexed», из-за чего
+            // бар прыгал 86%→100% на каждом документе. Его ведёт задача (reanalyzeAll → NM.runJob).
+            if (overall && !reanalyzeJobActive) {
+                // Здесь бар осмыслен только для загрузок (uploaded→processing→indexed).
+                const uploads = docs.filter(d => d.status === 'uploaded' || d.status === 'processing');
+                if (!uploads.length) { overall.style.display = 'none'; return; }
+                const total = uploads.length + docs.filter(d => d.status === 'indexed' || d.status === 'error').length;
                 const doneUnits = docs.filter(d => d.status === 'indexed' || d.status === 'error').length
-                    + active.reduce((a, d) => a + (Number(d.progress) || 0) / 100, 0);
-                const pct = Math.max(0, Math.min(100, Math.round(doneUnits / total * 100)));
-                const doneN = docs.filter(d => d.status === 'indexed').length;
+                    + docs.filter(d => d.status === 'processing').reduce((a, d) => a + (Number(d.progress) || 0) / 100, 0);
+                const pct = Math.max(0, Math.min(100, Math.round(doneUnits / (total || 1) * 100)));
                 document.getElementById('doc-overall-label').textContent =
-                    `Анализ базы: готово ${doneN} из ${docs.length}${queued.length ? ` · в очереди ${queued.length}` : ''}`;
+                    `Обработка загрузок: в очереди/идёт ${uploads.length}`;
                 document.getElementById('doc-overall-pct').textContent = pct + '%';
                 document.getElementById('doc-overall-fill').style.width = pct + '%';
                 overall.style.display = 'block';
@@ -264,6 +268,7 @@
         }
 
         let anyReanalyzing = false;   // есть документы в статусе reanalyzing -> опрашиваем чаще
+        let reanalyzeJobActive = false;   // идёт полная переклассификация -> общий бар ведёт задача
         let docsCache = [];
         function loadDocuments() {
             return api('/documents').then(r => r.json()).then(d => {
@@ -697,10 +702,36 @@
         function reanalyzeAll() {
             if (!confirm('Запустить повторный анализ всей базы под текущую структуру папок?')) return;
             const btn = document.getElementById('btn-reanalyze-all');
-            NM.busy(btn, true, 'Запуск…');
-            api('/documents/reanalyze', { method: 'POST' })
-                .then(() => { anyReanalyzing = true; loadDocuments(); bumpDocPolling(); })   // прогресс — в списке документов
-                .finally(() => NM.busy(btn, false));
+            const overall = document.getElementById('doc-overall');
+            NM.busy(btn, true, 'Переанализ…');
+            apiJson('/documents/reanalyze', { method: 'POST' }).then(({ ok, data }) => {
+                if (!ok || !data.job_id) { NM.busy(btn, false); return; }
+                reanalyzeJobActive = true;               // общий бар ведёт задача, не эвристика статусов
+                anyReanalyzing = true; loadDocuments(); bumpDocPolling();   // карточки документов — свои бары
+                NM.runJob('reanalyze-all', data.job_id, {
+                    onProgress: (job) => {
+                        // Плавность: к завершённым документам добавляем прогресс текущего внутри него.
+                        const cur = docsCache.find(d => d.filename === job.current && d.status === 'reanalyzing');
+                        const frac = cur ? (Number(cur.progress) || 0) / 100 : 0;
+                        const pct = job.total ? Math.min(100, Math.round(100 * (job.done + frac) / job.total)) : 0;
+                        overall.style.display = 'block';
+                        document.getElementById('doc-overall-label').textContent =
+                            `Переклассификация: документ ${Math.min(job.done + 1, job.total)} из ${job.total}${job.current ? ' · ' + escapeHtml(job.current) : ''}`;
+                        document.getElementById('doc-overall-pct').textContent = pct + '%';
+                        document.getElementById('doc-overall-fill').style.width = pct + '%';
+                    },
+                    onDone: (job) => {
+                        reanalyzeJobActive = false;
+                        NM.busy(btn, false);
+                        document.getElementById('doc-overall-label').textContent =
+                            job.status === 'done' ? 'Переклассификация завершена' : `Ошибка: ${job.error || ''}`;
+                        document.getElementById('doc-overall-pct').textContent = '100%';
+                        document.getElementById('doc-overall-fill').style.width = '100%';
+                        loadDocuments(); loadFolders();
+                        setTimeout(() => { if (!reanalyzeJobActive) overall.style.display = 'none'; }, 4000);
+                    },
+                });
+            }).catch(() => NM.busy(btn, false));
         }
 
         // Раскладка чанков по этапам: фоновая задача с живым прогресс-баром (NM.runJob).

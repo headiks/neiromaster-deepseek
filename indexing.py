@@ -971,14 +971,31 @@ def reanalyze_document(filename: str) -> dict:
         return {"filename": filename, "error": str(e)}
 
 
-def reanalyze_all() -> dict:
-    """Полный повторный анализ всей базы (ТЗ §8 — «запустить повторный анализ всей базы»)."""
+def reanalyze_all(job_id: str = None) -> dict:
+    """Полный повторный анализ всей базы (ТЗ §8 — «запустить повторный анализ всей базы»).
+
+    job_id — если задан, прогресс ПАКЕТА (документ i из N + имя текущего) пишется в стор
+    задач, фронт тянет его через GET /documents/jobs/{job_id} и рисует общий прогресс.
+    Прогресс ВНУТРИ документа пишет reanalyze_document в реестр (бар на карточке)."""
     classify.sync_folder_vectors()
+    todo = [d["filename"] for d in list_documents() if d.get("status") == "indexed"]
+    total = len(todo)
+    if job_id:
+        _set_index_job(job_id, status="processing", done=0, total=total, current="",
+                       started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
     results = []
-    for doc in list_documents():
-        if doc.get("status") == "indexed":
-            results.append(reanalyze_document(doc["filename"]))
-    return {"reanalyzed": len(results), "documents": results}
+    try:
+        for i, filename in enumerate(todo):
+            if job_id:
+                _set_index_job(job_id, done=i, total=total, current=filename)
+            results.append(reanalyze_document(filename))
+        if job_id:
+            _set_index_job(job_id, status="done", done=total, total=total, current="")
+        return {"reanalyzed": len(results), "documents": results}
+    except Exception as e:
+        if job_id:
+            _set_index_job(job_id, status="error", error=str(e))
+        raise
 
 
 def reanalyze_for_folder(slug: str) -> dict:
