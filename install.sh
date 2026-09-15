@@ -83,7 +83,7 @@ if ! $SUDO docker ps -a --format '{{.Names}}' | grep -qx neiromaster-pg; then
         -e POSTGRES_USER=neiromaster -e POSTGRES_PASSWORD="$PG_PASS" -e POSTGRES_DB=neiromaster \
         -p 127.0.0.1:5432:5432 \
         -v "$APP_DIR/pg_data:/var/lib/postgresql/data" \
-        postgres:16-alpine
+        postgres:16-alpine -c max_connections=300
 fi
 echo "    Ожидание готовности PostgreSQL..."
 for i in $(seq 1 60); do
@@ -100,7 +100,10 @@ if ! $SUDO docker ps -a --format '{{.Names}}' | grep -qx neiromaster-redis; then
         -p 127.0.0.1:6379:6379 redis:7-alpine
 fi
 
-WEB_WORKERS="${NEIROMASTER_WEB_WORKERS:-4}"     # uvicorn-воркеры web-тира
+# Число web-воркеров задаётся переменной WEB_CONCURRENCY в env-файле (gunicorn читает
+# её сам) — так его крутят без правки юнита. Дефолт gunicorn (если не задано) = 1,
+# поэтому в .env.production держи WEB_CONCURRENCY=6 (см. .env.example).
+WEB_WORKERS="${NEIROMASTER_WEB_WORKERS:-6}"     # только для текста подсказки ниже
 RQ_WORKERS="${NEIROMASTER_RQ_WORKERS:-4}"       # worker-процессы под тяжёлые задачи
 
 echo "==> [6/7] systemd-сервисы: web (gunicorn) + worker (RQ)"
@@ -115,8 +118,9 @@ WorkingDirectory=$APP_DIR
 # DSN к PostgreSQL, ключ DeepSeek и REDIS_URL — из защищённого env-файла (chmod 600)
 EnvironmentFile=$ENV_FILE
 # Несколько uvicorn-воркеров = процессная многопоточность web-тира под нагрузку.
+# -w НЕ задаём: gunicorn берёт число воркеров из WEB_CONCURRENCY (env-файл) — тюним без правки юнита.
 ExecStart=$APP_DIR/.venv/bin/gunicorn app:app \\
-    -k uvicorn.workers.UvicornWorker -w $WEB_WORKERS \\
+    -k uvicorn.workers.UvicornWorker \\
     -b 0.0.0.0:8000 --timeout 120 --graceful-timeout 30
 Restart=on-failure
 User=$APP_USER
@@ -172,7 +176,7 @@ echo "    for i in \$(seq 1 $RQ_WORKERS); do sudo systemctl start rag-worker@\$i
 echo "    sudo systemctl status rag-app 'rag-worker@*'"
 echo "    sudo journalctl -u rag-app -u 'rag-worker@*' -f    # логи web+worker"
 echo ""
-echo "Масштаб под нагрузку: web-воркеры — NEIROMASTER_WEB_WORKERS, число worker-процессов —"
+echo "Масштаб под нагрузку: web-воркеры — WEB_CONCURRENCY в env-файле, число worker-процессов —"
 echo "запуском новых rag-worker@N. Кап одновременных вызовов DeepSeek — DEEPSEEK_MAX_CONCURRENCY."
 echo ""
 echo "Если серверу нужен внешний доступ к сайту (порт 8000) — откройте его в firewall:"
