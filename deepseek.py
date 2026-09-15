@@ -21,6 +21,8 @@ import time
 
 import requests
 
+from ratelimit import deepseek_slot
+
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
@@ -69,12 +71,15 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     r = None
     for attempt in range(1, max_att + 1):
         try:
-            r = requests.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}",
-                         "Content-Type": "application/json"},
-                json=body, timeout=timeout or TIMEOUT,
-            )
+            # Глобальный лимитер: не больше DEEPSEEK_MAX_CONCURRENCY вызовов в полёте
+            # на весь кластер — защита от шторма 503 под высокой нагрузкой.
+            with deepseek_slot():
+                r = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}",
+                             "Content-Type": "application/json"},
+                    json=body, timeout=timeout or TIMEOUT,
+                )
         except _RETRYABLE as e:
             if attempt == max_att:
                 raise RuntimeError(f"DeepSeek: сеть недоступна после {max_att} попыток: {e}")

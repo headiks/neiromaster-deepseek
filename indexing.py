@@ -621,63 +621,46 @@ def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] =
 # по очереди (FIFO): параллельный docling на нескольких файлах съел бы всю память.
 # ponytail: один глобальный воркер; если понадобится пропускная способность —
 # несколько воркеров + семафор под память.
-_index_queue: "queue.Queue[str]" = queue.Queue()
-_index_jobs: dict = {}
-_index_jobs_lock = threading.Lock()
-_worker_started = False
-_worker_lock = threading.Lock()
+# Состояние задач индексации — в общем jobstore (Redis при мультипроцессе, иначе
+# in-memory), чтобы прогресс был виден и web-воркеру, и worker-процессу.
+import jobstore
+
+_JOB_NS = "index"
 
 
 def _set_index_job(job_id: str, **fields):
-    with _index_jobs_lock:
-        job = _index_jobs.setdefault(job_id, {"job_id": job_id})
-        job.update(fields)
-        return dict(job)
+    return jobstore.set_job(_JOB_NS, job_id, **fields)
 
 
 def get_index_job(job_id: str) -> Optional[dict]:
-    with _index_jobs_lock:
-        job = _index_jobs.get(job_id)
-        return dict(job) if job else None
+    return jobstore.get_job(_JOB_NS, job_id)
 
 
-def _index_worker():
-    while True:
-        job_id = _index_queue.get()
-        try:
-            job = get_index_job(job_id)
-            if not job:
-                continue
-            filepath = Path(job["filepath"])
-            _set_index_job(job_id, status="processing", started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-            _update_registry(filepath.name, status="processing", error=None)
-            result = index_document(filepath)
-            _set_index_job(job_id, status=result["status"], result=result,
-                           finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-        except Exception as e:
-            _set_index_job(job_id, status="error", result={"status": "error", "error": str(e)})
-        finally:
-            _index_queue.task_done()
-
-
-def _ensure_worker():
-    global _worker_started
-    with _worker_lock:
-        if _worker_started:
+def process_index_job(job_id: str):
+    """Обрабатывает одну задачу индексации. Выполняется в worker-процессе (RQ) или
+    в daemon-потоке-фолбэке. Тяжёлый docling+LLM не держит web-воркер."""
+    try:
+        job = get_index_job(job_id)
+        if not job:
             return
-        threading.Thread(target=_index_worker, name="index-worker", daemon=True).start()
-        _worker_started = True
+        filepath = Path(job["filepath"])
+        _set_index_job(job_id, status="processing", started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        _update_registry(filepath.name, status="processing", error=None)
+        result = index_document(filepath)
+        _set_index_job(job_id, status=result["status"], result=result,
+                       finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    except Exception as e:
+        _set_index_job(job_id, status="error", result={"status": "error", "error": str(e)})
 
 
 def enqueue_document(filepath: Path) -> dict:
     """Ставит уже сохранённый файл в очередь на индексацию. Возвращает запись задачи."""
-    _ensure_worker()
+    import jobs
     job_id = str(uuid.uuid4())
     filename = Path(filepath).name
     _set_index_job(job_id, filename=filename, filepath=str(filepath),
-                   status="queued", queued_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-                   position=_index_queue.qsize() + 1)
-    _index_queue.put(job_id)
+                   status="queued", queued_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    jobs.enqueue_index(job_id)
     return get_index_job(job_id)
 
 

@@ -208,9 +208,28 @@ def mark_read(employee_id: str, message_row_id: str) -> bool:
 
 # ---------- Планировщик (фоновый цикл) ----------
 def _loop(interval: int):
+    # При нескольких процессах (web-воркеры + worker'ы) доставку должен вести ТОЛЬКО
+    # один — иначе сообщения плана уйдут по несколько раз. Выбираем лидера через
+    # Redis-ключ с TTL: держатель продлевает его каждый тик, при его смерти ключ
+    # протухает и лидерство перехватывает следующий процесс. Без Redis — процесс один.
+    from redis_conn import get_redis
+    lock_key = "nm:leader:scheduler"
+    ttl = interval * 3
+    me = str(os.getpid())
     while True:
         try:
-            dispatch_all()
+            leader = True
+            r = get_redis()
+            if r is not None:
+                cur = r.get(lock_key)
+                if cur == me:
+                    r.expire(lock_key, ttl)               # мы лидер — продлеваем
+                elif cur is None:
+                    leader = bool(r.set(lock_key, me, nx=True, ex=ttl))  # берём лидерство
+                else:
+                    leader = False                        # лидер другой — пропускаем проход
+            if leader:
+                dispatch_all()
         except Exception as e:
             print(f"[scheduler] сбой прохода: {e}")
         time.sleep(interval)

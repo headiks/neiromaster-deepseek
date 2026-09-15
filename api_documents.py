@@ -286,9 +286,10 @@ def reanalyze_documents():
     Только суперадмин: операция задевает документы всех администраторов.
     Прогресс пакета — GET /documents/jobs/{job_id} (документ i из N)."""
     import uuid
+    import jobs
     job_id = f"reanalyze-{uuid.uuid4().hex[:8]}"
     indexing._set_index_job(job_id, status="queued", done=0, total=0)
-    _bg(indexing.reanalyze_all, job_id)
+    jobs.enqueue_reanalyze_all(job_id)
     return {"started": True, "job_id": job_id}
 
 
@@ -297,7 +298,8 @@ def reanalyze_one(filename: str, user: dict = Depends(require_admin)):
     """Переанализ одного документа — фоново; статус (reanalyzing -> indexed/error)
     виден в списке документов рядом с этим документом."""
     ensure_doc_access(user, filename)
-    _bg(indexing.reanalyze_document, filename)
+    import jobs
+    jobs.enqueue_reanalyze_document(filename)
     return {"started": True}
 
 

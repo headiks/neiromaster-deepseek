@@ -389,10 +389,10 @@ def requeue_stranded() -> int:
         if not fp.exists():
             print(f"[docpipe] возобновление пропущено — нет оригинала: {r['filename']}")
             continue
-        _ensure_worker()
+        import jobs
         existing = store.find_by_hash(_hash_bytes(fp.read_bytes()))
         job_id = store.create_job(existing["id"] if existing else None, r["filename"], total=0)
-        _queue.put({"filepath": str(fp), "filename": r["filename"], "job_id": job_id, "force": True})
+        jobs.enqueue_ingest(str(fp), r["filename"], job_id, force=True)
         n += 1
     if n:
         print(f"[docpipe] возвращено в очередь разметки зависших документов: {n}")
@@ -400,12 +400,13 @@ def requeue_stranded() -> int:
 
 
 def enqueue(filepath, filename: str = None) -> str:
-    """Ставит документ в очередь разметки. Возвращает job_id; прогресс — store.get_job(job_id)."""
-    _ensure_worker()
+    """Ставит документ в очередь разметки. Возвращает job_id; прогресс — store.get_job(job_id).
+    Задачу выполняет worker-процесс (RQ) при Redis, иначе daemon-поток-фолбэк."""
+    import jobs
     filepath = Path(filepath)
     data = filepath.read_bytes()
     existing = store.find_by_hash(_hash_bytes(data))
     doc_id = existing["id"] if existing else None
     job_id = store.create_job(doc_id, filename or filepath.name, total=0)
-    _queue.put({"filepath": str(filepath), "filename": filename or filepath.name, "job_id": job_id})
+    jobs.enqueue_ingest(str(filepath), filename or filepath.name, job_id, force=False)
     return job_id

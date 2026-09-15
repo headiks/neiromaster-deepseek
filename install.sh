@@ -91,31 +91,67 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
-echo "==> [6/7] systemd-сервис для приложения (FastAPI)"
+# Redis — брокер очереди задач + общий стейт (прогресс/отмена, история диалогов,
+# глобальный лимитер DeepSeek). Нужен для высоконагруженного режима (несколько
+# web-воркеров + отдельные worker-процессы). Только на localhost.
+echo "==> Redis (очередь задач и общий стейт)"
+if ! $SUDO docker ps -a --format '{{.Names}}' | grep -qx neiromaster-redis; then
+    $SUDO docker run -d --name neiromaster-redis --restart unless-stopped \
+        -p 127.0.0.1:6379:6379 redis:7-alpine
+fi
+
+WEB_WORKERS="${NEIROMASTER_WEB_WORKERS:-4}"     # uvicorn-воркеры web-тира
+RQ_WORKERS="${NEIROMASTER_RQ_WORKERS:-4}"       # worker-процессы под тяжёлые задачи
+
+echo "==> [6/7] systemd-сервисы: web (gunicorn) + worker (RQ)"
 cat <<EOF | $SUDO tee /etc/systemd/system/rag-app.service > /dev/null
 [Unit]
-Description=RAG Assistant (FastAPI, DeepSeek)
+Description=RAG Assistant web (gunicorn+uvicorn, DeepSeek)
 After=network.target docker.service
 Requires=docker.service
 
 [Service]
 WorkingDirectory=$APP_DIR
-# DSN к PostgreSQL и ключ DeepSeek — из защищённого env-файла (chmod 600, в .gitignore)
+# DSN к PostgreSQL, ключ DeepSeek и REDIS_URL — из защищённого env-файла (chmod 600)
 EnvironmentFile=$ENV_FILE
-ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/app.py
+# Несколько uvicorn-воркеров = процессная многопоточность web-тира под нагрузку.
+ExecStart=$APP_DIR/.venv/bin/gunicorn app:app \\
+    -k uvicorn.workers.UvicornWorker -w $WEB_WORKERS \\
+    -b 0.0.0.0:8000 --timeout 120 --graceful-timeout 30
 Restart=on-failure
 User=$APP_USER
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Worker-тир: @-инстансы (rag-worker@1, rag-worker@2, …) — сколько нужно пропускной
+# способности под классификацию/генерацию. Все берут задачи из общей очереди Redis.
+cat <<EOF | $SUDO tee /etc/systemd/system/rag-worker@.service > /dev/null
+[Unit]
+Description=RAG Assistant worker %i (RQ: классификация/генерация)
+After=network.target docker.service rag-app.service
+Requires=docker.service
+
+[Service]
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/worker.py
+Restart=on-failure
+User=$APP_USER
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable rag-app
+for i in $(seq 1 "$RQ_WORKERS"); do $SUDO systemctl enable "rag-worker@$i"; done
 
 echo ""
 echo "==> [7/7] Проверка сервисов"
 $SUDO docker exec neiromaster-pg pg_isready -U neiromaster >/dev/null 2>&1 && echo "    Postgres OK (127.0.0.1:5432)" || echo "    Postgres НЕ отвечает"
-curl -s http://127.0.0.1:6333/collections >/dev/null && echo "    Qdrant  OK (127.0.0.1:6333)" || echo "    Qdrant  НЕ отвечает"
+$SUDO docker exec neiromaster-redis redis-cli ping 2>/dev/null | grep -qi pong && echo "    Redis   OK (127.0.0.1:6379)" || echo "    Redis   НЕ отвечает"
 if grep -q '^DEEPSEEK_API_KEY=.\+' "$ENV_FILE"; then
     echo "    DeepSeek ключ  задан"
 else
@@ -130,11 +166,15 @@ echo "2) Проиндексировать то, что уже лежит в data
 echo "    source .venv/bin/activate && python index_documents.py"
 echo "   (первый эмбеддинг скачает модель bge-m3 с HuggingFace — несколько ГБ, один раз)"
 echo ""
-echo "Запуск сайта как systemd-сервиса (не зависит от SSH-сессии, переживёт reboot):"
-echo "    sudo systemctl start rag-app"
-echo "    sudo systemctl status rag-app"
-echo "    sudo journalctl -u rag-app -f      # логи"
+echo "Запуск web + worker'ов как systemd-сервисов (переживут reboot и разрыв SSH):"
+echo "    sudo systemctl start rag-app                       # web (gunicorn, $WEB_WORKERS воркеров)"
+echo "    for i in \$(seq 1 $RQ_WORKERS); do sudo systemctl start rag-worker@\$i; done   # worker-тир"
+echo "    sudo systemctl status rag-app 'rag-worker@*'"
+echo "    sudo journalctl -u rag-app -u 'rag-worker@*' -f    # логи web+worker"
+echo ""
+echo "Масштаб под нагрузку: web-воркеры — NEIROMASTER_WEB_WORKERS, число worker-процессов —"
+echo "запуском новых rag-worker@N. Кап одновременных вызовов DeepSeek — DEEPSEEK_MAX_CONCURRENCY."
 echo ""
 echo "Если серверу нужен внешний доступ к сайту (порт 8000) — откройте его в firewall:"
 echo "    sudo ufw allow 8000/tcp"
-echo "Порт Qdrant (6333) остаётся на localhost — наружу открывать не нужно."
+echo "Порты Postgres (5432) и Redis (6379) остаются на localhost — наружу не открывать."

@@ -1,10 +1,13 @@
 """Чат с ассистентом: вопрос -> RAG -> ответ, память диалога, эскалация человеку."""
 
 from fastapi import APIRouter, Depends, HTTPException
+import json
 import time
 import uuid
 import threading
 from collections import OrderedDict, deque
+
+from redis_conn import get_redis
 
 from pydantic import BaseModel
 
@@ -58,13 +61,57 @@ def _evict_sessions_locked():
         _session_owner.pop(old_sid, None)
 
 
+# При нескольких web-воркерах история должна быть общей, иначе контекстные вопросы
+# («Где взять?») ломаются, когда следующий запрос попал в другой воркер. Есть Redis —
+# храним историю и владельца там (список + ключ, TTL сутки); нет — in-memory (как раньше).
+_HIST_TTL = 24 * 3600
+
+
+def _hist_key(sid: str) -> str:
+    return f"nmhist:{sid}"
+
+
+def _owner_key(sid: str) -> str:
+    return f"nmowner:{sid}"
+
+
+def get_session_owner(session_id: str) -> str | None:
+    r = get_redis()
+    if r is not None:
+        try:
+            return r.get(_owner_key(session_id))
+        except Exception:
+            pass
+    with _history_lock:
+        return _session_owner.get(session_id)
+
+
 def get_recent_history(session_id: str, n: int = HISTORY_WINDOW) -> list:
+    r = get_redis()
+    if r is not None:
+        try:
+            raw = r.lrange(_hist_key(session_id), -n, -1)
+            return [json.loads(x) for x in raw]
+        except Exception:
+            pass
     with _history_lock:
         hist = list(_conversation_history.get(session_id, []))
     return hist[-n:]
 
 
 def append_history(session_id: str, question: str, answer: str | None, owner_id: str | None = None):
+    r = get_redis()
+    if r is not None:
+        try:
+            k = _hist_key(session_id)
+            r.rpush(k, json.dumps({"question": question, "answer": answer}, ensure_ascii=False))
+            r.ltrim(k, -HISTORY_MAX_STORE, -1)
+            r.expire(k, _HIST_TTL)
+            if owner_id:
+                r.set(_owner_key(session_id), owner_id, nx=True, ex=_HIST_TTL)
+            return
+        except Exception:
+            pass
     with _history_lock:
         dq = _conversation_history.get(session_id)
         if dq is None:
@@ -161,10 +208,18 @@ def ask(req: QuestionRequest, user: dict = Depends(require_setup_done)):
 async def reset_session(session_id: str, user: dict = Depends(require_setup_done)):
     """Очищает историю диалога для сессии (например, при нажатии «Новый диалог» на сайте).
     Чужую сессию чистить нельзя — иначе любой вошедший стирал бы историю по чужому id."""
+    owner = get_session_owner(session_id)
+    if owner and owner != user["id"]:
+        raise HTTPException(status_code=403, detail="Это не ваша сессия")
+    r = get_redis()
+    if r is not None:
+        try:
+            existed = bool(r.exists(_hist_key(session_id)))
+            r.delete(_hist_key(session_id), _owner_key(session_id))
+            return {"session_id": session_id, "cleared": existed}
+        except Exception:
+            pass
     with _history_lock:
-        owner = _session_owner.get(session_id)
-        if owner and owner != user["id"]:
-            raise HTTPException(status_code=403, detail="Это не ваша сессия")
         existed = session_id in _conversation_history
         _conversation_history.pop(session_id, None)
         _session_owner.pop(session_id, None)

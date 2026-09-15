@@ -865,33 +865,25 @@ def save_schedule(plan_id: str, schedule: dict, profession: str = ""):
 
 
 # ---------- Фоновые задачи генерации ----------
-_jobs: dict = {}
-_jobs_lock = threading.Lock()
+# Состояние задач — в общем jobstore (Redis при мультипроцессе, иначе in-memory),
+# чтобы прогресс и «Отмена» были видны между web-воркером и worker-процессом.
+import jobstore
+
+_JOB_NS = "gen"
 
 
 def _set_job(job_id: str, **fields):
-    with _jobs_lock:
-        job = _jobs.setdefault(job_id, {"job_id": job_id})
-        job.update(fields)
-        return dict(job)
+    return jobstore.set_job(_JOB_NS, job_id, **fields)
 
 
 def get_job(job_id: str) -> Optional[dict]:
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        return dict(job) if job else None
+    return jobstore.get_job(_JOB_NS, job_id)
 
 
 def cancel_job(job_id: str) -> Optional[dict]:
-    """Помечает задачу генерации на отмену. Цикл run() увидит флаг перед следующим
+    """Помечает задачу генерации на отмену. Цикл увидит флаг перед следующим
     подэтапом, сохранит уже сгенерированное и завершится статусом 'cancelled'."""
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if not job:
-            return None
-        if job.get("status") in ("queued", "running"):
-            job["cancel"] = True
-        return dict(job)
+    return jobstore.cancel_job(_JOB_NS, job_id)
 
 
 def start_generation(plan: dict, positions: Optional[list] = None, include_general: bool = True,
@@ -920,89 +912,93 @@ def start_generation(plan: dict, positions: Optional[list] = None, include_gener
     _set_job(job_id, plan_id=plan["plan_id"], status="queued", total=len(items) * len(profs), done=0,
              current=None, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
              errors=0, skipped=0, error=None, professions=len(profs))
-
-    KEEP = ("generated", "edited")   # догенерация эти статусы не трогает
-
-    def run():
-        _set_job(job_id, status="running")
-        errors = skipped = done = 0
-        try:
-            topic_list = folders.list_folders(include_disabled=False)
-            docs_present = substages_with_docs()   # какие подэтапы обеспечены документом
-            stages_by_id = {s["id"]: s for s in plan.get("stages") or []}
-            for prof in profs:
-                generated = {}
-                # Догенерация: подхватываем уже сохранённое расписание, чтобы не потерять готовое.
-                existing = {}
-                if only_missing:
-                    sch = load_schedule(plan["plan_id"], prof) or {}
-                    existing = {m.get("message_id"): m for m in (sch.get("messages") or [])}
-                label = prof or "общее"
-                cancelled = False
-                # Готовые (при догенерации) оставляем как есть; остальное — параллельно.
-                to_gen = []
-                for item in items:
-                    mid = item["message_id"]
-                    prev = existing.get(mid)
-                    if only_missing and prev and prev.get("status") in KEEP:
-                        generated[mid] = {
-                            "content": prev.get("content", {}), "topics_used": prev.get("topics_used", []),
-                            "sources": prev.get("sources", []), "status": prev.get("status"),
-                            "error": prev.get("error"), "actions": prev.get("actions", []),
-                        }
-                        done += 1
-                        _set_job(job_id, done=done)
-                    else:
-                        to_gen.append(item)
-
-                def _gen_one(item):
-                    stage = stages_by_id.get(item["stage"]["id"], {})
-                    substage = next(
-                        (s for s in stage.get("substages", []) if s["id"] == item["substage"]["id"]),
-                        item["substage"],
-                    )
-                    return item["message_id"], item, generate_substage_message(
-                        stage, substage, topic_list, position=prof, docs_present=docs_present)
-
-                # Параллельная генерация подэтапов (каждый — вызов DeepSeek, I/O-bound).
-                _lock = threading.Lock()
-                with ThreadPoolExecutor(max_workers=_GEN_WORKERS) as ex:
-                    futs = [ex.submit(_gen_one, it) for it in to_gen]
-                    for fut in as_completed(futs):
-                        if (get_job(job_id) or {}).get("cancel"):
-                            cancelled = True
-                            ex.shutdown(wait=False, cancel_futures=True)
-                            break
-                        try:
-                            mid, item, payload = fut.result()
-                        except Exception as e:
-                            with _lock:
-                                errors += 1; done += 1
-                                _set_job(job_id, done=done, errors=errors)
-                            continue
-                        with _lock:
-                            if payload["status"] == "error":
-                                errors += 1
-                            elif payload["status"] == "skipped":
-                                skipped += 1
-                            generated[mid] = payload
-                            done += 1
-                            _set_job(job_id, done=done, errors=errors, skipped=skipped,
-                                     current=f"[{label}] {item['stage']['title']} → {item['substage']['title']}")
-                if generated:   # сохраняем, что успели (частичное расписание не теряем)
-                    save_schedule(plan["plan_id"], build_schedule(plan, generated, profession=prof), profession=prof)
-                if cancelled:
-                    _set_job(job_id, status="cancelled", current=None,
-                             finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-                    return
-            _set_job(job_id, status="done", current=None,
-                     finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-        except Exception as e:
-            _set_job(job_id, status="error", error=str(e),
-                     finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-
-    threading.Thread(target=run, name=f"generate-{job_id[:8]}", daemon=True).start()
+    # Тяжёлую генерацию — в очередь: worker-процесс (RQ) при Redis, иначе daemon-поток.
+    import jobs
+    jobs.enqueue_generation(job_id, plan, profs, only_missing)
     return get_job(job_id)
+
+
+def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool):
+    """Тело генерации плана — выполняется в worker-процессе (RQ) или потоке-фолбэке.
+    Прогресс и отмена идут через общий jobstore (_set_job/get_job)."""
+    items = resolve_schedule(plan)
+    KEEP = ("generated", "edited")   # догенерация эти статусы не трогает
+    _set_job(job_id, status="running")
+    errors = skipped = done = 0
+    try:
+        topic_list = folders.list_folders(include_disabled=False)
+        docs_present = substages_with_docs()   # какие подэтапы обеспечены документом
+        stages_by_id = {s["id"]: s for s in plan.get("stages") or []}
+        for prof in profs:
+            generated = {}
+            # Догенерация: подхватываем уже сохранённое расписание, чтобы не потерять готовое.
+            existing = {}
+            if only_missing:
+                sch = load_schedule(plan["plan_id"], prof) or {}
+                existing = {m.get("message_id"): m for m in (sch.get("messages") or [])}
+            label = prof or "общее"
+            cancelled = False
+            # Готовые (при догенерации) оставляем как есть; остальное — параллельно.
+            to_gen = []
+            for item in items:
+                mid = item["message_id"]
+                prev = existing.get(mid)
+                if only_missing and prev and prev.get("status") in KEEP:
+                    generated[mid] = {
+                        "content": prev.get("content", {}), "topics_used": prev.get("topics_used", []),
+                        "sources": prev.get("sources", []), "status": prev.get("status"),
+                        "error": prev.get("error"), "actions": prev.get("actions", []),
+                    }
+                    done += 1
+                    _set_job(job_id, done=done)
+                else:
+                    to_gen.append(item)
+
+            def _gen_one(item):
+                stage = stages_by_id.get(item["stage"]["id"], {})
+                substage = next(
+                    (s for s in stage.get("substages", []) if s["id"] == item["substage"]["id"]),
+                    item["substage"],
+                )
+                return item["message_id"], item, generate_substage_message(
+                    stage, substage, topic_list, position=prof, docs_present=docs_present)
+
+            # Параллельная генерация подэтапов (каждый — вызов DeepSeek, I/O-bound).
+            _lock = threading.Lock()
+            with ThreadPoolExecutor(max_workers=_GEN_WORKERS) as ex:
+                futs = [ex.submit(_gen_one, it) for it in to_gen]
+                for fut in as_completed(futs):
+                    if (get_job(job_id) or {}).get("cancel"):
+                        cancelled = True
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        break
+                    try:
+                        mid, item, payload = fut.result()
+                    except Exception as e:
+                        with _lock:
+                            errors += 1; done += 1
+                            _set_job(job_id, done=done, errors=errors)
+                        continue
+                    with _lock:
+                        if payload["status"] == "error":
+                            errors += 1
+                        elif payload["status"] == "skipped":
+                            skipped += 1
+                        generated[mid] = payload
+                        done += 1
+                        _set_job(job_id, done=done, errors=errors, skipped=skipped,
+                                 current=f"[{label}] {item['stage']['title']} → {item['substage']['title']}")
+            if generated:   # сохраняем, что успели (частичное расписание не теряем)
+                save_schedule(plan["plan_id"], build_schedule(plan, generated, profession=prof), profession=prof)
+            if cancelled:
+                _set_job(job_id, status="cancelled", current=None,
+                         finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                return
+        _set_job(job_id, status="done", current=None,
+                 finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    except Exception as e:
+        _set_job(job_id, status="error", error=str(e),
+                 finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
 
 
 def regenerate_one(plan: dict, message_id: str, profession: str = "") -> Optional[dict]:
