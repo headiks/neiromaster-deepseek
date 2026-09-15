@@ -661,8 +661,7 @@
                         </div>
                         <div class="doc-status">
                             <span class="status-badge ${doc.status}">${statusLabel(doc.status)}</span>
-                            ${doc.chunks ? `<button class="icon-btn" title="Подробнее" onclick="showDocDetail('${escapeHtml(doc.filename)}')"><i data-lucide="search"></i></button>` : ''}
-                            ${doc.chunks ? `<button class="icon-btn" title="Переанализировать" onclick="reanalyzeDoc('${escapeHtml(doc.filename)}')"><i data-lucide="refresh-cw"></i></button>` : ''}
+                            ${doc.chunks ? `<button class="icon-btn" title="Переклассифицировать" onclick="reanalyzeDoc('${escapeHtml(doc.filename)}')"><i data-lucide="refresh-cw"></i></button>` : ''}
                             ${(doc.status === 'error' || doc.status === 'uploaded') ? `<button class="icon-btn" title="Переиндексировать заново (полный разбор)" onclick="reprocessDoc('${escapeHtml(doc.filename)}')"><i data-lucide="rotate-ccw"></i></button>` : ''}
                             <button class="del-btn" onclick="deleteDocument('${escapeHtml(doc.filename)}')">Удалить</button>
                         </div>

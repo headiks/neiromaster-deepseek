@@ -119,19 +119,12 @@ async def upload_document(file: UploadFile = File(...), user: dict = Depends(req
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Индексация = docling-разбор + классификация/разметка docpipe (этапы/подэтапы,
+    # метки в Postgres). Векторов/эмбеддингов нет. Разметку делает сам index_document
+    # (через docpipe.ingest), отдельная постановка в очередь docpipe больше не нужна.
     job = indexing.enqueue_document(filepath)
     activitylog.log("action", user=user, path="/documents/upload",
                     detail={"action": "document_upload", "filename": file.filename})
-
-    # Точная разметка docpipe (двухпроходная LLM: карточка документа -> метки секций
-    # по этапам/подэтапам/профессиям). Идёт параллельно фолдер-индексации для RAG.
-    # Сбой разметки не должен блокировать загрузку/RAG.
-    try:
-        import docpipe
-        job["label_job_id"] = docpipe.enqueue(filepath, file.filename)
-    except Exception as e:
-        print(f"[DOCPIPE] не удалось поставить разметку в очередь: {e}")
-        job["label_job_id"] = None
     return JSONResponse(status_code=202, content=job)
 
 
@@ -257,10 +250,6 @@ def create_folder(req: FolderRequest):
         folder = folders.create_folder(req.name, req.description or "", req.criteria, req.stage_ids)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # Новая папка -> обновляем векторы и переанализируем потенциально релевантные
-    # документы, чтобы они попали в неё (ТЗ §8).
-    classify.sync_folder_vectors()
-    _bg(indexing.reanalyze_for_folder, folder["slug"])
     return folder
 
 
@@ -273,11 +262,6 @@ def update_folder(folder_id: str, req: FolderRequest):
         folder = folders.update_folder(folder_id, **req.model_dump(exclude_none=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    classify.sync_folder_vectors()
-    # Изменились критерии/название/этапы или папку включили — переанализируем документы.
-    fields = req.model_dump(exclude_none=True)
-    if any(k in fields for k in ("name", "description", "criteria", "stage_ids", "enabled")):
-        _bg(indexing.reanalyze_for_folder, folder["slug"])
     return folder
 
 
@@ -288,8 +272,6 @@ def delete_folder(folder_id: str):
     if folder is None:
         raise HTTPException(status_code=404, detail="Папка не найдена")
     folders.delete_folder(folder_id)
-    indexing.strip_folder_from_chunks(folder["slug"])   # снимаем метку с чанков, документы не трогаем
-    classify.sync_folder_vectors()
     return {"deleted": True}
 
 

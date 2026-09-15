@@ -25,7 +25,7 @@
         <button class="tab active" data-tab="staffing"><i data-lucide="table"></i> Штатное расписание</button>
         <button class="tab" data-tab="builder"><i data-lucide="calendar-cog"></i> Планы</button>
         <button class="tab" data-tab="plantexts"><i data-lucide="file-text"></i> Тексты плана</button>
-        <button class="tab" data-tab="docs"><i data-lucide="database"></i> Папки</button>
+        <button class="tab" data-tab="docs"><i data-lucide="database"></i> База знаний</button>
         <button class="tab" data-tab="questions"><i data-lucide="help-circle"></i> Вопросы <span id="questions-badge" class="q-badge" style="display:none;"></span></button>
         <button class="tab" data-tab="employees"><i data-lucide="users"></i> Аккаунты</button>
     </div>
@@ -82,10 +82,10 @@
         <div class="upload-progress" id="upload-progress"></div>
 
         <div class="section-head-row">
-            <h2 class="section-title"><i data-lucide="folders"></i> Смысловые папки</h2>
+            <h2 class="section-title"><i data-lucide="layers"></i> Этапы и подэтапы</h2>
             <button class="ghost-btn" onclick="loadStageBoard()"><i data-lucide="refresh-cw"></i> Обновить</button>
         </div>
-        <div class="stage-hint">Этапы и подэтапы адаптации и закреплённые за ними документы (привязка по смыслу). Данные из реестра метаданных.</div>
+        <div class="stage-hint">Этапы и подэтапы адаптации и закреплённые за ними документы. Привязка — по классификации DeepSeek (docpipe).</div>
         <div class="stage-board" id="stage-board"><div class="empty-hint">Загрузка структуры...</div></div>
 
         <div class="section-head-row" style="margin-top:34px;">
@@ -94,11 +94,10 @@
                 <a class="ghost-btn" href="/documents-table"><i data-lucide="table"></i> Реестр (таблица)</a>
                 <a class="ghost-btn" href="/doc-breakdown"><i data-lucide="scan-text"></i> Разбор (блоки/чанки/метки)</a>
                 <a class="ghost-btn" href="/s3"><i data-lucide="hard-drive"></i> S3-хранилище</a>
-                <button class="ghost-btn" onclick="assignChunksToStages()"><i data-lucide="layers"></i> Разложить чанки по этапам</button>
-                <button class="ghost-btn" id="btn-reanalyze-all" style="display:none;" onclick="reanalyzeAll()"><i data-lucide="refresh-cw"></i> Переанализировать всё</button>
+                <button class="ghost-btn" id="btn-reanalyze-all" style="display:none;" onclick="reanalyzeAll()"><i data-lucide="refresh-cw"></i> Переклассифицировать всё</button>
             </div>
         </div>
-        <div class="stage-hint">Ассистент сам относит документы к папкам по смыслу. Все документы попадают в общую базу «Все документы» независимо от папок.</div>
+        <div class="stage-hint">DeepSeek классифицирует документы по этапам и подэтапам при загрузке. Переклассификация — под изменившийся каталог.</div>
         <div id="doc-proc-summary" style="display:none;margin:6px 0 2px;font-size:13px;font-weight:600;"></div>
         <div id="doc-overall" class="doc-overall" style="display:none;">
             <div class="doc-overall-head"><span id="doc-overall-label"></span><span id="doc-overall-pct"></span></div>

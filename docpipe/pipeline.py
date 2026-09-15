@@ -13,9 +13,11 @@ import hashlib
 import threading
 from pathlib import Path
 
-from config import get_embedding
-from . import core, llm, store, professions, qdrant_sink
-from .qdrant_sink import EMBED_VERSION
+from . import core, llm, store, professions
+
+# Векторов больше нет (Qdrant удалён): метка версии эмбеддинга в чанках — заглушка,
+# поле сохраняется для совместимости схемы store.
+EMBED_VERSION = "none"
 
 # Блоки (секции) для разметки делаем КРУПНЕЕ, чем эмбеддинг-чанки indexing (512 токенов):
 # у docpipe своя задача — дать LLM связный кусок с контекстом, а не короткий вектор.
@@ -157,49 +159,20 @@ def ingest(filepath, filename: str = None, plan_version: str = "current",
         store.replace_chunks(sid, result["chunks"], EMBED_VERSION)
         store.update_job(job_id, done=seq + 1, last_seq=seq)
 
-    qdrant_sink.sink_document(doc_id)                  # запись производной копии в Qdrant
     store.update_job(job_id, status="done")
     return {"doc_id": doc_id, "status": "indexed", "sections": len(sections), "content_hash": content_hash}
 
 
 def reindex() -> dict:
-    """Пересборка Qdrant из PG без обращений к LLM."""
-    return qdrant_sink.reindex()
+    """Векторов больше нет (Qdrant удалён) — пересобирать нечего."""
+    return {"status": "disabled", "reason": "no vector store"}
 
 
 def relabel_candidates(substage_id: str, plan_version: str = "current", top_k: int = 3000) -> dict:
-    """При добавлении подэтапа: отбираем топ-K секций по косинусу к его описанию и
-    переразмечаем только их (правки человека не трогаем)."""
-    structure = store.get_plan_structure(plan_version)
-    positions = professions.staffing_positions()
-    # описание подэтапа как запрос
-    query = substage_id
-    for st in structure.get("stages") or []:
-        for sub in st.get("substages") or []:
-            if sub.get("id") == substage_id:
-                query = f"{st.get('title')} {sub.get('title')} {sub.get('description') or sub.get('brief') or ''}"
-    vec = get_embedding(query)
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
-    hits = qdrant_sink.client.query_points(
-        qdrant_sink.COLLECTION, query=vec, limit=top_k, with_payload=True,
-        query_filter=Filter(must=[FieldCondition(key="level", match=MatchValue(value="section"))]),
-    ).points
-    section_ids = {(h.payload or {}).get("section_id") for h in hits if (h.payload or {}).get("section_id")}
-
-    touched = 0
-    for sid in section_ids:
-        if store.get_label_source(sid) == "human":
-            continue                                   # правки человека не трогаем
-        sec = _section_row(sid)
-        if not sec:
-            continue
-        result = _label_section(sec, set(), _doc_card_for(sec["doc_id"]), structure, positions)
-        store.upsert_section_label(sid, result["section"], source="llm", plan_version=plan_version,
-                                   model=llm.MODEL, prompt_version=llm.PROMPT_VERSION)
-        store.replace_chunks(sid, result["chunks"], EMBED_VERSION)
-        touched += 1
-    qdrant_sink.reindex()
-    return {"relabeled": touched, "candidates": len(section_ids)}
+    """Раньше отбирал секции по вектору подэтапа для переразметки. Без Qdrant векторного
+    отбора нет — переразметка всей базы делается через полную переклассификацию
+    (reanalyze_all). Оставлено как no-op для совместимости API."""
+    return {"relabeled": 0, "candidates": 0, "note": "vector reselect disabled"}
 
 
 def _section_row(section_id: str):
@@ -216,7 +189,8 @@ def _doc_card_for(doc_id: str) -> dict:
 
 
 def retrieve(substage_id: str, position: str = "", plan_version: str = "current", limit: int = 8) -> list:
-    return qdrant_sink.retrieve(substage_id, position, plan_version, limit)
+    """Совместимость: раньше — векторный rerank; теперь — чанки подэтапа из Postgres."""
+    return chunks_for_substage(substage_id, plan_version, limit)
 
 
 def chunks_for_substage(substage_id: str, plan_version: str = "current", limit: int = 40) -> list:
@@ -254,13 +228,8 @@ def document_breakdown(filename: str, plan_version: str = "current") -> dict:
                                   "description": sub.get("description", ""), "stage_id": st["id"]}
 
     rows = [dict(r) for r in store.sections_with_labels(doc["id"])]
-    # чанки каждой секции (с их PG-id для сопоставления с векторами Qdrant)
     sec_chunks = {r["section_id"]: store.list_chunks(r["section_id"]) for r in rows}
-    all_chunk_ids = [c["id"] for chs in sec_chunks.values() for c in chs]
-    try:
-        sec_vecs, chunk_vecs = qdrant_sink.document_vectors(list(sec_chunks.keys()), all_chunk_ids)
-    except Exception:
-        sec_vecs, chunk_vecs = {}, {}   # Qdrant недоступен — разбор без векторов
+    sec_vecs, chunk_vecs = {}, {}   # векторов больше нет (Qdrant удалён)
 
     sections = []
     for r in rows:

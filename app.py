@@ -62,13 +62,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             # Не роняем старт из-за сида — логируем, папки можно засеять `python seed_knowledge.py`.
             print(f"ОШИБКА посева стартовой структуры: {e}")
-    # Векторная коллекция — до первого /ask или загрузки файла
-    indexing.create_collection(recreate=False)
-    # Векторы папок для классификации документов (перестраиваются при изменениях).
-    try:
-        classify.sync_folder_vectors()
-    except Exception as e:
-        print(f"Предупреждение: векторы папок не построены (Qdrant/эмбеддер?): {e}")
+    # Векторов и эмбеддингов больше нет: классификация и поиск — через DeepSeek/docpipe.
+    # Qdrant не поднимаем, bge-m3 не грузим.
 
     # Пайплайн разметки docpipe: таблицы PG + версия плана из каталога адаптации.
     try:

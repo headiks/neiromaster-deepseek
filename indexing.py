@@ -264,182 +264,22 @@ def sectionize_by_clause(text: str) -> list:
 
 # ---------- Индексация одного документа ----------
 def index_document(filepath: Path) -> dict:
-    """
-    Приём документа по новой модели (ТЗ §9–14):
-      сохранённый оригинал (плоско в data/documents/) -> docling
-      -> краткое смысловое описание (classify.summarize_document)
-      -> проверка похожих документов (дубли/противоречия)
-      -> смысловой чанкинг с перекрытием
-      -> мульти-лейбл классификация чанков в СУЩЕСТВУЮЩИЕ папки (по вектору)
-      -> Qdrant (payload: folders[], stage_ids[], summary, uploaded_at)
-    Файл физически один; папка — логическая метка. Все документы попадают в общую
-    базу «Все документы» (вся коллекция) независимо от того, отнеслись ли они к папкам.
-    """
+    """Приём документа: docling-разбор + классификация/разметка через docpipe
+    (этапы/подэтапы, метки в Postgres). Векторов/эмбеддингов нет — ретрив идёт по
+    LLM-меткам docpipe (см. rag.route_substages, planner через docpipe.chunks_for_substage)."""
     filename = filepath.name
     _update_registry(filename, status="processing", error=None,
-                     phase="Разбор документа (docling)", progress=5)
-
-    # Троттлинг записи прогресса в реестр (файл под блокировкой) — не чаще раза в секунду,
-    # финальные значения (progress=100 / смена фазы) пишем всегда.
-    _last_prog = [0.0]
-    def _report(progress: int, phase: str | None = None):
-        now = time.time()
-        if phase is None and progress < 100 and now - _last_prog[0] < 1.0:
-            return
-        _last_prog[0] = now
-        fields = {"progress": int(progress)}
-        if phase is not None:
-            fields["phase"] = phase
-        _update_registry(filename, **fields)
-
+                     phase="Классификация (docpipe)", progress=10)
     try:
+        import docpipe
         start = time.time()
-        doc = convert_document(filepath)
-        markdown_text = doc.export_to_markdown()
-
-        # ---- Краткое смысловое описание документа ----
-        _report(20, "Классификация документа")
-        summary = classify.summarize_document(markdown_text, filename)
-        uploaded_at = _load_registry().get(filename, {}).get("uploaded_at") or time.strftime("%Y-%m-%dT%H:%M:%S")
-
-        # ---- Похожие/связанные документы (дубли, обновления, противоречия) ----
-        similar = classify.find_similar_docs(summary, exclude=filename)
-
-        # ---- Классификация документа в существующие папки (гибрид A/B/C, ТЗ 1.4) ----
-        doc_cls = classify.classify_document(summary, full_text=markdown_text)
-        doc_folders = doc_cls["folders"]
-
-        # ---- Профессия документа (приоритет поиска по должности сотрудника) ----
-        doc_profession = classify.detect_profession(summary)
-
-        # ---- Markdown-версия (плоско) ----
-        md_path = CONVERTED_DIR / f"{filepath.stem}.md"
-        md_path.write_text(markdown_text, encoding="utf-8")
-
-        _update_registry(
-            filename,
-            summary=summary,
-            folders=doc_folders,
-            stage_ids=doc_cls["stage_ids"],
-            folder_reasons=doc_cls.get("decisions") or [],   # «почему» (метод/score/критерий) — ТЗ 1.4
-            profession=doc_profession,
-            similar=similar,
-            path=filename,
-            markdown_path=md_path.name,
-        )
-
-        # ---- Чанкинг ----
-        _report(30, "Разбиение на фрагменты")
-        chunks = list(chunker.chunk(doc))
-        if not chunks:
-            _update_registry(filename, status="error", error="Не удалось выделить ни одного чанка")
-            return {"filename": filename, "status": "error", "error": "Нет чанков"}
-
-        delete_document_vectors(filename)  # переиндексация: сносим прежние чанки
-
-        _report(35, "Индексация фрагментов (эмбеддинги)")
-        total_chunks = len(chunks)
-        src_hash = file_hash(filepath)
-        points = []
-        seg_index = 0
-        section_counters = {}   # раздел -> счётчик чанков внутри него (для стабильного ID)
-        prev_tail = ""   # хвост предыдущего чанка для перекрытия контекста (ТЗ §12)
-        for chunk_i, chunk in enumerate(chunks):
-            _report(35 + int(60 * chunk_i / total_chunks))   # 35..95 по ходу эмбеддингов
-            headings = list(getattr(chunk.meta, "headings", None) or [])
-            page_no = extract_page_no(chunk)
-
-            if headings:
-                section = " / ".join(h for h in headings if h)
-                segments = [(section, chunk.text, chunker.contextualize(chunk=chunk))]
-            else:
-                segments = [
-                    (label, seg, f"[{label}] {seg}" if label else seg)
-                    for label, seg in sectionize_by_clause(chunk.text)
-                ]
-
-            for section, raw_text, base_text in segments:
-                if not (raw_text or "").strip():
-                    continue
-                # Перекрытие: добавляем хвост предыдущего сегмента в текст для эмбеддинга.
-                text_for_embedding = (f"…{prev_tail}\n\n{base_text}" if prev_tail else base_text)
-                prev_tail = raw_text[-OVERLAP_CHARS:]
-
-                vec = get_embedding(text_for_embedding)
-                # Смысловая нагрузка: служебный мусор (заголовок, номер страницы, оглавление)
-                # не распределяем по папкам/профессии — только содержательные чанки.
-                meaningful = classify.is_meaningful(base_text)
-                chunk_cls = classify.classify_chunk(base_text, doc_folders, vec=vec) if meaningful \
-                    else {"folders": [], "stage_ids": []}
-                # Профессия — ПЕР-ЧАНК с учётом контекста всего документа (не одна метка на документ).
-                chunk_prof = classify.chunk_profession(base_text, summary, doc_profession) if meaningful else ""
-                # Этапы/подэтапы каталога — сразу при индексации: чанк готов для персональных
-                # планов без отдельной ручной раскладки. Мусор (meaningful=False) не тегируем.
-                plan_stages, plan_substages = _stage_tags(vec) if meaningful else ([], [])
-                # Стабильный ID = hash(файл + путь раздела + № внутри раздела). Не зависит от
-                # содержимого файла -> переиндексация даёт ТЕ ЖЕ ID (обновление, не дубли). ТЗ 1.3.
-                sec_n = section_counters.get(section, 0)
-                section_counters[section] = sec_n + 1
-                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{filename}|{section}|{sec_n}"))
-                points.append(PointStruct(
-                    id=point_id,
-                    vector=vec,
-                    payload={
-                        "text": text_for_embedding,
-                        "raw_text": raw_text,
-                        "source": filename,
-                        "meaningful": meaningful,
-                        "folders": chunk_cls["folders"],
-                        "stage_ids": chunk_cls["stage_ids"],
-                        "plan_stages": plan_stages,
-                        "plan_substages": plan_substages,
-                        "profession": chunk_prof,
-                        "section": section,
-                        "section_seq": sec_n,
-                        "headings": headings,
-                        "page": page_no,
-                        "chunk_index": seg_index,
-                        "length": len(text_for_embedding),
-                        "doc_summary": summary,
-                        "uploaded_at": uploaded_at,
-                    }
-                ))
-                seg_index += 1
-
-        if not points:
-            _update_registry(filename, status="error", error="После сегментации не осталось текста")
-            return {"filename": filename, "status": "error", "error": "Нет чанков"}
-
-        for start_i in range(0, len(points), UPSERT_BATCH):
-            client.upsert(collection_name=COLLECTION_NAME, points=points[start_i:start_i + UPSERT_BATCH])
-
-        # Вектор краткого описания — для будущего поиска похожих документов.
-        classify.upsert_doc_summary(filename, summary, uploaded_at)
-
-        elapsed = time.time() - start
-        _update_registry(
-            filename, status="indexed", chunks=len(points), error=None,
-            indexed_in_seconds=round(elapsed, 2), folders=doc_folders,
-            stage_ids=doc_cls["stage_ids"], profession=doc_profession,
-            path=filename, markdown_path=md_path.name,
-            phase=None, progress=100,
-        )
-        # Единый реестр метаданных в PostgreSQL (дедуп по хэшу + экран «этапы↔документы»).
-        # Сбой реестра не должен ронять индексацию — документ уже в Qdrant и в registry.json.
-        try:
-            documents.record(
-                sha256=src_hash, filename=filename, summary=summary,
-                folders=doc_folders, stage_ids=doc_cls["stage_ids"],
-                size_bytes=filepath.stat().st_size, mime=filepath.suffix.lstrip(".").lower(),
-                uploaded_at=uploaded_at,
-            )
-        except Exception as e:
-            _log("DOCMETA", f"не удалось записать метаданные {filename} в БД: {e}")
-
-        _log("DONE", f"{filename}: {len(points)} чанков за {elapsed:.2f} сек, папки: {doc_folders or '(общая база)'}")
-        return {"filename": filename, "status": "indexed", "chunks": len(points),
-                "elapsed": elapsed, "folders": doc_folders, "similar": similar}
-
+        res = docpipe.ingest(str(filepath), filename=filename, force=True)
+        sections = res.get("sections") or 0
+        elapsed = round(time.time() - start, 2)
+        _update_registry(filename, status="indexed", chunks=sections, error=None,
+                         indexed_in_seconds=elapsed, phase=None, progress=100, path=filename)
+        _log("DONE", f"{filename}: классифицирован docpipe, секций {sections} за {elapsed} с")
+        return {"filename": filename, "status": "indexed", "chunks": sections, "elapsed": elapsed}
     except Exception as e:
         _update_registry(filename, status="error", error=str(e))
         return {"filename": filename, "status": "error", "error": str(e)}
@@ -644,14 +484,15 @@ def delete_document_vectors(filename: str):
 
 
 def delete_document(filename: str, remove_file: bool = True) -> bool:
-    """Полное удаление документа: чанки из Qdrant + вектор описания + оригинал +
-    markdown-версия + кэш + запись в реестре. Папки (логические категории) при этом
-    не трогаются — удаляется сам документ, а не категория."""
-    delete_document_vectors(filename)
+    """Полное удаление документа: разметка docpipe (Postgres) + оригинал + markdown +
+    кэш + запись в реестре. Векторов больше нет."""
     try:
-        classify.delete_doc_summary(filename)
+        from docpipe import store as _dp_store
+        doc = _dp_store.find_by_filename(filename)
+        if doc:
+            _dp_store.delete_document(doc["id"])   # каскадом снесёт секции/метки/чанки
     except Exception as e:
-        _log("DELETE", f"вектор описания {filename}: {e}")
+        _log("DELETE", f"docpipe-разметка {filename}: {e}")
 
     entry = docregistry.get(filename)
 
@@ -884,89 +725,23 @@ def index_all_documents(docs_dir: Optional[Path] = None, recreate: bool = False)
 
 # ---------- Повторный анализ (ТЗ §8, §26) ----------
 def reanalyze_document(filename: str) -> dict:
-    """Заново классифицирует уже проиндексированный документ БЕЗ повторного docling/
-    эмбеддинга: перечитывает чанки из Qdrant, гоняет их через classify.* и обновляет
-    метки папок/этапов. Дёшево — векторы уже есть.
-
-    Статус в реестре ведём по ходу дела (reanalyzing -> indexed/error), чтобы он был
-    виден в списке документов рядом с каждым документом при переанализе."""
+    """Переклассифицировать документ заново через docpipe (docling + LLM-разметка
+    этапов/подэтапов, метки в Postgres). Векторов больше нет. Статус ведём по ходу
+    (reanalyzing -> indexed/error), чтобы был виден в списке документов."""
     _update_registry(filename, status="reanalyzing", error=None,
-                     phase="Переанализ (классификация фрагментов)", progress=5)
+                     phase="Переклассификация (docpipe)", progress=10)
     try:
-        entry = docregistry.get(filename)
-        try:
-            total_pts = client.count(collection_name=COLLECTION_NAME,
-                count_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=filename))])).count or 0
-        except Exception:
-            total_pts = 0
-        _last_prog = [0.0]
-        def _report(progress: int):
-            now = time.time()
-            if progress < 100 and now - _last_prog[0] < 1.0:
-                return
-            _last_prog[0] = now
-            _update_registry(filename, progress=int(progress))
-        summary = (entry or {}).get("summary") or ""
-        # Полный текст для сигнатур уровня A (если сохранённый markdown доступен).
-        full_text = ""
-        mdp = (entry or {}).get("markdown_path")
-        if mdp:
-            mdf = CONVERTED_DIR / mdp
-            if mdf.exists():
-                full_text = mdf.read_text(encoding="utf-8", errors="ignore")
-        doc_cls = (classify.classify_document(summary, full_text=full_text) if summary
-                   else {"folders": [], "stage_ids": [], "decisions": []})
-        doc_folders = doc_cls["folders"]
-        # Профессия документа стабильна (задана при индексации) — берём из реестра, не гоняем
-        # LLM. Переанализ реагирует на изменения ПАПОК/каталога, а не на профессию.
-        doc_profession = (entry or {}).get("profession") or ""
-
-        offset = None
-        touched = 0
-        while True:
-            batch, offset = client.scroll(
-                collection_name=COLLECTION_NAME,
-                scroll_filter=Filter(must=[FieldCondition(key="source", match=MatchValue(value=filename))]),
-                limit=256, with_payload=True, with_vectors=True, offset=offset,
-            )
-            for p in batch:
-                base_text = (p.payload or {}).get("raw_text") or (p.payload or {}).get("text") or ""
-                meaningful = classify.is_meaningful(base_text)
-                if meaningful:
-                    cc = classify.classify_chunk(base_text, doc_folders, vec=p.vector, confirm=False)
-                    # Профессия чанка проставлена при индексации и стабильна — не гоняем LLM
-                    # на каждый чанк (это делало переанализ 78-чанкового документа многочасовым).
-                    # Переанализ реагирует на изменения папок/каталога — это векторные операции.
-                    chunk_prof = (p.payload or {}).get("profession") or ""
-                    plan_stages, plan_substages = _stage_tags(p.vector)
-                else:
-                    cc = {"folders": [], "stage_ids": []}
-                    chunk_prof = ""
-                    plan_stages, plan_substages = [], []
-                client.set_payload(collection_name=COLLECTION_NAME,
-                                   payload={"meaningful": meaningful, "folders": cc["folders"],
-                                            "stage_ids": cc["stage_ids"], "profession": chunk_prof,
-                                            "plan_stages": plan_stages, "plan_substages": plan_substages},
-                                   points=[p.id])
-                touched += 1
-                if total_pts:
-                    _report(5 + int(90 * touched / total_pts))   # 5..95
-            if offset is None:
-                break
-        _update_registry(filename, folders=doc_folders, stage_ids=doc_cls["stage_ids"],
-                         folder_reasons=doc_cls.get("decisions") or [],
-                         profession=doc_profession, status="indexed", error=None,
+        import docpipe
+        fp = DOCS_DIR / filename
+        if not fp.exists():
+            raise FileNotFoundError(f"нет оригинала {filename} в data/documents")
+        res = docpipe.ingest(str(fp), filename=filename, force=True)
+        sections = res.get("sections") or 0
+        _update_registry(filename, status="indexed", chunks=sections, error=None,
                          phase=None, progress=100)
-        # Синхронизируем доску «этапы ↔ документы» (document_meta) ЗДЕСЬ, а не в веб-слое:
-        # так и синхронный /reindex, и фоновый /reanalyze обновляют её одинаково — общие
-        # поля folders/stage_ids не разъезжаются между реестром и метаданными.
-        try:
-            documents.update_assignment_by_filename(filename, doc_folders, doc_cls["stage_ids"])
-        except Exception as e:
-            _log("REANALYZE", f"синхронизация метаданных {filename}: {e}")
-        return {"filename": filename, "folders": doc_folders, "chunks": touched}
+        return {"filename": filename, "sections": sections}
     except Exception as e:
-        _log("REANALYZE", f"{filename}: ошибка переанализа ({e})")
+        _log("REANALYZE", f"{filename}: ошибка переклассификации ({e})")
         _update_registry(filename, status="error", error=str(e))
         return {"filename": filename, "error": str(e)}
 

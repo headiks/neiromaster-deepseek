@@ -57,16 +57,9 @@ async def create_full_template(title: str | None = None):
     return plan
 
 
-@router.post("/chunks/assign-stages", dependencies=admin_only)
-def assign_chunks_to_stages():
-    """Материализация «папок этапов»: раскладывает все чанки по этапам каталога адаптации
-    (payload.plan_stages/plan_substages). Нужно после загрузки документов, чтобы генерация
-    плана брала чанки нужного этапа. Фоново; прогресс — GET /documents/jobs/{job_id}."""
-    import uuid
-    job_id = f"assign-{uuid.uuid4().hex[:8]}"
-    indexing._set_index_job(job_id, status="queued", done=0, total=0)
-    _bg(indexing.assign_chunks_to_stages, job_id)
-    return {"status": "started", "job_id": job_id}
+# Раскладка чанков по этапам была нужна для векторного поиска (payload.plan_stages).
+# Векторов больше нет: привязка к этапам/подэтапам идёт из LLM-разметки docpipe при
+# классификации документа. Отдельный шаг «разложить чанки» не нужен — эндпоинт удалён.
 
 
 @router.get("/plans/{plan_id}", dependencies=admin_only)
