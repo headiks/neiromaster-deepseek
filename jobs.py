@@ -68,6 +68,17 @@ def run_generation(job_id: str, plan: dict, profs: list, only_missing: bool):
     planner._run_generation(job_id, plan, profs, only_missing)
 
 
+def run_selftest(seconds: float = 2.0, tag: str = ""):
+    """Безвредная тест-задача для страницы проверки очередей: подождать и вернуть,
+    какой worker её выполнил. Не трогает БД/DeepSeek — только показывает, что цепочка
+    web -> Redis -> worker жива."""
+    import os
+    import time as _t
+    _t.sleep(max(0.0, min(float(seconds), 30.0)))
+    return {"ok": True, "tag": tag, "worker_pid": os.getpid(),
+            "finished_at": _t.strftime("%Y-%m-%d %H:%M:%S")}
+
+
 # ---------- Постановка в очередь (зовётся из web-воркера) ----------
 def enqueue_ingest(filepath: str, filename: str, job_id: str, force: bool = False) -> bool:
     return _run_or_thread(_queue(), run_ingest, filepath, filename, job_id, force)

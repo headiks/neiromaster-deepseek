@@ -94,3 +94,9 @@ async def notify_test_page(request: Request):
 async def doc_breakdown_page(request: Request):
     """Страница просмотра разбора документа (блоки → чанки, метки, обоснования)."""
     return page_for_admin(request, "doc_breakdown.html")
+
+
+@router.get("/queue-test", response_class=HTMLResponse)
+async def queue_test_page(request: Request):
+    """Диагностика очередей (RQ/Redis): статус воркеров, длина очереди, тест-задача."""
+    return page_for_admin(request, "queue_test.html")

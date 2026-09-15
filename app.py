@@ -38,9 +38,10 @@ import api_knowledge
 import api_plans
 import api_people
 import api_activity
+import api_queue
 
 ROUTERS = (api_pages, api_accounts, api_chat, api_documents,
-           api_knowledge, api_plans, api_people, api_activity)
+           api_knowledge, api_plans, api_people, api_activity, api_queue)
 
 
 @asynccontextmanager
