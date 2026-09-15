@@ -751,8 +751,8 @@ def reanalyze_all(job_id: str = None) -> dict:
 
     job_id — если задан, прогресс ПАКЕТА (документ i из N + имя текущего) пишется в стор
     задач, фронт тянет его через GET /documents/jobs/{job_id} и рисует общий прогресс.
-    Прогресс ВНУТРИ документа пишет reanalyze_document в реестр (бар на карточке)."""
-    classify.sync_folder_vectors()
+    Прогресс ВНУТРИ документа пишет reanalyze_document в реестр (бар на карточке).
+    Векторов/папок больше нет — переклассификация идёт через docpipe (LLM)."""
     todo = [d["filename"] for d in list_documents() if d.get("status") == "indexed"]
     total = len(todo)
     if job_id:
