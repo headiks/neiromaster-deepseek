@@ -11,6 +11,10 @@
     source .venv/bin/activate
     python refresh_plans.py
 """
+# ВАЖНО: config импортируется ПЕРВЫМ — при импорте он читает .env.production/.env в
+# окружение. Иначе db.py (импортируется из planner) зафиксирует DSN по умолчанию
+# (neiromaster:neiromaster) ещё до загрузки секретов и упрётся в ошибку пароля.
+import config  # noqa: F401  (нужен ради побочного эффекта: загрузка .env)
 import planner
 
 
