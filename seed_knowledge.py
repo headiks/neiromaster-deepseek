@@ -86,13 +86,6 @@ def main():
 
     print(_state())
 
-    try:
-        import classify
-        n = classify.sync_folder_vectors()
-        print(f"Векторы папок построены: {n}")
-    except Exception as e:
-        print(f"Векторы папок не построены ({e}); соберутся при рестарте/правке папки.")
-
 
 if __name__ == "__main__":
     main()

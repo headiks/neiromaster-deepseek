@@ -226,16 +226,14 @@ def test_to_chunks_by_sentences():
 
 
 # ---------- Матч профессий со штаткой ----------
-def test_professions_match_exact_and_embed():
-    emb = {"водитель": [1, 0], "Водитель автомобиля": [0.99, 0.14], "сварщик": [0, 1]}
+def test_professions_match_exact():
+    # Модель называет должности дословно из штатки -> точное сверение без регистра.
     matched, conf = professions.match_to_staffing(
-        ["водитель"], ["Водитель автомобиля", "Сварщик"],
-        embed=lambda t: emb.get(t, [0, 0]))
-    assert matched == ["Водитель автомобиля"] and conf and conf >= 0.7
-    # ниже порога -> отбрасываем
-    matched2, _ = professions.match_to_staffing(
-        ["бухгалтер"], ["Водитель автомобиля"], embed=lambda t: {"бухгалтер": [0, 1], "Водитель автомобиля": [1, 0]}.get(t, [0, 0]))
-    assert matched2 == []
+        ["водитель автомобиля"], ["Водитель автомобиля", "Сварщик"])
+    assert matched == ["Водитель автомобиля"] and conf == 1.0
+    # не из штатки -> отбрасываем
+    matched2, conf2 = professions.match_to_staffing(["бухгалтер"], ["Водитель автомобиля"])
+    assert matched2 == [] and conf2 is None
 
 
 # ---------- Идемпотентность по content_hash ----------

@@ -1,7 +1,7 @@
 docling>=2.0.0
-qdrant-client>=1.9.0
 requests>=2.31.0
-sentence-transformers>=3.0    # локальные эмбеддинги bge-m3 (LLM в облаке DeepSeek, эмбеддинги — локально)
+# Векторный стор (Qdrant) и эмбеддинги удалены: классификацию/поиск/генерацию делает
+# DeepSeek через docpipe (LLM-метки этапов/подэтапов в Postgres). GPU/веса не нужны.
 fastapi>=0.110.0
 uvicorn>=0.29.0
 gunicorn>=21.2           # прод-сервер: несколько uvicorn-воркеров (высокая нагрузка)

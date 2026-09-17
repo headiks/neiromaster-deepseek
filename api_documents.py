@@ -7,10 +7,8 @@ from fastapi.responses import JSONResponse
 import config
 import storage
 import indexing
-import docview
 import documents
 import folders
-import classify
 import users
 import activitylog
 from config import MAX_UPLOAD_BYTES
@@ -191,16 +189,6 @@ async def get_document_labels(filename: str, user: dict = Depends(require_admin)
     return data
 
 
-@router.get("/documents/{filename}/chunks")
-async def get_document_chunks(filename: str, user: dict = Depends(require_admin)):
-    """Подробности разбиения документа: чанки и вектор каждого чанка (для кнопки «Подробнее»)."""
-    ensure_doc_access(user, filename)
-    detail = docview.get_document_chunks(filename)
-    if detail is None:
-        raise HTTPException(status_code=404, detail="Чанки не найдены — документ ещё не проиндексирован")
-    return detail
-
-
 @router.delete("/documents/{filename}")
 async def remove_document(filename: str, user: dict = Depends(require_admin)):
     """Удаляет документ: векторы из Qdrant, оригинал из data/documents, кэш docling."""
@@ -238,10 +226,6 @@ async def get_folders():
     return {"folders": result}
 
 
-@router.get("/folders/{slug}/chunks", dependencies=admin_only)
-async def get_folder_chunks(slug: str):
-    """Чанки внутри смысловой папки — просмотр содержимого папки (текст + из какого документа)."""
-    return docview.get_folder_chunks(slug)
 
 
 @router.post("/folders", dependencies=admin_only)

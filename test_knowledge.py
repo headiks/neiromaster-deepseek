@@ -35,7 +35,6 @@ sys.modules.setdefault("requests", MagicMock())
 
 import folders
 import stages
-import classify
 
 
 def test_folder_slug_and_clean():
@@ -50,16 +49,6 @@ def test_stage_substages_normalize():
     assert subs[0] == {"id": "a", "title": "X"}
     assert subs[1]["title"] == "Y" and subs[1]["id"].startswith("s")
     assert len(subs) == 2
-
-
-def test_classify_pure():
-    bs = {"a": {"slug": "a", "stage_ids": ["s1", "s2"]},
-          "b": {"slug": "b", "stage_ids": ["s2", "s3"]}}
-    assert classify._stage_union(["a", "b"], bs) == ["s1", "s2", "s3"]
-    assert classify._stage_union([], bs) == []
-    assert classify.folder_tag_text(
-        {"name": "Охрана труда", "description": "d", "criteria": ["c1", "c2"]}
-    ) == "Охрана труда. d. c1. c2"
 
 
 def test_seed_integrity():

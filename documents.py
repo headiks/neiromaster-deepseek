@@ -267,81 +267,9 @@ def upsert(meta: dict) -> dict:
     return get(meta["sha256"])
 
 
-# ---------- Привязка к подэтапам (Вариант 1: по эмбеддингам) ----------
-_sub_vec_cache: dict = {}   # (substage_id, title) -> вектор; подэтапов немного
-
-
-def _substage_vectors(stage_ids: Optional[list] = None) -> list:
-    """
-    [{stage_id, substage_id, title, vec}] для подэтапов заданных этапов (или всех).
-    Вектор = эмбеддинг «Этап: … / Подэтап: …» (даём модели контекст этапа). Кэшируем.
-    """
-    import stages as stages_mod
-    from config import get_embedding
-    out = []
-    for st in stages_mod.list_stages():
-        if stage_ids is not None and st["id"] not in stage_ids:
-            continue
-        for sub in st.get("substages") or []:
-            key = (sub["id"], sub.get("title", ""))
-            vec = _sub_vec_cache.get(key)
-            if vec is None:
-                text = f"{st.get('title','')}. {sub.get('title','')}. {st.get('description','')}".strip()
-                vec = get_embedding(text)
-                _sub_vec_cache[key] = vec
-            out.append({"stage_id": st["id"], "substage_id": sub["id"],
-                        "title": sub.get("title", ""), "vec": vec})
-    return out
-
-
-def classify_full(summary: str, filename: str, sha256: str, *,
-                  size_bytes: Optional[int] = None, mime: Optional[str] = None,
-                  uploaded_by: Optional[str] = None, uploaded_at: Optional[str] = None) -> dict:
-    """
-    Полный расчёт метаданных документа для Варианта 1 и запись в БД:
-      1) папки + этапы — существующей логикой classify.classify_document (по смыслу);
-      2) подэтапы — НЕ здесь: их даёт LLM-разметка docpipe (доска/таблица);
-      3) ключевые слова — из описания; эмбеддинг документа — сохраняем.
-    Возвращает записанную строку.
-    """
-    from config import get_embedding
-    import classify
-
-    doc_cls = classify.classify_document(summary)          # {folders, stage_ids, candidates}
-    doc_vec = get_embedding(summary or filename)
-    # Привязка к подэтапам больше НЕ считается косинусом — её даёт LLM-разметка docpipe
-    # (см. docpipe.document_assignments, доска/таблица). Здесь оставляем пусто.
-    subs = []
-
-    return upsert({
-        "sha256": sha256, "filename": filename, "size_bytes": size_bytes, "mime": mime,
-        "status": "indexed", "uploaded_at": uploaded_at or time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "uploaded_by": uploaded_by, "summary": summary,
-        "keywords": extract_keywords(summary), "embedding": doc_vec,
-        "folders": doc_cls.get("folders") or [], "stage_ids": doc_cls.get("stage_ids") or [],
-        "substages": subs,
-    })
-
-
-def record(sha256: str, filename: str, summary: str, folders: list, stage_ids: list, *,
-           size_bytes: Optional[int] = None, mime: Optional[str] = None,
-           uploaded_at: Optional[str] = None, uploaded_by: Optional[str] = None) -> dict:
-    """
-    Запись документа из пайплайна индексации: папки и этапы уже посчитаны там
-    (не дублируем classify), здесь добавляем эмбеддинг документа и ключевые слова.
-    Привязку к подэтапам ведёт LLM-разметка docpipe, не косинус.
-    """
-    from config import get_embedding
-    doc_vec = get_embedding(summary or filename)
-    # Привязка к подэтапам больше НЕ считается косинусом — её даёт LLM-разметка docpipe
-    # (см. docpipe.document_assignments, доска/таблица). Здесь оставляем пусто.
-    subs = []
-    return upsert({
-        "sha256": sha256, "filename": filename, "size_bytes": size_bytes, "mime": mime,
-        "status": "indexed", "uploaded_at": uploaded_at or time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "uploaded_by": uploaded_by, "summary": summary,
-        "keywords": extract_keywords(summary), "embedding": doc_vec,
-        "folders": folders or [], "stage_ids": stage_ids or [], "substages": subs,
-    })
+# Привязка документов к подэтапам целиком отдана LLM-разметке docpipe (метки секций в
+# Postgres, доска строится из них). Прежние функции classify_full/record/_substage_vectors,
+# считавшие эмбеддинги документа и косинусную близость к подэтапам, удалены вместе с
+# векторным стором. Экран «этапы↔документы» собирает build_board() из docpipe-разметки.
 
 
