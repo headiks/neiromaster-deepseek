@@ -1,0 +1,26 @@
+/* SPA-специфичные добавки поверх перенесённых app.css/admin.css.
+   Центрирование карточек входа (в исходнике было инлайном body) и мелкие классы,
+   которых не было в общих стилях. */
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-card .hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -12px 0 16px;
+}
+
+.success {
+  border: 1px solid var(--color-accent) !important;
+  background: var(--color-accent-100) !important;
+  color: var(--color-accent-800) !important;
+  border-radius: 0 !important;
+  padding: 10px 12px;
+  font-size: 14px;
+  margin-bottom: 14px;
+}
