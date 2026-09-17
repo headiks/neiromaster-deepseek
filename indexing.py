@@ -1,22 +1,16 @@
 """
-Индексация документов по модели «человек управляет структурой, ИИ классифицирует
-внутрь неё» (см. ТЗ). Используется CLI (index_documents.py) и веб-приложением (app.py).
+Приём документов и реестр. Используется веб-приложением (app.py) и worker-процессами.
 
-Путь документа от загрузки до готовности к нейропоиску:
+Путь документа от загрузки до готовности:
 
-    оригинал (pdf/docx/...), хранится ОДИН раз плоско в data/documents/
-        -> DocumentConverter (docling): разбор макета, таблиц, заголовков
-           (DoclingDocument кэшируется как JSON в data/processed)
-        -> classify.summarize_document(): краткое смысловое описание документа
-        -> classify.find_similar_docs(): поиск похожих (дубли/противоречия)
-        -> classify.classify_document(): отнесение к СУЩЕСТВУЮЩИМ папкам (по смыслу)
-        -> HybridChunker + перекрытие: смысловые чанки с сохранением контекста границ
-        -> classify.classify_chunk(): мульти-лейбл метки папок и этапов у каждого чанка
-        -> эмбеддинг (bge-m3) -> Qdrant, payload: folders[], stage_ids[], summary, uploaded_at
+    оригинал (pdf/docx/...), хранится ОДИН раз плоско в data/documents/ (+ S3)
+        -> docpipe.ingest(): docling разбирает документ на секции, DeepSeek размечает
+           каждую секцию относительно плана адаптации (этапы/подэтапы/профессии) и
+           пишет метки в Postgres. Векторов и эмбеддингов нет — ретрив идёт по
+           LLM-меткам (см. rag.route_substages -> docpipe.blocks_for_substage).
 
-Папка — логическая метка, а не физическая директория: документ и его чанки могут
-относиться к нескольким папкам сразу, а все документы всегда попадают в общую базу
-«Все документы» (вся коллекция) независимо от папок.
+Здесь же: сохранение загруженного файла, фоновая очередь индексации, реестр
+документов и повторный анализ. Сам разбор/разметка живут в пакете docpipe.
 """
 
 from __future__ import annotations  # аннотации-строки: тип DoclingDocument не грузит docling при импорте
@@ -30,25 +24,16 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchValue, MatchAny,
-    PayloadSchemaType,
-)
-
 # docling НЕ импортируем на уровне модуля: он тяжёлый (модели разметки, ~ГБ RAM), а
 # нужен только при разборе документа, что теперь делают worker-процессы, а не web.
 # Ленивая загрузка ниже (_converter) — web-воркеры не платят за docling памятью/стартом.
 
-import classify
-import folders
 import documents
 import storage
 import docregistry
 from config import (
     DOCS_DIR, CONVERTED_DIR, CACHE_DIR,
     SUPPORTED_EXT, MAX_UPLOAD_BYTES,
-    QDRANT_HOST, QDRANT_PORT, EMBED_DIM, get_embedding, cosine,
 )
 
 # Символическое перекрытие между соседними чанками (ТЗ §12): в текст для эмбеддинга
@@ -57,14 +42,9 @@ from config import (
 # ponytail: фиксированная доля; при желании стратегию можно усложнить под модель/структуру.
 OVERLAP_CHARS = 240
 
-# ---------- Qdrant (основная коллекция чанков) ----------
-COLLECTION_NAME = "reglaments"
-
-MAX_TOKENS = 512     # бюджет токенов на чанк (под окно эмбеддинг-модели)
+MAX_TOKENS = 512     # бюджет токенов на чанк (окно чанкера docling)
 MERGE_PEERS = True   # склеивать соседние мелкие чанки одного уровня иерархии
-UPSERT_BATCH = 64
 
-client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 _converter = None
 _chunker = None
 _docling_lock = threading.Lock()
@@ -115,45 +95,6 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-# Поля payload, по которым идёт фильтрация при поиске. Без явного индекса Qdrant
-# фильтрует полным перебором точек — на 100-200 документах (тысячи чанков) это
-# заметно медленнее. Индекс делает отбор по теме/источнику почти бесплатным,
-# поэтому двухступенчатый поиск (сначала темы, потом чанки внутри них) масштабируется.
-PAYLOAD_INDEXES = {
-    "folders": PayloadSchemaType.KEYWORD,        # массив slug'ов — MatchAny фильтрует по папкам
-    "stage_ids": PayloadSchemaType.KEYWORD,      # массив id блоков знаний — приоритет по текущему этапу
-    "plan_stages": PayloadSchemaType.KEYWORD,    # id этапов каталога — «папки этапов» для генерации плана
-    "plan_substages": PayloadSchemaType.KEYWORD, # id подэтапов каталога — «папки подэтапов» (тоньше этапа)
-    "meaningful": PayloadSchemaType.BOOL,        # содержательный чанк (мусор в распределение не идёт)
-    "source": PayloadSchemaType.KEYWORD,
-    "section": PayloadSchemaType.KEYWORD,
-}
-
-
-def ensure_payload_indexes():
-    for field, schema in PAYLOAD_INDEXES.items():
-        try:
-            client.create_payload_index(COLLECTION_NAME, field_name=field, field_schema=schema)
-        except Exception as exc:
-            # Индекс уже есть — Qdrant отвечает ошибкой, это не фатально.
-            _log("INDEX", f"payload-индекс {field}: {exc}")
-
-
-def create_collection(recreate: bool = False):
-    collections = [c.name for c in client.get_collections().collections]
-    if COLLECTION_NAME in collections:
-        if recreate:
-            client.delete_collection(COLLECTION_NAME)
-        else:
-            ensure_payload_indexes()
-            classify.ensure_collections()
-            return
-    client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
-    )
-    ensure_payload_indexes()
-    classify.ensure_collections()
 
 
 def extract_page_no(chunk) -> Optional[int]:
@@ -318,202 +259,6 @@ def index_document(filepath: Path) -> dict:
         return {"filename": filename, "status": "error", "error": str(e)}
 
 
-def _query_chunks(vector, query_filter, limit: int):
-    """Векторный поиск чанков в Qdrant с (опциональным) фильтром payload. Возвращает
-    список точек (у каждой .score и .payload). query_filter=None — без фильтра."""
-    return client.query_points(
-        collection_name=COLLECTION_NAME, query=vector, limit=limit,
-        with_payload=True, query_filter=query_filter,
-    ).points
-
-
-def search_chunks(query_text: str, topic_slugs: Optional[list] = None, limit: int = 6,
-                  plan_stage: Optional[str] = None, plan_substage: Optional[str] = None,
-                  position: str = "") -> list:
-    """
-    Поиск чанков с сужением до тем (папок) и до ЭТАПА каталога адаптации (plan_stage —
-    «папка этапа»: чанки, разложенные по этому этапу). Из двух похожих чанков приоритет
-    получает тот, чья профессия ближе к должности плана (position) — механика приоритета
-    по должности из rag. Если по этапу ничего нет (чанки ещё не разложены) — фолбэк без него.
-    Возвращает [{"text", "source", "folders", "section", "page", "score"}].
-    """
-    vector = get_embedding(query_text)
-    # Только содержательные чанки (мусор — заголовки/номера страниц — в генерацию не идёт).
-    # meaningful != False ловит и старые чанки без поля (там его просто нет).
-    base = [FieldCondition(key="meaningful", match=MatchValue(value=True))]
-    if topic_slugs:
-        base.append(FieldCondition(key="folders", match=MatchAny(any=list(topic_slugs))))
-
-    fetch = max(limit * 3, limit) if position else limit
-    # Сужение сверху вниз: подэтап -> этап -> без сужения. Первый непустой уровень выигрывает,
-    # чтобы генерация работала и до полной раскладки «папок подэтапов».
-    scope_filters = []
-    if plan_substage:
-        scope_filters.append(FieldCondition(key="plan_substages", match=MatchValue(value=plan_substage)))
-    if plan_stage:
-        scope_filters.append(FieldCondition(key="plan_stages", match=MatchValue(value=plan_stage)))
-    hits = []
-    for scope in scope_filters:
-        hits = _query_chunks(vector, Filter(must=base + [scope]), fetch)
-        if hits:
-            break
-    if not hits:
-        hits = _query_chunks(vector, Filter(must=base) if base else None, fetch)
-    # Совсем пусто (старые чанки без meaningful) — ищем без базового фильтра.
-    if not hits:
-        hits = _query_chunks(vector, None, fetch)
-
-    if position:
-        from rag import profession_delta, _prof_vec
-        try:
-            pv = _prof_vec(position)
-        except Exception:
-            pv = None
-        hits = sorted(hits, key=lambda h: h.score + profession_delta((h.payload or {}).get("profession") or "", pv),
-                      reverse=True)[:limit]
-
-    return [{
-        "text": h.payload.get("text", ""),
-        "source": h.payload.get("source"),
-        "folders": h.payload.get("folders") or [],
-        "section": h.payload.get("section"),
-        "page": h.payload.get("page"),
-        "score": h.score,
-    } for h in hits]
-
-
-# ---------- Материализация «папок этапов»: раскладка чанков по этапам каталога ----------
-PLAN_STAGE_MATCH = 0.45   # нижняя граница ПОКАЗА кандидата в обосновании (не привязки)
-# bge-m3 на русском даёт высокий «пол» косинуса (0.45–0.55 у любых двух текстов),
-# поэтому по абсолютному порогу документ цепляется к десяткам подэтапов. Привязку делаем
-# ОТНОСИТЕЛЬНОЙ: держим только подэтапы, близкие к лучшему для этого чанка, и не ниже пола.
-PLAN_SUBSTAGE_FLOOR = 0.55   # ниже — точно шум (канцелярит/метаданные), не привязываем
-PLAN_SUBSTAGE_MARGIN = 0.04  # отставание от лучшего для чанка, дальше — обрыв
-PLAN_SUBSTAGE_TOPK = 2       # максимум подэтапов на чанк
-
-
-def _select_substages(scored):
-    """Из [(stage_id, sub_id, score)] оставляет только уверенные привязки чанка:
-    топ по score, в пределах MARGIN от лучшего и не ниже FLOOR, максимум TOPK.
-    Так один чанк ложится в 0–3 подэтапа, а не в половину каталога."""
-    scored = sorted(scored, key=lambda x: x[2], reverse=True)
-    if not scored or scored[0][2] < PLAN_SUBSTAGE_FLOOR:
-        return []
-    best = scored[0][2]
-    out = []
-    for stid, sub_id, sc in scored:
-        if sc < PLAN_SUBSTAGE_FLOOR or sc < best - PLAN_SUBSTAGE_MARGIN:
-            break
-        out.append((stid, sub_id, sc))
-        if len(out) >= PLAN_SUBSTAGE_TOPK:
-            break
-    return out
-
-
-_CATALOG_STAGE_VECS = None   # ((stage_id, vec)...), ((stage_id, sub_id, vec)...)
-
-
-def _catalog_stage_vectors():
-    """Эмбеддинги «запросов» этапов и подэтапов каталога. Кэш на время процесса.
-    ponytail: сброс кэша — рестарт или reset_stage_vectors(); каталог меняется редко."""
-    global _CATALOG_STAGE_VECS
-    if _CATALOG_STAGE_VECS is None:
-        import planner
-        cat = planner.load_catalog()
-        sv, subv = [], []
-        for st in cat.get("stages") or []:
-            sv.append((st["id"], get_embedding(planner.catalog_stage_query(st))))
-            for sub in st.get("substage_templates") or []:
-                subv.append((st["id"], sub["id"], get_embedding(planner.catalog_substage_query(st, sub))))
-        _CATALOG_STAGE_VECS = (sv, subv)
-    return _CATALOG_STAGE_VECS
-
-
-def reset_stage_vectors():
-    global _CATALOG_STAGE_VECS
-    _CATALOG_STAGE_VECS = None
-
-
-def _stage_tags(vec):
-    """(plan_stages[], plan_substages[]) для вектора чанка. Привязка ОТНОСИТЕЛЬНАЯ
-    (см. _select_substages): 0–3 самых близких подэтапа, а не всё подряд по порогу.
-    Этапы выводятся из принятых подэтапов."""
-    _, subv = _catalog_stage_vectors()
-    scored = [(stid, sub_id, cosine(vec, sv)) for stid, sub_id, sv in subv]
-    accepted = _select_substages(scored)
-    subs = sorted({s for _, s, _ in accepted})
-    stages = sorted({st for st, _, _ in accepted})
-    return stages, subs
-
-
-def assign_chunks_to_stages(job_id: str = None) -> dict:
-    """Раскладывает содержательные чанки по этапам И подэтапам каталога адаптации: каждому
-    чанку проставляет payload.plan_stages и payload.plan_substages — id, смыслу которых он
-    соответствует (по близости к «запросу этапа/подэтапа»). Мульти-лейбл: один чанк (и один
-    документ) может относиться к нескольким этапам и подэтапам. Служебный мусор (meaningful=False)
-    пропускается — метки пустые. Дёшево: эмбеддинги этапов/подэтапов + косинус к готовым векторам.
-
-    job_id — если задан, прогресс пишется в стор задач (_index_jobs), фронт тянет его
-    через GET /documents/jobs/{job_id} и рисует живой прогресс-бар."""
-    try:
-        reset_stage_vectors()                   # каталог мог измениться — пересчитать векторы
-        stage_vecs, sub_vecs = _catalog_stage_vectors()
-        for field in ("plan_stages", "plan_substages"):
-            try:
-                client.create_payload_index(COLLECTION_NAME, field_name=field,
-                                             field_schema=PayloadSchemaType.KEYWORD)
-            except Exception:
-                pass
-
-        try:
-            total = client.count(collection_name=COLLECTION_NAME).count or 0
-        except Exception:
-            total = 0
-        if job_id:
-            _set_index_job(job_id, status="processing", done=0, total=total,
-                           started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-
-        offset = None
-        touched = 0
-        while True:
-            batch, offset = client.scroll(
-                collection_name=COLLECTION_NAME, limit=256,
-                with_payload=True, with_vectors=True, offset=offset,
-            )
-            for p in batch:
-                if (p.payload or {}).get("meaningful") is False:   # мусор не распределяем
-                    client.set_payload(collection_name=COLLECTION_NAME,
-                                       payload={"plan_stages": [], "plan_substages": []}, points=[p.id])
-                    touched += 1
-                    continue
-                plan_stages, plan_substages = _stage_tags(p.vector)
-                client.set_payload(collection_name=COLLECTION_NAME,
-                                   payload={"plan_stages": plan_stages, "plan_substages": plan_substages},
-                                   points=[p.id])
-                touched += 1
-            if job_id:
-                _set_index_job(job_id, done=touched, total=max(total, touched))
-            if offset is None:
-                break
-        _log("STAGES", f"чанков разложено: {touched} (этапов {len(stage_vecs)}, подэтапов {len(sub_vecs)})")
-        result = {"chunks": touched, "stages": len(stage_vecs), "substages": len(sub_vecs)}
-        if job_id:
-            _set_index_job(job_id, status="done", done=touched, total=touched, result=result)
-        return result
-    except Exception as e:
-        if job_id:
-            _set_index_job(job_id, status="error", error=str(e))
-        raise
-
-
-def delete_document_vectors(filename: str):
-    """Удаляет из Qdrant все точки данного документа (по полю source)."""
-    client.delete(
-        collection_name=COLLECTION_NAME,
-        points_selector=Filter(
-            must=[FieldCondition(key="source", match=MatchValue(value=filename))]
-        ),
-    )
 
 
 def delete_document(filename: str, remove_file: bool = True) -> bool:
@@ -552,27 +297,6 @@ def delete_document(filename: str, remove_file: bool = True) -> bool:
     except Exception as e:
         _log("DELETE", f"метаданные {filename} из БД: {e}")
     return existed
-
-
-# ---------- Снятие метки папки с чанков (при удалении/выключении папки) ----------
-def strip_folder_from_chunks(slug: str):
-    """Убирает slug папки из payload всех чанков и из реестра документов. Документы
-    остаются в общей базе — удаляется только принадлежность к категории (ТЗ §3)."""
-    offset = None
-    while True:
-        batch, offset = client.scroll(
-            collection_name=COLLECTION_NAME,
-            scroll_filter=Filter(must=[FieldCondition(key="folders", match=MatchValue(value=slug))]),
-            limit=256, with_payload=True, offset=offset,
-        )
-        for p in batch:
-            payload = p.payload or {}
-            new_folders = [s for s in (payload.get("folders") or []) if s != slug]
-            client.set_payload(collection_name=COLLECTION_NAME, payload={"folders": new_folders},
-                               points=[p.id])
-        if offset is None:
-            break
-    docregistry.strip_folder(slug)
 
 
 # ---------- Приём загруженного файла (используется веб-ручкой upload) ----------
@@ -695,50 +419,6 @@ def requeue_stranded() -> int:
     return n
 
 
-# ---------- Массовая индексация папки (используется CLI-скриптом) ----------
-def index_all_documents(docs_dir: Optional[Path] = None, recreate: bool = False):
-    docs_dir = Path(docs_dir) if docs_dir else DOCS_DIR
-    create_collection(recreate=recreate)
-
-    # Рекурсивно: файлы и в корне (ещё не отсортированы), и уже разложенные по
-    # подпапкам тем (вручную или из прошлого запуска) — index_document() сам
-    # разбирается, что с чем делать.
-    files = sorted(
-        p for p in docs_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in SUPPORTED_EXT and CACHE_DIR not in p.parents
-    )
-    if not files:
-        print(f"В папке {docs_dir} не найдено поддерживаемых файлов ({', '.join(sorted(SUPPORTED_EXT))}).")
-        return
-
-    # Векторы папок должны существовать до классификации чанков.
-    try:
-        classify.sync_folder_vectors()
-    except Exception as e:
-        print(f"Предупреждение: не удалось построить векторы папок: {e}")
-
-    for filepath in files:
-        if filepath.name not in _load_registry():
-            _update_registry(
-                filepath.name,
-                size_bytes=filepath.stat().st_size,
-                uploaded_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-                status="uploaded",
-                chunks=0,
-                folders=[],
-                stage_ids=[],
-                error=None,
-            )
-        print(f"\n=== Обработка файла: {filepath.name} ===")
-        result = index_document(filepath)
-        if result["status"] == "indexed":
-            print(f"  Загружено {result['chunks']} чанков за {result['elapsed']:.2f} сек -> папки: {result['folders'] or '(общая база)'}")
-        else:
-            print(f"  ОШИБКА: {result.get('error')}")
-
-    print("\nИндексация завершена.")
-
-
 # ---------- Повторный анализ (ТЗ §8, §26) ----------
 def reanalyze_document(filename: str) -> dict:
     """Переклассифицировать документ заново через docpipe (docling + LLM-разметка
@@ -788,30 +468,3 @@ def reanalyze_all(job_id: str = None) -> dict:
         if job_id:
             _set_index_job(job_id, status="error", error=str(e))
         raise
-
-
-def reanalyze_for_folder(slug: str) -> dict:
-    """Точечный реанализ под изменившуюся/новую папку (ТЗ §8): по вектору папки
-    находим потенциально релевантные документы и переанализируем только их, а не всю базу."""
-    classify.sync_folder_vectors()
-    folder = folders.get_by_slug(slug)
-    if not folder:
-        return {"reanalyzed": 0, "documents": []}
-    # Кандидаты — документы, чьи чанки близки к вектору папки (+ уже помеченные ею).
-    candidates = set()
-    try:
-        vec = get_embedding(classify.folder_tag_text(folder))
-        hits = client.query_points(collection_name=COLLECTION_NAME, query=vec,
-                                   limit=200, with_payload=True).points
-        for h in hits:
-            src = (h.payload or {}).get("source")
-            if src:
-                candidates.add(src)
-    except Exception as e:
-        _log("REANALYZE", f"векторный отбор кандидатов не удался ({e}) — беру все документы")
-        candidates = {d["filename"] for d in list_documents() if d.get("status") == "indexed"}
-    for doc in list_documents():
-        if slug in (doc.get("folders") or []):
-            candidates.add(doc["filename"])
-    results = [reanalyze_document(name) for name in sorted(candidates)]
-    return {"reanalyzed": len(results), "documents": results}

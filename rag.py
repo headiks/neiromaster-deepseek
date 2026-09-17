@@ -1,18 +1,11 @@
 import os
-import requests
 import json
 import re
 import time
 
-import classify
-import folders
 import deepseek
-from config import (QDRANT_HOST, QDRANT_PORT,
-                    get_embedding as _get_embedding, cosine)
 
 # ---------- Конфигурация ----------
-QDRANT = f"http://{QDRANT_HOST}:{QDRANT_PORT}"   # хост/порт Qdrant — из config (единый источник)
-COLLECTION = "reglaments"
 # Онлайн-модель DeepSeek заменила оффлайн qwen. «Малая» и «большая» роли теперь —
 # одна и та же быстрая модель deepseek-chat (переопределяется через env).
 SMALL_MODEL = os.environ.get("DEEPSEEK_SMALL_MODEL", "") or None
@@ -33,7 +26,6 @@ DEBUG = os.environ.get("NEIROMASTER_DEBUG", "").lower() in ("1", "true", "yes")
 # Держим щедрый дефолт + переопределение через env; на таймаут — один повтор.
 SMALL_LLM_TIMEOUT = int(os.environ.get("NEIROMASTER_SMALL_LLM_TIMEOUT", "120"))
 BIG_LLM_TIMEOUT = int(os.environ.get("NEIROMASTER_BIG_LLM_TIMEOUT", "300"))
-QDRANT_TIMEOUT = 15
 
 # ---------- Быстрый префильтр для общих фраз и ключевых слов ----------
 GREETING_PHRASES = [
@@ -90,15 +82,6 @@ def log(step, msg, data=None):
     print(f"[{step}] {msg}")
     if data is not None:
         print(f"    {data}")
-
-def embed(text):
-    # Единая точка эмбеддинга — config.get_embedding (та же модель bge-m3 и таймаут,
-    # что и у индексации), чтобы не держать вторую копию модели/таймаута/эндпоинта.
-    log("EMBED", f"Запрос эмбеддинга для текста: {text[:50]}...")
-    start = time.time()
-    result = _get_embedding(text)
-    log("EMBED", f"Эмбеддинг получен за {time.time()-start:.3f} сек, размерность {len(result)}")
-    return result
 
 def small_llm(system, user, step_name="SMALL_LLM"):
     log(step_name, f"Запрос к малой модели:\n  system={system[:80]}...\n  user={user[:80]}...")
@@ -320,250 +303,8 @@ def route_question(question):
         log("CLASSIFY", f"Ошибка, возвращаем rag. Ошибка: {e}")
         return {"route": "rag", "risk_flag": False, "risk_type": None}
 
-# ---------- Поиск в Qdrant ----------
-def search(question, limit=6, folder_slugs=None):
-    """Векторный поиск чанков; при folder_slugs — только внутри этих папок (метка
-    payload.folders, массив). Без folder_slugs — по всей общей базе «Все документы»."""
-    vector = embed(question)
-    payload = {"query": vector, "limit": limit, "with_payload": True}
-    if folder_slugs:
-        payload["filter"] = {"must": [{"key": "folders", "match": {"any": folder_slugs}}]}
-    r = requests.post(f"{QDRANT}/collections/{COLLECTION}/points/query", json=payload, timeout=QDRANT_TIMEOUT)
-    r.raise_for_status()
-    points = r.json()["result"]["points"]
-    log("SEARCH", f"папки {folder_slugs or '(вся база)'}: {len(points)} кандидатов")
-    return points
-
-
-# ---------- Многоуровневый поиск (ТЗ §18–23) ----------
-RETRIEVE_MIN = 3   # достаточно кандидатов — не расширяем поиск на следующий уровень
-QUESTION_ROUTE_THRESHOLD = 0.35   # ниже — вопрос НЕ считаем отнесённым к папке (тогда общая база)
-
-# ---------- Приоритет по должности сотрудника ----------
-# Чанк несёт payload.profession — должность, для которой предназначен документ ("" = общий,
-# для всех). Из двух похожих чанков ближе к должности сотрудника должен оказаться тот, чья
-# профессия совпала с должностью. Совпадение — по СМЫСЛУ (эмбеддинг), а не по строке: «водитель»
-# на чанке ↔ «Водитель автомобиля (автосамосвал)» в профиле. Это приоритет, не жёсткий фильтр:
-# общие чанки (profession="") доступны всем без буста; чужая профессия — штраф, а не отсев.
-PROF_MATCH_SIM = 0.62      # cos >= — профессия чанка совпала с должностью сотрудника
-PROF_MISMATCH_SIM = 0.45   # cos <  — чанк явно для ДРУГОЙ профессии
-PROF_BONUS = 0.12
-PROF_PENALTY = 0.12
-
-_prof_vec_cache: dict = {}   # текст профессии -> эмбеддинг (профессий немного, кэш живёт в процессе)
-
-
-def _prof_vec(text: str):
-    v = _prof_vec_cache.get(text)
-    if v is None:
-        v = embed(text)
-        _prof_vec_cache[text] = v
-    return v
-
-
-def _prof_delta_from_sim(sim: float) -> float:
-    """Чистое правило приоритета по близости профессии чанка к должности сотрудника."""
-    if sim >= PROF_MATCH_SIM:
-        return PROF_BONUS
-    if sim < PROF_MISMATCH_SIM:
-        return -PROF_PENALTY
-    return 0.0
-
-
-def profession_delta(chunk_profession: str, position_vec) -> float:
-    """Поправка к скору чанка по совпадению его профессии с должностью сотрудника.
-    Пустая профессия (общий документ) или нет должности — 0 (нейтрально)."""
-    if not chunk_profession or position_vec is None:
-        return 0.0
-    try:
-        return _prof_delta_from_sim(cosine(position_vec, _prof_vec(chunk_profession)))
-    except Exception:
-        return 0.0
-
-
-def _folders_for_stages(stage_ids):
-    if not stage_ids:
-        return []
-    sset = set(stage_ids)
-    try:
-        return [f["slug"] for f in folders.list_folders(include_disabled=False)
-                if sset & set(f.get("stage_ids") or [])]
-    except Exception:
-        return []
-
-
-def _merge(dst, src):
-    seen = {d["id"] for d in dst}
-    for p in src:
-        if p["id"] not in seen:
-            seen.add(p["id"])
-            dst.append(p)
-    return dst
-
-
-def fetch_neighbors(source, chunk_index, span=1):
-    """Соседние чанки того же документа (L2, ТЗ §20): проверяем контекст вокруг
-    найденного фрагмента — исключения, ограничения, уточнения рядом."""
-    if chunk_index is None:
-        return []
-    payload = {"limit": 2 * span + 2, "with_payload": True, "filter": {"must": [
-        {"key": "source", "match": {"value": source}},
-        {"key": "chunk_index", "range": {"gte": chunk_index - span, "lte": chunk_index + span}},
-    ]}}
-    try:
-        r = requests.post(f"{QDRANT}/collections/{COLLECTION}/points/scroll", json=payload, timeout=QDRANT_TIMEOUT)
-        r.raise_for_status()
-        pts = r.json()["result"]["points"]
-        return [(p["payload"].get("raw_text") or p["payload"].get("text", "")) for p in pts]
-    except Exception:
-        return []
-
-
-HYDE_SYSTEM = """Напиши короткий правдоподобный фрагмент внутреннего регламента (2–4 предложения),
-который бы отвечал на вопрос. Перечисли вероятные пункты, состояния, термины по теме своими
-словами. Не выдумывай точные номера статей и приложений. Верни только текст, без пояснений."""
-
-
-def hyde_query(question):
-    """HyDE: гипотетический ответ модели. Вопрос вроде «перечень состояний» вектором далёк от
-    самого списка («отсутствие сознания, кровотечения…»), а придуманный ответ содержит те же
-    слова и подтягивает нужные чанки. Большая модель (14b): малая (3b) на КАПС-заголовках и
-    формальных формулировках выдаёт бред, из-за чего список не подтягивается. Сбой — исходный вопрос."""
-    try:
-        hyp = (big_llm(HYDE_SYSTEM, question) or "").strip()
-        return hyp or question
-    except Exception:
-        return question
-
-
-def cascade_search(question, current_stage_ids=None, limit=14, position=None):
-    """L1 релевантные папки -> L3 папки текущего этапа -> L4 вся база. Приоритет —
-    свежесть документа, текущий этап и должность сотрудника (буст, не жёсткий фильтр —
-    ТЗ §6, §24). position — должность сотрудника из профиля (приоритет по профессии чанка)."""
-    matched = classify.match_folders(question, top_k=3, threshold=QUESTION_ROUTE_THRESHOLD)
-    folder_slugs = [m[0] for m in matched]
-    cands = search(question, limit=limit, folder_slugs=folder_slugs or None)
-
-    # HyDE: добираем кандидатов по вектору гипотетического ответа — закрывает семантический
-    # разрыв «вопрос про перечень» vs «сам перечень пунктов» (списочные/перечислительные вопросы).
-    # Ищем по ВСЕЙ базе (без фильтра папок): нужный список часто лежит в другой папке/приложении,
-    # чем отсылочная фраза. Шум отсекает реранкер (14b) — низкая релевантность не попадёт в ответ.
-    hyp = hyde_query(question)
-    if hyp and hyp != question:
-        cands = _merge(cands, search(hyp, limit=limit, folder_slugs=None))
-
-    if len(cands) < RETRIEVE_MIN and current_stage_ids:
-        stage_folders = _folders_for_stages(current_stage_ids)
-        if stage_folders:
-            cands = _merge(cands, search(question, limit=limit, folder_slugs=stage_folders))
-
-    # К общей базе БЕЗ фильтра откатываемся только если вопрос не отнесён ни к одной папке
-    # (общий вопрос / тема вне известных папок). Если вопрос отнесён к папке — не подмешиваем
-    # чужие темы: лучше вернуть мало точных фрагментов, чем выдать оборудование сварщика
-    # пожарному. Недостачу закроет ответ «в базе не нашлось» (маршрут к человеку).
-    if len(cands) < RETRIEVE_MIN and not folder_slugs:
-        cands = _merge(cands, search(question, limit=limit, folder_slugs=None))
-
-    sset = set(current_stage_ids or [])
-    position_vec = None
-    if (position or "").strip():
-        try:
-            position_vec = _prof_vec(position.strip())
-        except Exception as e:
-            log("SEARCH", f"эмбеддинг должности не получен ({e}) — без приоритета по профессии")
-    for p in cands:
-        pl = p.get("payload") or {}
-        stage_boost = 0.05 if sset & set(pl.get("stage_ids") or []) else 0.0
-        prof = profession_delta(pl.get("profession") or "", position_vec)
-        p["_prof"] = prof                       # переносится в rerank как приоритет должности
-        p["_adj"] = p["score"] + stage_boost + prof
-        p["_when"] = pl.get("uploaded_at") or ""
-    cands.sort(key=lambda p: (p["_adj"], p["_when"]), reverse=True)
-    return cands[:max(limit, 6)]
-
-# ---------- Реранжирование (максимально усиленный промпт) ----------
-RERANK_SYSTEM = """
-Ты — эксперт по оценке релевантности текстовых фрагментов.
-
-Твоя задача: оценить, насколько данный фрагмент документа соответствует вопросу пользователя.
-Оценка должна быть числом от 0.0 до 1.0, где:
-- 1.0 — фрагмент полностью и точно отвечает на вопрос, содержит прямую информацию.
-- 0.8–0.9 — фрагмент очень релевантен, но не даёт полного ответа.
-- 0.5–0.7 — фрагмент частично релевантен, содержит смежную информацию.
-- 0.1–0.4 — слабая связь, упоминаются похожие термины, но не по делу.
-- 0.0 — совершенно не релевантно, нет никакой связи.
-
-Примеры:
-Вопрос: "Сколько дней отпуска положено?"
-Фрагмент: "Сотруднику положен отпуск 28 календарных дней в год."
-Оценка: 1.0
-
-Вопрос: "Что надеть для работы на высоте?"
-Фрагмент: "Работа на высоте разрешена только при наличии страховочного пояса и каски."
-Оценка: 1.0
-
-Вопрос: "Что надеть для работы на высоте?"
-Фрагмент: "Перед началом смены необходимо пройти инструктаж по технике безопасности."
-Оценка: 0.1
-
-Вопрос: "Сколько дней отпуска?"
-Фрагмент: "Работа на высоте требует страховки."
-Оценка: 0.0
-
-Теперь твоя очередь. Верни ТОЛЬКО JSON с одним полем "relevance", например: {"relevance": 0.95}.
-Никаких пояснений, только JSON.
-"""
-
-def rerank(question, candidates):
-    log("RERANK", f"Реранжирование {len(candidates)} кандидатов для вопроса: {question}")
-    scored = []
-    for idx, c in enumerate(candidates):
-        fragment = c["payload"]["text"]
-        prompt = f'Вопрос: "{question}"\nФрагмент: "{fragment}"'
-        # Реранкер — большая модель (qwen3:14b): 3B занижала релевантные фрагменты, из-за чего
-        # ответ уходил в эскалацию даже когда нужный документ в базе. 14B судит точнее.
-        raw = big_llm(RERANK_SYSTEM, prompt)
-        relevance = None
-        # Пытаемся извлечь JSON
-        try:
-            data = parse_json_response(raw)
-            if isinstance(data, dict) and "relevance" in data:
-                relevance = float(data["relevance"])
-        except Exception:
-            pass
-        # Если JSON не удался, ищем число через regex
-        if relevance is None:
-            # Берём первое число, похожее на оценку (0..1), а не просто первое в тексте:
-            # «1 из 10: 0.3» иначе давало бы 1.0. Только если такого нет — трактуем
-            # процент (>1..100) как долю.
-            numbers = [float(n) for n in re.findall(r'(\d+\.?\d*)', raw)]
-            in_range = next((v for v in numbers if 0.0 <= v <= 1.0), None)
-            if in_range is not None:
-                relevance = in_range
-            else:
-                pct = next((v for v in numbers if 1 < v <= 100), None)
-                relevance = pct / 100.0 if pct is not None else None
-        # Если всё равно None, используем векторный скор как fallback (но только если он > 0.5)
-        if relevance is None:
-            vector_score = c["score"]
-            if vector_score >= 0.5:
-                relevance = vector_score * 0.9  # чуть занижаем, чтобы не переоценить
-                log("RERANK", f"Fallback: использован векторный скор {vector_score} -> {relevance:.3f}")
-            else:
-                relevance = 0.0
-        # Приоритет по должности сотрудника: из двух одинаково релевантных фрагментов выше
-        # окажется тот, чья профессия совпала с должностью; фрагмент для чужой профессии —
-        # ниже. Общие фрагменты (profession="") нейтральны (_prof=0).
-        relevance = max(0.0, min(1.0, relevance + c.get("_prof", 0.0)))
-        scored.append({
-            "text": fragment,
-            "relevance": relevance,
-            "vector_score": c["score"],
-        })
-        log("RERANK", f"Кандидат {idx+1}: релевантность={relevance:.3f}, векторный скор={c['score']:.3f}, приоритет должности={c.get('_prof', 0.0):+.2f}")
-    sorted_scored = sorted(scored, key=lambda x: x["relevance"], reverse=True)
-    log("RERANK", f"Результат реранжирования (отсортировано): {[(s['relevance'], s['text'][:40]) for s in sorted_scored]}")
-    return sorted_scored
+# Поиск/реранжирование по векторам (Qdrant) удалены: ретрив вопроса идёт по LLM-меткам
+# подэтапов (route_substages -> fetch_by_substages, docpipe/Postgres). См. ниже.
 
 # ---------- Генерация ----------
 GENERATE_SYSTEM = """

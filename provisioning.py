@@ -35,42 +35,12 @@ from config import BASE_DIR
 SCHEMA_PREFIX = "cab_"
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,40}$")
 
-# Изоляция векторов кабинета: те же роли-коллекции, что и глобальные, но со своим
-# префиксом cab_<slug>__. Индексы payload дублируют боевые (indexing.PAYLOAD_INDEXES,
-# docpipe.qdrant_sink._INDEXES) — держим здесь списком, чтобы не тянуть тяжёлый импорт
-# docling из indexing на каждый provisioning. Роли-коллекции:
-#   reglaments   — чанки регламентов (RAG-поиск)
-#   docpipe      — производная копия секций/чанков разметки
-#   folder_tags  — векторы «тегов» смысловых папок
-#   doc_summaries— векторы кратких описаний документов
-_KW = "keyword"
-_BOOL = "bool"
-_COLLECTION_INDEXES = {
-    "reglaments":    {"folders": _KW, "stage_ids": _KW, "meaningful": _BOOL, "source": _KW, "section": _KW},
-    "docpipe":       {"doc_id": _KW, "level": _KW, "substages": _KW, "stages": _KW,
-                      "professions": _KW, "plan_version": _KW, "is_meaningful": _BOOL, "is_general": _BOOL},
-    "folder_tags":   {},
-    "doc_summaries": {},
-}
-
-
 def schema_for(slug: str) -> str:
     """slug кабинета -> имя схемы. Валидирует slug (латиница/цифры/подчёркивание)."""
     slug = (slug or "").strip().lower()
     if not _SLUG_RE.match(slug):
         raise ValueError("slug кабинета: латиница/цифры/подчёркивание, начинается с буквы или цифры")
     return f"{SCHEMA_PREFIX}{slug}"
-
-
-def qdrant_prefix(slug: str) -> str:
-    """Префикс Qdrant-коллекций кабинета: cab_<slug>__ (валидирует slug через schema_for)."""
-    return f"{schema_for(slug)}__"
-
-
-def cabinet_collections(slug: str) -> dict:
-    """{роль: имя коллекции кабинета}, напр. {'reglaments': 'cab_acme__reglaments', ...}."""
-    p = qdrant_prefix(slug)
-    return {base: f"{p}{base}" for base in _COLLECTION_INDEXES}
 
 
 def s3_prefix_for(slug: str) -> str:
@@ -124,38 +94,9 @@ def _provision_s3(slug: str) -> dict:
         return {"enabled": True, "prefix": prefix, "status": "error", "error": str(e)}
 
 
-def _provision_qdrant(slug: str) -> dict:
-    """Создать Qdrant-коллекции кабинета (свой префикс, вектор bge-m3 1024, cosine + индексы
-    payload). Идемпотентно: существующие не пересоздаём. Сбой не роняет создание кабинета."""
-    result = {}
-    try:
-        from qdrant_client import QdrantClient
-        from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
-        schema_map = {"keyword": PayloadSchemaType.KEYWORD, "bool": PayloadSchemaType.BOOL}
-        client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
-        existing = {c.name for c in client.get_collections().collections}
-        for base, name in cabinet_collections(slug).items():
-            if name in existing:
-                result[name] = "exists"
-                continue
-            client.create_collection(
-                name, vectors_config=VectorParams(size=config.EMBED_DIM, distance=Distance.COSINE))
-            for field, kind in _COLLECTION_INDEXES[base].items():
-                try:
-                    client.create_payload_index(name, field_name=field, field_schema=schema_map[kind])
-                except Exception:
-                    pass                                     # индекс уже есть — не фатально
-            result[name] = "created"
-        print(f"[qdrant] {slug}: " + ", ".join(f"{n}={s}" for n, s in result.items()))
-    except Exception as e:
-        print(f"[warn] Qdrant-коллекции для {slug}: {e}")
-        result["error"] = str(e)
-    return result
-
-
 def provision_cabinet(slug: str, company: str = "", seed_path=None) -> str:
-    """Создать кабинет: схема + все таблицы + посев + S3-префикс + Qdrant-коллекции + запись
-    в реестр. Возвращает имя схемы."""
+    """Создать кабинет: схема + все таблицы + посев + S3-префикс + запись в реестр.
+    Возвращает имя схемы. Векторного стора (Qdrant) нет — ретрив идёт по LLM-меткам в Postgres."""
     schema = schema_for(slug)
     ensure_registry()
     if cabinet_exists(schema):
@@ -192,8 +133,6 @@ def provision_cabinet(slug: str, company: str = "", seed_path=None) -> str:
 
     # 4) S3-префикс кабинета — изоляция оригиналов документов компании
     _provision_s3(slug)
-    # 5) Qdrant-коллекции кабинета — изоляция векторов компании
-    _provision_qdrant(slug)
 
     return schema
 
@@ -220,7 +159,7 @@ def _main(argv):
 
 
 def _selfcheck():
-    """Смоук-тест чистых хелперов имён (схема, S3-префикс, Qdrant-коллекции) без сети/БД."""
+    """Смоук-тест чистых хелперов имён (схема, S3-префикс) без сети/БД."""
     assert schema_for("acme") == "cab_acme"
     assert schema_for(" Acme ") == "cab_acme"
     for bad in ("", "1acme-x", "acme;drop", "переезд"):
@@ -233,18 +172,12 @@ def _selfcheck():
     config.S3_PREFIX = "documents/"
     assert s3_prefix_for("acme") == "cab_acme/documents/"
     assert s3_prefix_for(" Acme ") == "cab_acme/documents/"
-    # Qdrant-коллекции: свой префикс на каждую роль, изоляция между кабинетами
-    cols = cabinet_collections("acme")
-    assert cols["reglaments"] == "cab_acme__reglaments"
-    assert set(cols) == {"reglaments", "docpipe", "folder_tags", "doc_summaries"}
-    assert cabinet_collections("beta")["docpipe"] == "cab_beta__docpipe"
-    assert not (set(cabinet_collections("acme").values()) & set(cabinet_collections("beta").values()))
     for bad in ("", "acme;drop"):
         try:
             s3_prefix_for(bad); raise AssertionError("s3_prefix_for должен валидировать slug")
         except ValueError:
             pass
-    print("provisioning: schema_for / s3_prefix_for / cabinet_collections — OK")
+    print("provisioning: schema_for / s3_prefix_for — OK")
 
 
 if __name__ == "__main__":

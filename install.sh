@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Полная установка всего, что нужно для работы RAG-ассистента на Linux-сервере:
 #   - системные пакеты (сборка, рендеринг изображений для docling/OCR)
-#   - Python-окружение и зависимости проекта (fastapi, docling, qdrant-client,
-#     sentence-transformers для локальных эмбеддингов bge-m3...)
-#   - Qdrant (векторная БД) и PostgreSQL в Docker, автозапуск через --restart
+#   - Python-окружение и зависимости проекта (fastapi, docling, ...)
+#   - PostgreSQL и Redis в Docker, автозапуск через --restart
 #   - systemd-сервис приложения, чтобы всё переживало обрыв SSH и перезагрузку
 #
 # LLM — облачный DeepSeek (ключ DEEPSEEK_API_KEY в .env.production). Ollama и
-# локальные LLM больше НЕ нужны. Эмбеддинги — локальные (sentence-transformers,
-# bge-m3): модель скачивается с HuggingFace при первом эмбеддинге.
+# локальные LLM НЕ нужны. Векторного стора (Qdrant) и эмбеддингов тоже нет:
+# классификацию документов, поиск и генерацию делает DeepSeek через docpipe
+# (LLM-метки этапов/подэтапов в Postgres).
 #
 # Запускать из корня распакованного проекта (там, где лежит app.py):
 #   chmod +x install.sh && ./install.sh
@@ -42,23 +42,17 @@ echo "==> [3/7] Виртуальное окружение и Python-зависи
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-# --extra-index-url подтягивает CPU-сборку torch (нужна docling и sentence-transformers).
-# Если на сервере есть NVIDIA GPU с настроенным CUDA — уберите этот флаг: и разбор PDF,
-# и локальные эмбеддинги пойдут на GPU заметно быстрее.
+# --extra-index-url подтягивает CPU-сборку torch (её тянет docling для layout-моделей
+# разбора PDF). Если на сервере есть NVIDIA GPU с CUDA — уберите этот флаг, разбор PDF
+# пойдёт на GPU быстрее. Локальных эмбеддингов больше нет — веса моделей не качаем.
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
-echo "==> [4/7] Docker + Qdrant (векторная БД)"
+echo "==> [4/7] Docker (движок для PostgreSQL и Redis)"
 if ! command -v docker &> /dev/null; then
     curl -fsSL https://get.docker.com | $SUDO sh
 fi
-$SUDO docker rm -f qdrant 2>/dev/null || true
-# Порты привязаны только к 127.0.0.1: на сервере с публичным IP Qdrant
-# не должен быть доступен снаружи, приложение обращается к нему через localhost.
-# --restart unless-stopped — переживёт перезагрузку сервера.
-$SUDO docker run -d --name qdrant --restart unless-stopped \
-    -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 \
-    -v "$APP_DIR/qdrant_storage:/qdrant/storage" \
-    qdrant/qdrant
+# Векторного стора (Qdrant) больше нет — контейнер не поднимаем. Если он остался
+# от прошлой установки, его можно удалить: docker rm -f qdrant
 
 echo "==> [5/7] PostgreSQL (аккаунты и структурированные данные)"
 # Секреты приложения (DSN с паролем БД, ключ DeepSeek) — в отдельном env-файле,
@@ -166,9 +160,8 @@ echo ""
 echo "==> Готово."
 echo ""
 echo "1) Впишите ключ DeepSeek в $ENV_FILE (строка DEEPSEEK_API_KEY=...)."
-echo "2) Проиндексировать то, что уже лежит в data/documents (разово, вручную):"
-echo "    source .venv/bin/activate && python index_documents.py"
-echo "   (первый эмбеддинг скачает модель bge-m3 с HuggingFace — несколько ГБ, один раз)"
+echo "2) Документы загружаются и размечаются через веб-интерфейс (docling + DeepSeek,"
+echo "   метки этапов/подэтапов в Postgres). Отдельный шаг индексации не нужен."
 echo ""
 echo "Запуск web + worker'ов как systemd-сервисов (переживут reboot и разрыв SSH):"
 echo "    sudo systemctl start rag-app                       # web (gunicorn, $WEB_WORKERS воркеров)"

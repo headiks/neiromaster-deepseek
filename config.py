@@ -100,13 +100,10 @@ S3_ENABLED  = bool(S3_ENDPOINT and S3_BUCKET)
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 
-# Эмбеддинги — локальные (sentence-transformers, модель bge-m3, dim 1024). LLM
-# вынесен в облако (DeepSeek, см. deepseek.py), а эмбеддинги DeepSeek не отдаёт,
-# поэтому векторизация остаётся локальной. Модель та же (bge-m3), вектор той же
-# размерности 1024 — уже проиндексированная база Qdrant совместима, переиндексация
-# не нужна. Первую загрузку модели в память делает _embedder() лениво.
-EMBED_MODEL = os.environ.get("NEIROMASTER_EMBED_MODEL", "BAAI/bge-m3")
-EMBED_DIM = 1024
+# Эмбеддинги удалены целиком: классификацию документов (этапы/подэтапы/профессии) и
+# поиск/генерацию делает DeepSeek через docpipe (LLM-метки в Postgres, см. docpipe.pipeline
+# и rag.route_substages). Векторного стора (Qdrant) и внешнего /embeddings больше нет.
+# cosine() оставлен как чистая утилита (documents.assign_substages) — без внешних вызовов.
 
 
 def cosine(a, b) -> float:
@@ -123,26 +120,3 @@ def cosine(a, b) -> float:
     if na == 0 or nb == 0:
         return 0.0
     return sum(x * y for x, y in zip(a, b)) / (na * nb)
-
-
-_embedder = None
-_embed_lock = threading.Lock()
-
-
-def _get_embedder():
-    """Ленивая загрузка локальной модели bge-m3 (sentence-transformers). Тяжёлый
-    импорт и загрузка весов — только при первом эмбеддинге, один экземпляр на процесс."""
-    global _embedder
-    if _embedder is None:
-        with _embed_lock:
-            if _embedder is None:
-                from sentence_transformers import SentenceTransformer
-                _embedder = SentenceTransformer(EMBED_MODEL)
-    return _embedder
-
-
-def get_embedding(text: str):
-    """Локальный эмбеддинг bge-m3 (1024). Плотный вектор, как отдавала прежняя
-    оффлайн-модель, — база Qdrant остаётся совместимой."""
-    vec = _get_embedder().encode(text or "", normalize_embeddings=False)
-    return vec.tolist()
