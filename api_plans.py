@@ -159,6 +159,17 @@ async def generate_missing(plan_id: str, profession: str | None = None):
     return planner.start_generation(plan, positions=_plan_positions(plan_id), only_missing=True)
 
 
+@router.post("/plans/{plan_id}/refresh-catalog", dependencies=admin_only)
+async def refresh_plan_catalog(plan_id: str):
+    """Подтянуть в существующий план свежие описания этапов и брифы подэтапов из каталога
+    (по catalog_id). Обновляет только тексты; расписание, порядок, заголовки и ручные
+    подэтапы не трогает. После этого содержимое перегенерируется по кнопке «Догенерировать»."""
+    plan = planner.refresh_from_catalog(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="План не найден")
+    return {"plan_id": plan_id, "updated_fields": plan.pop("_refreshed", 0), "plan": plan}
+
+
 @router.post("/plans/{plan_id}/rollout")
 async def rollout_plan(plan_id: str, user: dict = Depends(require_admin)):
     """Применить готовый план ко всем сотрудникам: назначить план каждому сотруднику и

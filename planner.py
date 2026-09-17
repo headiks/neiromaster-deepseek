@@ -408,6 +408,48 @@ def duplicate_plan(plan_id: str, new_title: Optional[str] = None) -> Optional[di
     return save_plan(normalize_plan(src))
 
 
+def refresh_from_catalog(plan_id: str) -> Optional[dict]:
+    """Подтягивает в существующий план свежие описания этапов и брифы подэтапов из
+    каталога (по catalog_id). Обновляет ТОЛЬКО текстовые описания:
+      - у этапа: description;
+      - у подэтапа с source='template' и известным catalog_id: brief и tags.
+    Расписание (день/время), порядок, kind, заголовки и ручные подэтапы (source='manual')
+    не трогаются. Возвращает обновлённый план или None, если плана нет.
+    Нужно после расширения каталога: старые планы хранят свою копию текстов."""
+    plan = load_plan(plan_id)
+    if plan is None:
+        return None
+    cat = load_catalog()
+    stage_by_id = {st["id"]: st for st in (cat.get("stages") or [])}
+    sub_by_key = {f"{st['id']}.{sub['id']}": sub
+                  for st in (cat.get("stages") or [])
+                  for sub in (st.get("substage_templates") or [])}
+
+    changed = 0
+    for stage in plan.get("stages") or []:
+        cst = stage_by_id.get(stage.get("catalog_id"))
+        if cst and cst.get("description") and stage.get("description") != cst["description"]:
+            stage["description"] = cst["description"]
+            changed += 1
+        for sub in stage.get("substages") or []:
+            if sub.get("source") == "manual":
+                continue
+            ckey = f"{stage.get('catalog_id')}.{sub.get('catalog_id')}"
+            csub = sub_by_key.get(ckey)
+            if not csub:
+                continue
+            if csub.get("brief") and sub.get("brief") != csub["brief"]:
+                sub["brief"] = csub["brief"]
+                changed += 1
+            if csub.get("tags") and sub.get("tags") != csub["tags"]:
+                sub["tags"] = list(csub["tags"])
+
+    plan["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    save_plan(plan)
+    plan["_refreshed"] = changed
+    return plan
+
+
 def list_plans() -> list:
     rows = db.query(
         "SELECT p.data AS data, "
