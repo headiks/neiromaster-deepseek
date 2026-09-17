@@ -108,6 +108,21 @@ def _staffing_positions() -> list:
     return seen
 
 
+def _plan_positions(plan_id: str) -> list:
+    """Должности сотрудников, которым НАЗНАЧЕН этот план (users.plan_id = plan_id) — под них
+    и генерируем контент. Так план готовится под должности реальных адресатов, а не под всю
+    штатку. Если план ещё никому не назначен (генерация до раскатки) — фолбэк на всю штатку,
+    чтобы админ мог подготовить контент заранее."""
+    seen = []
+    for u in users.list_users():
+        if (u.get("plan_id") or "") != plan_id:
+            continue
+        pos = (u.get("position") or "").strip()
+        if pos and pos not in seen:
+            seen.append(pos)
+    return seen or _staffing_positions()
+
+
 @router.post("/plans/{plan_id}/generate", dependencies=admin_only)
 async def generate_plan(plan_id: str, profession: str | None = None):
     """
@@ -124,7 +139,7 @@ async def generate_plan(plan_id: str, profession: str | None = None):
         prof = profession.strip()
         return planner.start_generation(plan, positions=[prof] if prof else None,
                                         include_general=not prof)
-    return planner.start_generation(plan, positions=_staffing_positions())
+    return planner.start_generation(plan, positions=_plan_positions(plan_id))
 
 
 @router.post("/plans/{plan_id}/generate-missing", dependencies=admin_only)
@@ -141,7 +156,7 @@ async def generate_missing(plan_id: str, profession: str | None = None):
         prof = profession.strip()
         return planner.start_generation(plan, positions=[prof] if prof else None,
                                         include_general=not prof, only_missing=True)
-    return planner.start_generation(plan, positions=_staffing_positions(), only_missing=True)
+    return planner.start_generation(plan, positions=_plan_positions(plan_id), only_missing=True)
 
 
 @router.post("/plans/{plan_id}/rollout")
@@ -162,7 +177,8 @@ async def rollout_plan(plan_id: str, user: dict = Depends(require_admin)):
     # Материализуем расписание-инстансы сразу (у кого есть дата выхода), не дожидаясь
     # следующего тика планировщика — фоново, чтобы не держать ответ.
     _bg(messaging.ensure_all)
-    return planner.start_generation(plan, positions=_staffing_positions())
+    # План только что назначен всем сотрудникам — генерируем под их фактические должности.
+    return planner.start_generation(plan, positions=_plan_positions(plan_id))
 
 
 @router.get("/jobs/{job_id}", dependencies=admin_only)
