@@ -9,7 +9,8 @@ llm (DeepSeek, 2 прохода) · professions (матч со штаткой) �
 """
 
 from .schema import init_schema
-from .store import save_plan_version, get_plan_structure, get_job
+from .store import (save_plan_version, get_plan_structure, get_job,
+                    delete_by_filename, prune_orphans)
 from .pipeline import (ingest, reindex, relabel_candidates, retrieve, blocks_for_substage,
                        chunks_for_substage, enqueue, requeue_stranded, document_breakdown,
                        document_assignments)
@@ -19,7 +20,7 @@ __all__ = [
     "get_job", "ingest", "reindex", "relabel_candidates", "retrieve",
     "blocks_for_substage", "chunks_for_substage",
     "enqueue", "requeue_stranded", "document_breakdown",
-    "document_assignments",
+    "document_assignments", "delete_by_filename", "prune_orphans",
 ]
 
 

@@ -4,7 +4,6 @@
 Вынесено отдельно, чтобы indexing.py <-> topics.py не импортировали друг друга по кругу.
 """
 import os
-import math
 import threading
 from pathlib import Path
 
@@ -97,26 +96,6 @@ S3_REGION   = os.environ.get("NEIROMASTER_S3_REGION", "ru-1")
 S3_PREFIX   = os.environ.get("NEIROMASTER_S3_PREFIX", "documents/")  # префикс ключей в бакете
 S3_ENABLED  = bool(S3_ENDPOINT and S3_BUCKET)
 
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
-
-# Эмбеддинги удалены целиком: классификацию документов (этапы/подэтапы/профессии) и
-# поиск/генерацию делает DeepSeek через docpipe (LLM-метки в Postgres, см. docpipe.pipeline
-# и rag.route_substages). Векторного стора (Qdrant) и внешнего /embeddings больше нет.
-# cosine() оставлен как чистая утилита (documents.assign_substages) — без внешних вызовов.
-
-
-def cosine(a, b) -> float:
-    """
-    Косинусная близость двух векторов; 0.0 для пустых, разной длины и нулевых.
-    Единственная реализация на весь проект: ею меряют близость и документы
-    (привязка к подэтапам), и indexing (этапы чанка), и rag (профессии),
-    и docpipe (сопоставление со штаткой).
-    """
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return sum(x * y for x, y in zip(a, b)) / (na * nb)
+# Эмбеддинги и векторный стор (Qdrant) удалены целиком: классификацию документов
+# (этапы/подэтапы/профессии) и поиск/генерацию делает DeepSeek через docpipe (LLM-метки
+# в Postgres, см. docpipe.pipeline и rag.route_substages). Косинуса/векторов больше нет.

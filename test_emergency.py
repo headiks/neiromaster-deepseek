@@ -1,9 +1,9 @@
 """Проверка детерминированного ЧС-детектора (ТЗ 1.7) — чистые регэкспы, без сети.
-Тяжёлые зависимости rag.py (qdrant/requests/config/folders/classify) подменяются заглушками."""
+Тяжёлые зависимости rag.py (requests) подменяются заглушками."""
 
 import test_stubs
 
-test_stubs.install(embed_dim=8)   # qdrant/requests/config — заглушки, см. test_stubs.py
+test_stubs.install()   # requests/config — заглушки, см. test_stubs.py
 
 import rag
 

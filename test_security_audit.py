@@ -24,7 +24,7 @@ BASE = Path(__file__).resolve().parent
 
 # --------------------------------------------------------------------------
 # Инфраструктура: подменяем тяжёлые модули заглушками, чтобы импортировать
-# тестируемый код без установленных qdrant/psycopg/fastapi/docling.
+# тестируемый код без установленных psycopg/fastapi/docling. (Векторов/Qdrant нет.)
 # --------------------------------------------------------------------------
 def _stub(name: str):
     if name not in sys.modules:
@@ -33,8 +33,8 @@ def _stub(name: str):
 
 
 def _load_rag():
-    _stub("classify")                     # rag.py делает `import classify`, `import folders`
-    _stub("folders")
+    import test_stubs
+    test_stubs.install()                  # requests(.exceptions)/config — заглушки для deepseek
     return importlib.import_module("rag")
 
 

@@ -104,6 +104,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"Предупреждение: реестр документов не инициализирован: {e}")
 
+    # Самоочистка «призрачных» источников: docpipe-документы, которых уже нет в реестре
+    # базы знаний (удалены до появления каскадного удаления, при рассинхроне имени или
+    # ручной чисткой файлов), продолжали бы цитироваться в генерации/Q&A. Сносим их при
+    # старте, сверяясь с реестром (защита от вайпа при пустом реестре — внутри prune_orphans).
+    try:
+        import docpipe
+        import docregistry
+        # keep = имена из ОБОИХ источников правды реестра (файловый registry.json + таблица
+        # document_meta), чтобы не снести документ, известный одному, но не другому.
+        keep = {e.get("filename") for e in docregistry.list_documents()}
+        try:
+            keep |= {d.get("filename") for d in documents.list_meta()}
+        except Exception:
+            pass
+        removed = docpipe.prune_orphans(keep)
+        if removed:
+            print(f"docpipe: удалено осиротевших документов (нет в реестре): {removed}")
+    except Exception as e:
+        print(f"Предупреждение: очистка осиротевших docpipe-меток не выполнена: {e}")
+
     # Возврат зависших задач в очередь. При Redis это делает ОДИН worker-процесс
     # (worker.py, под общим замком) — иначе каждый web-воркер поставил бы дубли.
     # Без Redis (один процесс) возобновляем здесь, как раньше.

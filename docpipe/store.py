@@ -60,6 +60,33 @@ def delete_document(doc_id: str):
     db.execute("DELETE FROM documents WHERE id = %s", (doc_id,))   # каскадом снесёт секции/метки/чанки
 
 
+def delete_by_filename(filename: str) -> int:
+    """Удаляет ВСЕ документы docpipe с этим именем (не только первый) — каскадом снесёт
+    секции/метки/чанки. Возвращает число удалённых. Робастно к дублям и к рассинхрону
+    имени: удаление не зависит от того, найдётся ли ровно одна строка find_by_filename."""
+    rows = db.query("DELETE FROM documents WHERE filename = %s RETURNING id", (filename,), fetch="all")
+    return len(rows or [])
+
+
+def prune_orphans(keep_filenames) -> int:
+    """Сносит из docpipe документы, которых уже нет в реестре базы знаний. Их метки —
+    источник «призрачных» источников: генерация и Q&A читают ВСЕ размеченные блоки, а не
+    только по актуальным файлам, поэтому удалённый (но оставшийся в docpipe) документ
+    продолжает цитироваться. keep_filenames — актуальные имена файлов (реестр).
+    ЗАЩИТА: при пустом keep ничего не трогаем (сбой чтения реестра не должен вайпнуть базу).
+    Возвращает число удалённых документов."""
+    keep = {f for f in (keep_filenames or []) if f}
+    if not keep:
+        return 0
+    rows = db.query("SELECT DISTINCT filename FROM documents") or []
+    removed = 0
+    for r in rows:
+        fn = r.get("filename")
+        if fn and fn not in keep:
+            removed += delete_by_filename(fn)
+    return removed
+
+
 # ---------- Секции ----------
 def replace_sections(doc_id: str, sections: list) -> list:
     """sections — [{heading_path, text, page_from, page_to}]. Возвращает список id (по порядку)."""
