@@ -118,13 +118,25 @@ def ensure_all() -> int:
 
 # ---------- Доставка ----------
 def dispatch_due() -> int:
-    """Выпускает в кабинет все наступившие сообщения текущей схемы. Возвращает число."""
+    """Выпускает в кабинет все наступившие сообщения текущей схемы. Возвращает число.
+    После доставки шлёт push на устройства сотрудника (best-effort: сбой пуша не влияет
+    на инбокс — он источник правды)."""
     rows = db.query(
         "UPDATE scheduled_messages SET status = 'delivered', delivered_at = now(), "
-        "updated_at = now() WHERE status = 'pending' AND send_at <= now() RETURNING id",
+        "updated_at = now() WHERE status = 'pending' AND send_at <= now() "
+        "RETURNING id, employee_id, title, body",
         fetch="all",
     )
-    return len(rows or [])
+    rows = rows or []
+    if rows:
+        try:
+            import push
+            push.notify([{"user_id": r["employee_id"], "title": r["title"] or "НейроМастер",
+                          "body": r["body"] or "", "data": {"message_row_id": r["id"]}}
+                         for r in rows])
+        except Exception as e:
+            print(f"[scheduler] push не отправлен: {e}")
+    return len(rows)
 
 
 def _schemas():
@@ -187,6 +199,12 @@ def push_test(employee_id: str, title: str = "", body: str = "",
             "VALUES (%s, %s, %s, %s, %s, now(), 'delivered', now())",
             (row_id, employee_id, mid, title, body),
         )
+        try:                       # сразу доставлено -> шлём push (best-effort)
+            import push
+            push.notify([{"user_id": employee_id, "title": title, "body": body,
+                          "data": {"message_row_id": row_id}}])
+        except Exception as e:
+            print(f"[push_test] push не отправлен: {e}")
     else:
         db.execute(
             "INSERT INTO scheduled_messages "

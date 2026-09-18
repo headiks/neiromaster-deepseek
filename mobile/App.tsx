@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, SafeAreaVi
 import { StatusBar } from "expo-status-bar";
 import { C, S } from "./src/theme";
 import { getToken, me } from "./src/api";
+import { registerForPush, addNotificationListeners } from "./src/notifications";
 import Login from "./src/screens/Login";
 import Home from "./src/screens/Home";
 import Chat from "./src/screens/Chat";
@@ -31,6 +32,14 @@ export default function App() {
   useEffect(() => {
     boot();
   }, []);
+
+  // После входа: регистрируем устройство для пушей и слушаем тап (открывает Инбокс).
+  useEffect(() => {
+    if (!authed) return;
+    registerForPush();
+    const off = addNotificationListeners(() => setTab("home"));
+    return off;
+  }, [authed]);
 
   if (!ready) {
     return (

@@ -71,4 +71,11 @@ export const ask = (question: string, session_id?: string | null) =>
 export const changePassword = (old_password: string, new_password: string) =>
   request("/api/password", { method: "POST", body: JSON.stringify({ old_password, new_password }) });
 
+// Push: регистрация/отвязка токена устройства (Expo). Требуют авторизации (Bearer),
+// поэтому removePushToken вызывается ДО logout, пока токен сессии ещё жив.
+export const registerPushToken = (token: string, platform: string) =>
+  request("/api/my/push-token", { method: "POST", body: JSON.stringify({ token, platform }) });
+export const removePushToken = (token: string) =>
+  request("/api/my/push-token", { method: "DELETE", body: JSON.stringify({ token }) });
+
 export { getToken };

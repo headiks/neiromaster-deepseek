@@ -5,6 +5,7 @@ import {
 } from "react-native";
 import { C, S } from "../theme";
 import * as api from "../api";
+import { unregisterForPush } from "../notifications";
 
 export default function Account({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [me, setMe] = useState<any>(null);
@@ -40,6 +41,7 @@ export default function Account({ onLoggedOut }: { onLoggedOut: () => void }) {
   }
 
   async function doLogout() {
+    await unregisterForPush();   // отвязать токен, пока сессия ещё жива
     await api.logout();
     onLoggedOut();
   }

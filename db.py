@@ -181,6 +181,19 @@ SCHEMA_STATEMENTS = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_messages(status, send_at)",
     "CREATE INDEX IF NOT EXISTS idx_sched_emp ON scheduled_messages(employee_id, send_at)",
+    # Push-токены устройств сотрудника (Expo Push): одно устройство = один токен.
+    # По ним шлём пуш при доставке сообщения плана. token — PK (при переустановке
+    # приложения приходит новый; старый протухнет и будет вычищен по ответу Expo).
+    """
+    CREATE TABLE IF NOT EXISTS push_tokens (
+        token       TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL,
+        platform    TEXT NOT NULL DEFAULT '',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id)",
     # Журнал действий пользователей: вход/выход, просмотры страниц, клики, ключевые
     # действия. detail — произвольные подробности события (id элемента, имя файла и т.п.).
     """

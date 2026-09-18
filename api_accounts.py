@@ -159,3 +159,26 @@ async def api_test_notification(req: TestNotification, user: dict = Depends(requ
     """Ручная отправка тестового уведомления себе — для проверки очереди и всплывашек."""
     row_id = messaging.push_test(user["id"], (req.title or "").strip(), (req.body or "").strip())
     return {"ok": True, "id": row_id}
+
+
+class PushTokenRequest(BaseModel):
+    token: str
+    platform: str | None = None
+
+
+@router.post("/api/my/push-token", dependencies=logged_in)
+async def api_register_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
+    """Регистрация push-токена устройства (Expo) сотрудника — приложение шлёт после логина
+    и при смене токена. По нему приходят пуши о доставке сообщений плана."""
+    import push
+    if not push.register_token(user["id"], (req.token or "").strip(), (req.platform or "").strip()):
+        raise HTTPException(status_code=400, detail="Пустой токен")
+    return {"ok": True}
+
+
+@router.delete("/api/my/push-token", dependencies=logged_in)
+async def api_remove_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
+    """Отвязать push-токен (выход из аккаунта / отключение уведомлений на устройстве)."""
+    import push
+    push.remove_token((req.token or "").strip())
+    return {"ok": True}
