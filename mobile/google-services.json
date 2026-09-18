@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "359330465119",
+    "project_id": "ru-neiromaster-app",
+    "storage_bucket": "ru-neiromaster-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:359330465119:android:e18c7285e7769b1eae22ea",
+        "android_client_info": {
+          "package_name": "ru.neiromaster.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCt26vrapVJ-L7oywpTF5qQpHB1NyBVZrI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

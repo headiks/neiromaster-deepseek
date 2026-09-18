@@ -12,24 +12,23 @@ import push
 
 # Управляемый db-стаб: notify берёт токены через tokens_for_users -> db.query.
 _removed = []
-sys.modules["db"].query = lambda *a, **k: [{"user_id": "u1", "token": "ExponentPushToken[AAA]"}]
+sys.modules["db"].query = lambda *a, **k: [{"user_id": "u1", "token": "fcm-AAA"}]
 sys.modules["db"].execute = lambda *a, **k: _removed.append(a)
 
 
 def test_notify_builds_payload_and_counts():
     sent = {}
-    push._post_batch = lambda msgs: (sent.update(msgs=msgs), [{"status": "ok"}])[1]
+    push._send_one = lambda tok, title, body, data: (
+        sent.update(tok=tok, title=title, body=body, data=data), "ok")[1]
     n = push.notify([{"user_id": "u1", "title": "T", "body": "B", "data": {"id": "x"}}])
     assert n == 1, n
-    m = sent["msgs"][0]
-    assert m["to"] == "ExponentPushToken[AAA]"
-    assert m["title"] == "T" and m["body"] == "B" and m["data"] == {"id": "x"}
-    assert m["sound"] == "default"
+    assert sent["tok"] == "fcm-AAA"
+    assert sent["title"] == "T" and sent["body"] == "B" and sent["data"] == {"id": "x"}
 
 
 def test_notify_prunes_dead_token():
     _removed.clear()
-    push._post_batch = lambda msgs: [{"status": "error", "details": {"error": "DeviceNotRegistered"}}]
+    push._send_one = lambda *a: "unregistered"
     push.notify([{"user_id": "u1", "title": "T", "body": "B"}])
     # мёртвый токен вычищен (db.execute вызван с DELETE и токеном)
     assert any("DELETE FROM push_tokens" in a[0] for a in _removed), _removed

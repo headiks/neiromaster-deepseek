@@ -1,25 +1,33 @@
 """
-Push-уведомления на устройства сотрудников через Expo Push API.
+Push-уведомления на устройства сотрудников через FCM HTTP v1.
 
-Приложение сотрудника — на Expo (mobile/), поэтому шлём не напрямую в APNs/FCM, а
-через шлюз Expo (https://exp.host/--/api/v2/push/send): один HTTP-вызов, Expo сам
-доставляет в нужную платформу. Токен устройства (ExponentPushToken[...]) клиент
-получает через expo-notifications и регистрирует у нас (POST /api/my/push-token).
+Приложение сотрудника (Expo, mobile/) получает нативный FCM-токен устройства
+(getDevicePushTokenAsync) и регистрирует у нас (POST /api/my/push-token). Отсюда шлём
+напрямую в FCM: POST https://fcm.googleapis.com/v1/projects/<project>/messages:send,
+авторизация — OAuth2-токен, выписанный по service-account (Firebase). Файл ключа —
+в env FCM_SERVICE_ACCOUNT или в secrets/fcm-service-account.json (в git не хранится).
 
-Отправка — best-effort: сбой сети/Expo НЕ должен ронять доставку в инбокс (инбокс —
-источник правды, пуш лишь дублирует). Протухшие токены (DeviceNotRegistered) чистим.
+Отправка — best-effort: сбой сети/FCM НЕ должен ронять доставку в инбокс (инбокс —
+источник правды, пуш лишь дублирует). Протухшие токены (UNREGISTERED) чистим.
 
-ponytail: без внешней очереди/ретраев — прямой вызов пачками по 100 из планировщика.
-Понадобится надёжность — вынести в RQ-задачу.
+ponytail: шлём по одному сообщению на токен (FCM v1 без batch-эндпоинта) прямым
+вызовом из планировщика; объёмы малы. Понадобится масштаб — вынести в RQ-задачу.
 """
+
+import os
+import json
+from pathlib import Path
 
 import requests
 
 import db
 
-EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
-_BATCH = 100
 _TIMEOUT = 15
+_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
+BASE_DIR = Path(__file__).resolve().parent
+_SA_DEFAULT = BASE_DIR / "secrets" / "fcm-service-account.json"
+
+_sa_cache = None   # (google credentials, project_id) — ленивое, кэшируется
 
 
 # ---------- Хранилище токенов ----------
@@ -57,52 +65,78 @@ def tokens_for_users(user_ids) -> dict:
     return out
 
 
-# ---------- Отправка ----------
-def _post_batch(messages: list) -> list:
-    """Один POST в Expo (<=100 сообщений). Возвращает список тикетов data[] (или [] при сбое)."""
+# ---------- Отправка (FCM v1) ----------
+def _access_token():
+    """OAuth2-токен доступа и project_id из service-account. Кэшируем creds; google-auth
+    сам обновляет протухший токен. Бросает при отсутствии/битом ключе (ловит вызвавший)."""
+    global _sa_cache
+    if _sa_cache is None:
+        path = os.environ.get("FCM_SERVICE_ACCOUNT") or str(_SA_DEFAULT)
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(path, scopes=[_SCOPE])
+        with open(path, "r", encoding="utf-8") as f:
+            pid = json.load(f).get("project_id")
+        _sa_cache = (creds, pid)
+    creds, pid = _sa_cache
+    if not creds.valid:
+        from google.auth.transport.requests import Request
+        creds.refresh(Request())
+    return creds.token, pid
+
+
+def _send_one(token: str, title: str, body: str, data: dict) -> str:
+    """Одно сообщение в FCM v1. -> 'ok' | 'unregistered' | 'error'. Не бросает."""
     try:
-        resp = requests.post(EXPO_PUSH_URL, json=messages, timeout=_TIMEOUT,
-                             headers={"Content-Type": "application/json",
-                                      "Accept": "application/json"})
-        resp.raise_for_status()
-        return (resp.json() or {}).get("data") or []
+        access, pid = _access_token()
     except Exception as e:
-        print(f"[push] отправка не удалась ({len(messages)} шт.): {e}")
-        return []
+        print(f"[push] нет доступа к FCM (service-account): {e}")
+        return "error"
+    url = f"https://fcm.googleapis.com/v1/projects/{pid}/messages:send"
+    message = {
+        "message": {
+            "token": token,
+            "notification": {"title": title, "body": body},
+            # FCM data-поля — только строки.
+            "data": {str(k): str(v) for k, v in (data or {}).items()},
+            "android": {"priority": "high",
+                        "notification": {"channel_id": "default", "sound": "default"}},
+        }
+    }
+    try:
+        r = requests.post(url, json=message, timeout=_TIMEOUT,
+                          headers={"Authorization": f"Bearer {access}",
+                                   "Content-Type": "application/json"})
+        if r.status_code == 200:
+            return "ok"
+        err = ((r.json() if r.content else {}) or {}).get("error") or {}
+        codes = {d.get("errorCode") for d in (err.get("details") or []) if isinstance(d, dict)}
+        if err.get("status") in ("NOT_FOUND", "UNREGISTERED") or "UNREGISTERED" in codes:
+            return "unregistered"   # токен мёртв (приложение удалено/переустановлено)
+        print(f"[push] FCM {r.status_code}: {err.get('message') or r.text[:200]}")
+        return "error"
+    except Exception as e:
+        print(f"[push] отправка не удалась: {e}")
+        return "error"
 
 
 def notify(items: list) -> int:
     """items — [{user_id, title, body, data?}]. Разворачивает в токены устройств и шлёт
-    пачками. Протухшие токены (DeviceNotRegistered) удаляет. Возвращает число успешных
-    тикетов. Ошибки не поднимает — доставка в инбокс важнее пуша."""
+    по одному в FCM. Протухшие токены (UNREGISTERED) удаляет. Возвращает число успешно
+    отправленных. Ошибки не поднимает — доставка в инбокс важнее пуша."""
     if not items:
         return 0
     by_user = tokens_for_users([it.get("user_id") for it in items])
     if not by_user:
         return 0
-
-    messages, token_of = [], []
-    for it in items:
-        for tok in by_user.get(it.get("user_id"), []):
-            messages.append({
-                "to": tok,
-                "title": (it.get("title") or "НейроМастер")[:120],
-                "body": (it.get("body") or "")[:400],
-                "sound": "default",
-                "data": it.get("data") or {},
-            })
-            token_of.append(tok)
-    if not messages:
-        return 0
-
     ok = 0
-    for start in range(0, len(messages), _BATCH):
-        chunk = messages[start:start + _BATCH]
-        toks = token_of[start:start + _BATCH]
-        tickets = _post_batch(chunk)
-        for i, ticket in enumerate(tickets):
-            if ticket.get("status") == "ok":
+    for it in items:
+        title = (it.get("title") or "НейроМастер")[:120]
+        body = (it.get("body") or "")[:1000]
+        data = it.get("data") or {}
+        for tok in by_user.get(it.get("user_id"), []):
+            res = _send_one(tok, title, body, data)
+            if res == "ok":
                 ok += 1
-            elif (ticket.get("details") or {}).get("error") == "DeviceNotRegistered" and i < len(toks):
-                remove_token(toks[i])   # приложение удалено/токен мёртв — чистим
+            elif res == "unregistered":
+                remove_token(tok)
     return ok

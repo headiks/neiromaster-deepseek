@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, SafeAreaView, Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { S, ThemeProvider, useTheme, Palette } from "./src/theme";
-import { getToken, me } from "./src/api";
-import { registerForPush, addNotificationListeners } from "./src/notifications";
+import { getToken, me, myMessages } from "./src/api";
+import { registerForPush, addNotificationListeners, presentLocal } from "./src/notifications";
 import Login from "./src/screens/Login";
 import Inbox from "./src/screens/Inbox";
 import Ask from "./src/screens/Ask";
@@ -41,12 +41,41 @@ function Root() {
   }
   useEffect(() => { boot(); }, []);
 
-  // После входа: регистрируем устройство для пушей, тап по пушу -> сегодняшний чат.
+  // После входа: запрашиваем разрешение на уведомления + канал (registerForPush),
+  // тап по уведомлению -> сегодняшний чат.
   useEffect(() => {
     if (!authed) return;
     registerForPush();
     const off = addNotificationListeners(() => setTab("today"));
     return off;
+  }, [authed]);
+
+  // Локальные уведомления в шторке: опрашиваем инбокс и на КАЖДОЕ новое доставленное
+  // сообщение показываем уведомление. Работает без FCM, пока приложение живо.
+  // При первом проходе только запоминаем текущие id (не спамим историей).
+  useEffect(() => {
+    if (!authed) return;
+    const seen = new Set<string>();
+    let first = true;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const res = await myMessages();
+        const list: any[] = res?.messages || [];
+        const fresh = list.filter((m) => m?.id && !seen.has(m.id));
+        list.forEach((m) => m?.id && seen.add(m.id));
+        if (!first) {
+          for (const m of fresh) {
+            if (stop) break;
+            await presentLocal(m.title || "НейроМастер", m.body || "", { message_row_id: m.id });
+          }
+        }
+        first = false;
+      } catch { /* офлайн/ошибка — пропускаем проход */ }
+    };
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => { stop = true; clearInterval(id); };
   }, [authed]);
 
   if (!ready) {

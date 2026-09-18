@@ -57,3 +57,6 @@ Thumbs.db
 # локальная сборка APK — не хранить в git
 NeiroMaster.apk
 *.apk
+
+# FCM service-account (секрет) — не хранить в git
+secrets/
