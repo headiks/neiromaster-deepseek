@@ -53,3 +53,7 @@ Thumbs.db
 .DS_Store
 Классификация_документов.xlsx
 Классификация_per_chunk.xlsx
+
+# локальная сборка APK — не хранить в git
+NeiroMaster.apk
+*.apk
