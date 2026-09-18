@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 # ---- заглушки тяжёлых зависимостей ДО импорта пакета docpipe ----
 import test_stubs
 
-test_stubs.install(embed_dim=4, embed=lambda t: [1.0, 0.0, 0.0, 0.0], db=False, psycopg=True)
+test_stubs.install(db=False, psycopg=True)
 
 # управляемый стаб БД: тест сам решает, что вернёт query (см. _query_hook)
 _db = types.ModuleType("db")
@@ -250,6 +250,29 @@ def test_upsert_document_idempotent():
     doc_id2, changed2 = store.upsert_document("f.pdf", "HASH2", {}, "docling", "qwen3:14b")
     assert changed2 is True and doc_id2
     assert any("INSERT INTO documents" in sql for sql, _ in _db._exec_log)
+
+
+# ---------- Очистка осиротевших документов ----------
+def test_prune_orphans():
+    # В docpipe три файла; реестр знает только два — третий («ghost») осиротел.
+    _db._exec_log.clear()
+    _db._query_hook = lambda sql, params=(), fetch="all": (
+        [{"filename": "a.pdf"}, {"filename": "b.pdf"}, {"filename": "ghost.docx"}]
+        if sql.startswith("SELECT DISTINCT filename")
+        else [{"id": "x"}]                       # DELETE ... RETURNING -> одна строка
+    )
+    removed = store.prune_orphans({"a.pdf", "b.pdf"})
+    assert removed == 1, removed                  # удалён ровно ghost.docx, актуальные не трогаем
+
+def test_prune_orphans_empty_keep_noop():
+    # Пустой keep (сбой чтения реестра) -> НИЧЕГО не удаляем, чтобы не вайпнуть базу.
+    called = {"n": 0}
+    def hook(sql, params=(), fetch="all"):
+        called["n"] += 1
+        return []
+    _db._query_hook = hook
+    assert store.prune_orphans(set()) == 0
+    assert called["n"] == 0                       # даже не читаем список
 
 
 if __name__ == "__main__":

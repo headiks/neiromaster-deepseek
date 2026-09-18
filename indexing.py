@@ -266,9 +266,11 @@ def delete_document(filename: str, remove_file: bool = True) -> bool:
     кэш + запись в реестре. Векторов больше нет."""
     try:
         from docpipe import store as _dp_store
-        doc = _dp_store.find_by_filename(filename)
-        if doc:
-            _dp_store.delete_document(doc["id"])   # каскадом снесёт секции/метки/чанки
+        # Удаляем ВСЕ строки docpipe с этим именем (не только первую): иначе дубль или
+        # рассинхрон имени оставит осиротевшие метки, и удалённый документ продолжит
+        # цитироваться в генерации/Q&A как «призрачный источник».
+        n = _dp_store.delete_by_filename(filename)
+        _log("DELETE", f"docpipe: удалено документов {n} для {filename}")
     except Exception as e:
         _log("DELETE", f"docpipe-разметка {filename}: {e}")
 

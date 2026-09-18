@@ -6,66 +6,30 @@ documents.py — единый реестр метаданных загружен
   - дедупликация по sha256: тот же файл не грузим и не переиндексируем дважды;
   - на этих метаданных строится экран «этапы/подэтапы ↔ документы».
 
-Что хранит одна строка (таблица documents):
+Что хранит одна строка (таблица document_meta):
   sha256 (ключ) · имя · размер · тип · статус · когда/кем загружен ·
-  краткое описание · ключевые слова · эмбеддинг-вектор ·
-  папки · этапы (stage_ids) · подэтапы [{stage_id, substage_id, score}].
+  краткое описание · ключевые слова · папки · этапы (stage_ids).
 
-Вариант кластеризации — №1 (по смыслу, через эмбеддинги):
-  документ относится к этапу/подэтапу по СХОДСТВУ его вектора с текстом
-  этапа/подэтапа. Привязку к папкам и этапам уже делает classify.py — здесь
-  добавлен только более тонкий уровень: конкретный ПОДЭТАП.
+Привязка документа к подэтапам целиком отдана LLM-разметке docpipe (метки секций в
+Postgres). Экран «этапы ↔ документы» собирает build_board() из этой разметки —
+эмбеддингов, векторов и косинусной близости в системе больше нет.
 
-Эмбеддинг храним как нативный REAL[] Postgres (без расширения pgvector): для
-Варианта 1 близость считаем в Python, а вектор в БД лежит на будущее (быстрый
-поиск/перекластеризация — там уже пригодится pgvector). Это точка апгрейда.
-
-Тяжёлые зависимости (db, Ollama, classify, qdrant) импортируются ВНУТРИ функций:
-чистая логика (косинус, группировка экрана) наверху тестируется без БД и сети.
+Тяжёлые зависимости (db, psycopg) импортируются ВНУТРИ функций: чистая логика
+(группировка экрана build_board) наверху тестируется без БД и сети.
 """
 
 import time
 from typing import Optional
 
-from config import cosine        # единственная реализация косинуса (см. config.cosine)
-
 # Имя таблицы РЕЕСТРА метаданных. НЕ "documents": так называется таблица пайплайна
 # docpipe (со своей схемой и FK). Разводим по разным таблицам, чтобы обе жили рядом.
 TABLE = "document_meta"
 
-# Порог косинусной близости, при котором документ считаем относящимся к подэтапу.
-# Ниже — документ привязан к этапу, но не к конкретному подэтапу (или ни к чему).
-SUBSTAGE_THRESHOLD = 0.35
-
-
 # ---------- Чистая логика (без БД и сети — тестируется отдельно) ----------
-def assign_substages(doc_vec: list, substage_vecs: list,
-                     threshold: float = SUBSTAGE_THRESHOLD) -> list:
-    """
-    Относит документ к подэтапам по сходству вектора.
-    substage_vecs — [{stage_id, substage_id, title, vec}].
-    Возвращает лучший подэтап В КАЖДОМ этапе, если он прошёл порог:
-        [{stage_id, substage_id, title, score}] по убыванию score.
-    (Один документ может лечь в несколько этапов, но в каждом — в один, самый близкий подэтап.)
-    """
-    best_per_stage: dict = {}
-    for s in substage_vecs:
-        score = cosine(doc_vec, s.get("vec") or [])
-        if score < threshold:
-            continue
-        cur = best_per_stage.get(s["stage_id"])
-        if cur is None or score > cur["score"]:
-            best_per_stage[s["stage_id"]] = {
-                "stage_id": s["stage_id"], "substage_id": s["substage_id"],
-                "title": s.get("title", ""), "score": round(score, 3),
-            }
-    return sorted(best_per_stage.values(), key=lambda x: x["score"], reverse=True)
-
-
 def build_board(stages: list, docs: list) -> dict:
     """
     Собирает данные экрана: этапы -> подэтапы -> документы + «без привязки».
-    Чистая функция: на вход — этапы (stages.list_stages) и документы (list_docs).
+    Чистая функция: на вход — этапы (stages.list_stages) и документы (docpipe-разметка).
 
     stages: [{id, title, description, substages:[{id, title}]}]
     docs:   [{sha256, filename, mime, keywords, stage_ids, substages:[{stage_id, substage_id, score}], ...}]
@@ -123,31 +87,6 @@ def build_board(stages: list, docs: list) -> dict:
     }
 
 
-def extract_keywords(text: str, n: int = 6) -> list:
-    """
-    Простое выделение ключевых слов: самые частые значимые слова описания.
-    ponytail: наивная частотность со стоп-словами; upgrade — ключевые слова от LLM
-    в момент summarize_document, если понадобится точнее.
-    """
-    import re
-    stop = {
-        "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то",
-        "все", "она", "так", "его", "но", "да", "ты", "к", "у", "же", "вы", "за",
-        "бы", "по", "ее", "мне", "было", "вот", "от", "для", "о", "из", "ему",
-        "или", "быть", "был", "него", "до", "вас", "нибудь", "уже", "ни", "этот",
-        "того", "потому", "этого", "какой", "совсем", "ним", "здесь", "этом",
-        "один", "почти", "мой", "тем", "чтобы", "нее", "были", "куда", "зачем",
-        "всех", "можно", "при", "об", "документ", "документа", "также", "это",
-    }
-    words = re.findall(r"[а-яёa-z0-9]{4,}", (text or "").lower())
-    freq: dict = {}
-    for w in words:
-        if w in stop:
-            continue
-        freq[w] = freq.get(w, 0) + 1
-    return [w for w, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:n]]
-
-
 # ---------- Хранилище (PostgreSQL) ----------
 CREATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -190,11 +129,6 @@ def get(sha256: str) -> Optional[dict]:
     return db.query(f"SELECT * FROM {TABLE} WHERE sha256 = %s", (sha256,), "one")
 
 
-def list_docs() -> list:
-    import db
-    return db.query(f"SELECT * FROM {TABLE} ORDER BY uploaded_at DESC NULLS LAST", (), "all")
-
-
 def list_meta() -> list:
     """Строки для табличного интерфейса — все поля, КРОМЕ тяжёлого вектора (у него
     отдаём только длину). Иначе на каждый документ ехало бы по 1024 числа."""
@@ -204,21 +138,6 @@ def list_meta() -> list:
                    summary, keywords, folders, stage_ids, substages, updated_at,
                    array_length(embedding, 1) AS embedding_dim
             FROM {TABLE} ORDER BY uploaded_at DESC NULLS LAST""", (), "all")
-
-
-def update_assignment_by_filename(filename: str, folders: list, stage_ids: list) -> None:
-    """Обновляет привязку (папки/этапы/подэтапы) документа по имени файла — после
-    переанализа. Подэтапы пересчитываются из новых stage_ids. Вектор не трогаем."""
-    import db
-    from psycopg.types.json import Json
-    # Косинусную привязку к подэтапам убрали — её даёт LLM (docpipe). Обновляем только
-    # папки/этапы; substages в document_meta больше не ведём (доска читает LLM-разметку).
-    subs = []
-    db.execute(
-        f"""UPDATE {TABLE} SET folders=%s, stage_ids=%s, substages=%s, updated_at=%s
-            WHERE filename=%s""",
-        (folders or [], stage_ids or [], Json(subs), time.strftime("%Y-%m-%dT%H:%M:%S"), filename),
-    )
 
 
 def remove(sha256: str) -> None:

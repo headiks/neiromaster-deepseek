@@ -1,5 +1,5 @@
 """
-Проверки новой модели знаний (папки/этапы/классификация) без БД, Qdrant и Ollama:
+Проверки новой модели знаний (папки/этапы/классификация) без БД:
 тяжёлые зависимости подменяются заглушками в sys.modules, тестируется чистая логика
 и целостность стартового сида data/knowledge_seed.json.
 
@@ -24,13 +24,6 @@ sys.modules.setdefault("psycopg_pool", types.ModuleType("psycopg_pool"))
 _db = types.ModuleType("db"); _db.query = lambda *a, **k: None; _db.execute = lambda *a, **k: None
 sys.modules.setdefault("db", _db)
 
-_qc = types.ModuleType("qdrant_client"); _qc.QdrantClient = lambda *a, **k: MagicMock()
-sys.modules.setdefault("qdrant_client", _qc)
-_qm = types.ModuleType("qdrant_client.models")
-for _n in ["VectorParams", "Distance", "PointStruct", "Filter", "FieldCondition",
-           "MatchValue", "MatchAny", "PayloadSchemaType"]:
-    setattr(_qm, _n, MagicMock())
-sys.modules.setdefault("qdrant_client.models", _qm)
 sys.modules.setdefault("requests", MagicMock())
 
 import folders
