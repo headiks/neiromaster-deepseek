@@ -118,13 +118,30 @@ def ensure_all() -> int:
 
 # ---------- Доставка ----------
 def dispatch_due() -> int:
-    """Выпускает в кабинет все наступившие сообщения текущей схемы. Возвращает число."""
+    """Выпускает в кабинет все наступившие сообщения текущей схемы. Возвращает число.
+    После доставки шлёт push на устройства сотрудника (best-effort: сбой пуша не влияет
+    на инбокс — он источник правды)."""
     rows = db.query(
         "UPDATE scheduled_messages SET status = 'delivered', delivered_at = now(), "
-        "updated_at = now() WHERE status = 'pending' AND send_at <= now() RETURNING id",
+        "updated_at = now() WHERE status = 'pending' AND send_at <= now() "
+        # Сотрудник на больничном (status='paused') не получает сообщения плана —
+        # они ждут в pending и выпустятся, когда он снимет паузу.
+        # ponytail: даты не сдвигаются — по возвращении накопившееся выйдет разом;
+        # сдвиг расписания на срок болезни добавить, если понадобится.
+        "AND employee_id NOT IN (SELECT id FROM users WHERE status = 'paused') "
+        "RETURNING id, employee_id, title, body",
         fetch="all",
     )
-    return len(rows or [])
+    rows = rows or []
+    if rows:
+        try:
+            import push
+            push.notify([{"user_id": r["employee_id"], "title": r["title"] or "НейроМастер",
+                          "body": r["body"] or "", "data": {"message_row_id": r["id"]}}
+                         for r in rows])
+        except Exception as e:
+            print(f"[scheduler] push не отправлен: {e}")
+    return len(rows)
 
 
 def _schemas():
@@ -168,6 +185,29 @@ def unread_count(employee_id: str) -> int:
     return r["n"] if r else 0
 
 
+def deliver_now(user_id: str, title: str = "", body: str = "", data: dict | None = None) -> str:
+    """Кладёт сообщение сразу в инбокс сотрудника (delivered) и шлёт push.
+    Для уведомлений вне плана: ответ на вопрос, тест уведомлений. Сообщение видно
+    в приложении (вкладка «Сегодня») даже без настроенного push. Возвращает id строки."""
+    import uuid
+    mid = f"note-{uuid.uuid4().hex[:8]}"
+    row_id = f"{user_id}:{mid}"
+    title = title or "Уведомление"
+    db.execute(
+        "INSERT INTO scheduled_messages "
+        "(id, employee_id, message_id, title, body, send_at, status, delivered_at) "
+        "VALUES (%s, %s, %s, %s, %s, now(), 'delivered', now())",
+        (row_id, user_id, mid, title, body or ""),
+    )
+    try:
+        import push
+        push.notify([{"user_id": user_id, "title": title, "body": body or "",
+                      "data": {**(data or {}), "message_row_id": row_id}}])
+    except Exception as e:
+        print(f"[deliver_now] push не отправлен: {e}")
+    return row_id
+
+
 def push_test(employee_id: str, title: str = "", body: str = "",
               delay_seconds: int = 0) -> str:
     """Кладёт тестовое сообщение в инбокс для ручной проверки уведомлений из админки.
@@ -181,12 +221,7 @@ def push_test(employee_id: str, title: str = "", body: str = "",
     body = body or "Проверка системы уведомлений НейроМастер."
     delay = max(0, int(delay_seconds or 0))
     if delay <= 0:
-        db.execute(
-            "INSERT INTO scheduled_messages "
-            "(id, employee_id, message_id, title, body, send_at, status, delivered_at) "
-            "VALUES (%s, %s, %s, %s, %s, now(), 'delivered', now())",
-            (row_id, employee_id, mid, title, body),
-        )
+        return deliver_now(employee_id, title, body)
     else:
         db.execute(
             "INSERT INTO scheduled_messages "

@@ -431,6 +431,21 @@ def set_password(user_id: str, password: str, must_change: bool = False) -> dict
     return dict(user)
 
 
+def set_status(user_id: str, status: str) -> dict:
+    """Сменить статус адаптации (planned/active/done/paused). Пауза = сотрудник на
+    больничном: планировщик не доставляет ему сообщения плана, пока статус paused."""
+    if status not in ADAPTATION_STATUSES:
+        raise ValueError(f"Недопустимый статус: {status}")
+    with _lock:
+        user = get_user(user_id)
+        if not user:
+            raise ValueError("Пользователь не найден")
+        user["status"] = status
+        user["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        _save_user(user)
+    return dict(user)
+
+
 def set_credentials(user_id: str, username: str, password: str) -> dict:
     """
     Одновременная смена логина и пароля — первичная настройка главного администратора
