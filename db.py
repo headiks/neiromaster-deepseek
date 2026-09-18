@@ -235,6 +235,14 @@ SCHEMA_STATEMENTS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_plan_sched_plan ON plan_schedules(plan_id)",
+    # Простые настройки приложения (ключ-значение). Напр. default_plan_id — активный
+    # общий план, который автоматически назначается сотрудникам по их должности.
+    """
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """,
 )
 
 

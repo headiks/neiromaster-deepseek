@@ -39,12 +39,14 @@ export default function PlanBuilder() {
   const [plan, setPlan] = useState<Plan>(emptyPlan());
   const [catStage, setCatStage] = useState('');
   const [status, setStatus] = useState('');
+  const [defaultId, setDefaultId] = useState('');   // активный общий план (авто-назначение)
 
   useEffect(() => {
     Promise.all([api('/catalog').then((r) => r.json()), api('/plans').then((r) => r.json())])
       .then(([cat, plans]) => {
         setCatalog(cat);
         setPlanList(plans.plans || []);
+        setDefaultId(plans.default_plan_id || '');
         setCatStage(cat.stages?.[0]?.id || '__custom__');
       })
       .catch((err) => setStatus(`Не удалось загрузить каталог этапов: ${err.message}`));
@@ -58,7 +60,21 @@ export default function PlanBuilder() {
     api(`/plans/${encodeURIComponent(id)}`).then((r) => r.json()).then((data) => setPlan(ensureUids(data.plan)));
   };
 
-  const refreshPlanList = () => api('/plans').then((r) => r.json()).then((d) => setPlanList(d.plans || []));
+  const refreshPlanList = () => api('/plans').then((r) => r.json()).then((d) => {
+    setPlanList(d.plans || []);
+    setDefaultId(d.default_plan_id || '');
+  });
+
+  // Сделать выбранный план активным общим: авто-назначается новым сотрудникам по
+  // должности и сразу — всем без плана (ручные назначения не трогаются).
+  const makeDefault = () => {
+    if (!plan.plan_id) return;
+    setStatus('Назначение активного плана...');
+    api(`/plans/${encodeURIComponent(plan.plan_id)}/set-default`, { method: 'POST' })
+      .then((r) => r.json())
+      .then((d) => { setDefaultId(plan.plan_id || ''); setStatus(`План сделан активным. Назначен новым сотрудникам: ${d.assigned}`); })
+      .catch((err) => setStatus(`Не удалось назначить активным: ${err.message}`));
+  };
 
   const computeOffsets = (): Record<string, number> => {
     const offsets: Record<string, number> = {};
@@ -125,9 +141,14 @@ export default function PlanBuilder() {
           <label>Готовый план (редактирование)</label>
           <select value={selected} onChange={(e) => onSelect(e.target.value)}>
             <option value="">— выберите план —</option>
-            {planList.map((p) => <option key={p.plan_id} value={p.plan_id}>{p.title}{p.role ? ' · ' + p.role : ''}</option>)}
+            {planList.map((p) => <option key={p.plan_id} value={p.plan_id}>{p.title}{p.role ? ' · ' + p.role : ''}{p.plan_id === defaultId ? ' · активный' : ''}</option>)}
           </select>
         </div>
+        {plan.plan_id && (
+          plan.plan_id === defaultId
+            ? <span className="status-badge indexed" style={{ alignSelf: 'end' }}>✓ активный общий план</span>
+            : <button className="ghost-btn" style={{ alignSelf: 'end' }} onClick={makeDefault}>Сделать активным (авто-назначать новым)</button>
+        )}
       </div>
       <div className="stage-hint">План можно редактировать (этапы, подэтапы, сроки, тексты) и сохранять. Создание новых планов отключено — правьте существующий.</div>
 

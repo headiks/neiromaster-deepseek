@@ -139,6 +139,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Предупреждение: не удалось возобновить разметку docpipe: {e}")
 
+    # Автоназначение активного общего плана сотрудникам без плана (напр. импортированным
+    # из штатки до выбора плана). Ручные назначения не трогаются; без даты выхода — неактивно.
+    try:
+        import autoplan
+        assigned = autoplan.assign_unassigned()
+        if assigned:
+            print(f"autoplan: назначен активный общий план {assigned} сотрудникам без плана")
+    except Exception as e:
+        print(f"Предупреждение: автоназначение плана не выполнено: {e}")
+
     # Фоновый планировщик доставки сообщений плана по расписанию (инбокс сотрудника).
     # Отключается NEIROMASTER_SCHEDULER=0 (напр. когда доставку гоняют внешним cron).
     messaging.start_scheduler()

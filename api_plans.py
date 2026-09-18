@@ -35,7 +35,23 @@ async def get_catalog():
 
 @router.get("/plans", dependencies=admin_only)
 async def get_plans():
-    return {"plans": planner.list_plans()}
+    import autoplan
+    return {"plans": planner.list_plans(), "default_plan_id": autoplan.get_default_plan_id()}
+
+
+@router.post("/plans/{plan_id}/set-default")
+async def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
+    """Сделать план активным общим: он будет автоматически назначаться новым сотрудникам
+    по должности, а также сразу назначается всем сотрудникам БЕЗ плана (ручные не трогаем).
+    Пока у сотрудника нет даты выхода — план неактивен (сообщения не идут)."""
+    import autoplan
+    if planner.load_plan(plan_id) is None:
+        raise HTTPException(status_code=404, detail="План не найден")
+    autoplan.set_default_plan_id(plan_id)
+    assigned = autoplan.assign_unassigned()
+    activitylog.log("action", user=user, path=f"/plans/{plan_id}/set-default",
+                    detail={"action": "plan_set_default", "plan_id": plan_id, "assigned": assigned})
+    return {"plan_id": plan_id, "default": True, "assigned": assigned}
 
 
 @router.post("/plans")
@@ -183,6 +199,9 @@ async def rollout_plan(plan_id: str, user: dict = Depends(require_admin)):
     # Назначаем план всем сотрудникам, чтобы каждый увидел его в кабинете (расписание
     # подставляется под его должность). Роли админа/владельца не трогаем.
     db.execute("UPDATE users SET plan_id = %s WHERE role = %s", (plan_id, users.ROLE_EMPLOYEE))
+    # Этот план становится активным общим — новые сотрудники получат его автоматически.
+    import autoplan
+    autoplan.set_default_plan_id(plan_id)
     activitylog.log("action", user=user, path=f"/plans/{plan_id}/rollout",
                     detail={"action": "plan_rollout", "plan_id": plan_id})
     # Материализуем расписание-инстансы сразу (у кого есть дата выхода), не дожидаясь

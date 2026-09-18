@@ -382,6 +382,14 @@ def create_user(raw: dict, actor: Optional[dict] = None, role: str = ROLE_EMPLOY
                            username=username or None,
                            created_by=(actor or {}).get("id"))
         _apply_profile(user, raw)
+        # Автоназначение активного общего плана: новый сотрудник без явного плана
+        # сразу получает план по своей должности (неактивен, пока нет даты выхода).
+        if user.get("role") == ROLE_EMPLOYEE and not user.get("plan_id"):
+            try:
+                import autoplan
+                user["plan_id"] = autoplan.default_for_new() or None
+            except Exception:
+                pass
         if password:
             user["salt"], user["hash"] = hash_password(password)
             user["password_changed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
