@@ -1453,13 +1453,16 @@
             if (!pid) { ptSetStatus('Выберите план.'); return; }
             const prof = document.getElementById('pt-prof').value || '';
             let url, status;
+            let prefix;
             if (prof) {
                 url = `/plans/${encodeURIComponent(pid)}/generate?profession=${encodeURIComponent(prof)}`;
                 status = `Генерация для «${prof}»…`;
+                prefix = `Должность: ${prof}`;
             } else {
                 if (!confirm('Сгенерировать/перегенерировать ВЕСЬ план — все должности? Это может занять время.')) return;
                 url = `/plans/${encodeURIComponent(pid)}/generate`;   // без profession -> все должности + общее
                 status = 'Генерация всего плана (все должности)…';
+                prefix = 'Весь план — все должности';
             }
             ptSetBusy(true);
             ptSetStatus(status);
@@ -1467,7 +1470,7 @@
                 .then(({ ok, data }) => {
                     if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить генерацию'); ptSetBusy(false); return; }
                     currentGenJob = data.job_id;
-                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); });
+                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); }, prefix);
                 })
                 .catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
         }
@@ -1484,25 +1487,28 @@
                 .then(({ ok, data }) => {
                     if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить догенерацию'); ptSetBusy(false); return; }
                     currentGenJob = data.job_id;
-                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); });
+                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); }, prof ? `Догенерация · ${prof}` : 'Догенерация');
                 })
                 .catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
         }
 
-        function ptPollJob(jobId, onDone) {
+        function ptPollJob(jobId, onDone, prefix) {
             const wrap = document.getElementById('pt-progress-wrap');
             const fill = document.getElementById('pt-progress-fill');
             const label = document.getElementById('pt-progress-label');
             wrap.style.display = 'block';
             clearInterval(pollTimer);
+            const pre = prefix ? `${prefix} · ` : '';
             pollTimer = setInterval(() => {
                 api(`/jobs/${encodeURIComponent(jobId)}`).then(r => r.json()).then(job => {
                     const percent = job.total ? Math.round(100 * job.done / job.total) : 0;
                     fill.style.width = `${percent}%`;
+                    // Масштаб: всего подэтапов = подэтапы плана × число должностей.
+                    const profs = job.professions ? ` · должностей: ${job.professions}` : '';
                     const extra = `${job.skipped ? ' · пропущено: ' + job.skipped : ''}${job.errors ? ' · ошибок: ' + job.errors : ''}`;
                     label.textContent = job.status === 'running'
-                        ? `Подэтап ${job.done} из ${job.total}${job.current ? ' · ' + job.current : ''}${extra}`
-                        : `Статус: ${job.status} · ${job.done} из ${job.total}${extra}`;
+                        ? `${pre}Подэтап ${job.done} из ${job.total}${profs}${job.current ? ' · ' + job.current : ''}${extra}`
+                        : `${pre}Статус: ${job.status} · ${job.done} из ${job.total}${profs}${extra}`;
                     if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
                         clearInterval(pollTimer);
                         currentGenJob = null;
@@ -1539,12 +1545,13 @@
                         return;
                     }
                     const pid = ids[i++];
-                    ptSetStatus(`Генерация плана ${i} из ${ids.length}…`);
+                    const planNo = i, planTotal = ids.length;
+                    ptSetStatus(`Генерация плана ${planNo} из ${planTotal}…`);
                     apiJson(`/plans/${encodeURIComponent(pid)}/generate`, { method: 'POST' })
                         .then(({ ok, data }) => {
                             if (!ok) { next(); return; }   // план без подэтапов пропускаем
                             currentGenJob = data.job_id;
-                            ptPollJob(data.job_id, next);
+                            ptPollJob(data.job_id, next, `План ${planNo} из ${planTotal}`);
                         })
                         .catch(() => next());
                 };
