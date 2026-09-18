@@ -70,6 +70,11 @@ export const ask = (question: string, session_id?: string | null) =>
   request("/ask", { method: "POST", body: JSON.stringify({ question, session_id }) });
 export const changePassword = (old_password: string, new_password: string) =>
   request("/api/password", { method: "POST", body: JSON.stringify({ old_password, new_password }) });
+// Больничный: пауза приостанавливает доставку сообщений плана на сервере.
+export const setSick = (sick: boolean) =>
+  request<{ status: string; sick: boolean }>("/api/my/status", {
+    method: "POST", body: JSON.stringify({ sick }),
+  });
 
 // Push: регистрация/отвязка токена устройства (Expo). Требуют авторизации (Bearer),
 // поэтому removePushToken вызывается ДО logout, пока токен сессии ещё жив.

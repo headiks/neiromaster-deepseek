@@ -40,3 +40,25 @@ export async function clearToken(): Promise<void> {
     // ignore
   }
 }
+
+// Прочие мелкие настройки (тема и т.п.). Не секреты — но храним там же, чтобы не тащить
+// ещё одну зависимость. Ключи SecureStore должны быть [A-Za-z0-9._-].
+export async function getFlag(key: string): Promise<string | null> {
+  try {
+    if (Platform.OS === "web") {
+      return typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
+    }
+    return await SecureStore.getItemAsync(key);
+  } catch {
+    return null;
+  }
+}
+
+export async function setFlag(key: string, value: string): Promise<void> {
+  try {
+    if (Platform.OS === "web") localStorage.setItem(key, value);
+    else await SecureStore.setItemAsync(key, value);
+  } catch {
+    // не критично
+  }
+}

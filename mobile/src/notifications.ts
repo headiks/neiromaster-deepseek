@@ -69,7 +69,7 @@ export async function unregisterForPush(): Promise<void> {
 // Слушатели: приход уведомления (foreground) и тап по нему. Возвращает функцию отписки.
 export function addNotificationListeners(onTap?: (data: any) => void): () => void {
   const recv = Notifications.addNotificationReceivedListener(() => {});
-  const resp = Notifications.addNotificationResponseReceivedListener((r) => {
+  const resp = Notifications.addNotificationResponseReceivedListener((r: any) => {
     onTap?.(r.notification.request.content.data);
   });
   return () => {

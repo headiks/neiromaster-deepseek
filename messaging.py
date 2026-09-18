@@ -124,6 +124,11 @@ def dispatch_due() -> int:
     rows = db.query(
         "UPDATE scheduled_messages SET status = 'delivered', delivered_at = now(), "
         "updated_at = now() WHERE status = 'pending' AND send_at <= now() "
+        # Сотрудник на больничном (status='paused') не получает сообщения плана —
+        # они ждут в pending и выпустятся, когда он снимет паузу.
+        # ponytail: даты не сдвигаются — по возвращении накопившееся выйдет разом;
+        # сдвиг расписания на срок болезни добавить, если понадобится.
+        "AND employee_id NOT IN (SELECT id FROM users WHERE status = 'paused') "
         "RETURNING id, employee_id, title, body",
         fetch="all",
     )

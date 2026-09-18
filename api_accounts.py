@@ -42,6 +42,10 @@ class TestNotification(BaseModel):
     body: str | None = None
 
 
+class SickRequest(BaseModel):
+    sick: bool
+
+
 # ---------- Вход, регистрация, свой профиль ----------
 @router.post("/api/login")
 async def api_login(req: LoginRequest, request: Request, response: Response):
@@ -152,6 +156,14 @@ async def api_mark_message_read(message_id: str, user: dict = Depends(require_se
     if not messaging.mark_read(user["id"], message_id):
         raise HTTPException(status_code=404, detail="Сообщение не найдено или уже прочитано")
     return {"read": True}
+
+
+@router.post("/api/my/status", dependencies=logged_in)
+async def api_set_my_status(req: SickRequest, user: dict = Depends(require_setup_done)):
+    """Сотрудник сам ставит/снимает больничный. Пауза приостанавливает доставку
+    сообщений плана (см. messaging.dispatch_due). Возвращает актуальный статус."""
+    updated = users.set_status(user["id"], "paused" if req.sick else "active")
+    return {"status": updated["status"], "sick": updated["status"] == "paused"}
 
 
 @router.post("/api/my/messages/test", dependencies=logged_in)
