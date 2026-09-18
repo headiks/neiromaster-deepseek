@@ -34,7 +34,13 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Автообновление: новые доставленные сообщения (ответ на вопрос, тест, план)
+  // подтягиваются без ручного pull. Пуш-баннер отдельно — нужен настроенный FCM.
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, [load]);
 
   const today = ymd();
   // Сервер отдаёт по send_at DESC; для чата упорядочим по возрастанию времени.

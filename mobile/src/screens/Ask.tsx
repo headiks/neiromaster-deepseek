@@ -128,10 +128,17 @@ function Questions({ st, c }: { st: Styles; c: Palette }) {
         const answered = q.status === "resolved";
         return (
           <View key={q.id} style={st.qCard}>
-            <View style={[st.badge, answered ? st.badgeOk : st.badgeWait]}>
-              <Text style={[st.badgeText, { color: answered ? c.ok : c.muted }]}>
-                {answered ? "✓ отвечено" : "⏳ ждёт ответа"}
-              </Text>
+            <View style={st.badgeRow}>
+              <View style={[st.badge, answered ? st.badgeOk : st.badgeWait]}>
+                <Text style={[st.badgeText, { color: answered ? c.ok : c.muted }]}>
+                  {answered ? "✓ отвечено" : "⏳ ждёт ответа"}
+                </Text>
+              </View>
+              {q.reason === "escalate" ? (
+                <View style={[st.badge, st.badgeSos]}>
+                  <Text style={[st.badgeText, { color: c.danger }]}>⚠ ЧС</Text>
+                </View>
+              ) : null}
             </View>
             <Text style={st.qq}>{q.question}</Text>
             {answered ? (
@@ -172,9 +179,11 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   off: { opacity: 0.5 },
   sendText: { color: c.primaryText, fontSize: 22, fontWeight: "700" },
   qCard: { backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: c.border, padding: S.md, marginBottom: S.sm },
-  badge: { alignSelf: "flex-start", borderRadius: 8, paddingHorizontal: S.sm, paddingVertical: 2, marginBottom: S.sm },
+  badgeRow: { flexDirection: "row", gap: S.sm, marginBottom: S.sm },
+  badge: { alignSelf: "flex-start", borderRadius: 8, paddingHorizontal: S.sm, paddingVertical: 2 },
   badgeOk: { backgroundColor: c.chipBg },
   badgeWait: { backgroundColor: c.bg },
+  badgeSos: { backgroundColor: c.bg, borderWidth: 1, borderColor: c.danger },
   badgeText: { fontSize: 12, fontWeight: "600" },
   qq: { fontSize: 15, fontWeight: "700", color: c.text },
   qa: { fontSize: 15, color: c.text, marginTop: S.sm, lineHeight: 21 },

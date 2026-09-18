@@ -3,10 +3,11 @@ import { Check, HelpCircle, Link2, PartyPopper, RefreshCw, SearchX, SendHorizont
 import { api, apiJson } from '../../lib/api';
 import type { Question } from '../../lib/types';
 
+// Причина попадания в очередь (почему ассистент не ответил сам) — не путать со статусом ответа.
 function ReasonBadge({ r }: { r?: string }) {
   return r === 'escalate'
     ? <span className="badge escalate"><TriangleAlert /> ЧС</span>
-    : <span className="badge"><SearchX /> нет ответа</span>;
+    : <span className="badge"><SearchX /> нет автоответа</span>;
 }
 
 export default function Questions({ onBadge }: { onBadge: (n: number) => void }) {
@@ -59,8 +60,11 @@ export default function Questions({ onBadge }: { onBadge: (n: number) => void })
               ? <div className="context-note"><Link2 /> Понято как: «{q.resolved_question}»</div> : null;
             if (q.status === 'resolved') {
               return (
-                <div className="card" style={{ opacity: 0.75 }} key={q.id}>
-                  <div><ReasonBadge r={q.reason} /> <small style={{ color: '#94a3b8' }}>{q.created_at}</small></div>
+                <div className="card" style={{ opacity: 0.85 }} key={q.id}>
+                  <div>
+                    <span className="badge" style={{ background: '#dcfce7', color: '#16a34a' }}><Check /> отвечено</span>{' '}
+                    <ReasonBadge r={q.reason} /> <small style={{ color: '#94a3b8' }}>{q.created_at}</small>
+                  </div>
                   <div style={{ margin: '6px 0' }}><strong><HelpCircle /> {q.question}</strong> — {who}{contact}</div>
                   <div className="answer"><Check /> {q.answer}</div>
                   <small style={{ color: '#94a3b8' }}>Ответил: {q.answered_by || ''} · {q.answered_at || ''}</small>

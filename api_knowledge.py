@@ -69,4 +69,15 @@ async def resolve_question(qid: str, req: ResolveRequest, actor: dict = Depends(
         raise HTTPException(status_code=400, detail=str(e))
     if entry is None:
         raise HTTPException(status_code=404, detail="Вопрос не найден")
+    # Уведомляем сотрудника об ответе: кладём в его инбокс (видно в приложении) + push.
+    if entry.get("user_id"):
+        try:
+            import messaging
+            messaging.deliver_now(
+                entry["user_id"], "Ответ на ваш вопрос",
+                f"«{entry['question']}» — {entry['answer']}",
+                {"question_id": qid},
+            )
+        except Exception as e:
+            print(f"[questions] уведомление об ответе не отправлено: {e}")
     return entry
