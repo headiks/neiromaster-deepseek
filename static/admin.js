@@ -1250,6 +1250,14 @@
             renderStages();
         }
 
+        // Автоподгон высоты textarea под содержимое: поле раскрывается на весь текст,
+        // без внутренней прокрутки. Зовём при вводе и после каждой перерисовки плана.
+        function autosize(el) {
+            if (!el) return;
+            el.style.height = 'auto';
+            el.style.height = (el.scrollHeight + 2) + 'px';
+        }
+
         function renderStages() {
             const container = document.getElementById('stages-container');
             if (!plan.stages.length) {
@@ -1288,7 +1296,8 @@
                             </div>
                             <div style="margin-top:10px;">
                                 <label style="font-size:12px;color:#64748b;">Что должен написать бот (основа для генерации по документам)</label>
-                                <textarea oninput="subField(${stageIndex}, ${subIndex}, 'brief', this.value)"
+                                <textarea class="brief-ta" style="overflow-y:hidden;"
+                                          oninput="subField(${stageIndex}, ${subIndex}, 'brief', this.value); autosize(this)"
                                           placeholder="Опишите, о чём сообщение. Текст можно взять из шаблона или написать свой.">${escapeHtml(sub.brief)}</textarea>
                             </div>
                             <div class="sub-grid">
@@ -1363,6 +1372,9 @@
                     </div>
                 `;
             }).join('');
+
+            // После перерисовки раскрываем все поля брифов на всю высоту текста.
+            container.querySelectorAll('textarea.brief-ta').forEach(autosize);
         }
 
         function planPayload() {
