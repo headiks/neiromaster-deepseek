@@ -1439,38 +1439,31 @@
         function ptSetStatus(text) { document.getElementById('pt-status').textContent = text || ''; }
         function ptSetBusy(busy) {
             document.getElementById('pt-generate-btn').disabled = busy;
-            const rb = document.getElementById('pt-regen-plan-btn'); if (rb) rb.disabled = busy;
             document.getElementById('pt-generate-missing-btn').disabled = busy;
             document.getElementById('pt-generate-all-btn').disabled = busy;
             document.getElementById('pt-cancel-btn').style.display = busy ? '' : 'none';
         }
 
-        // Перегенерация ВСЕГО выбранного плана — все должности сразу (без profession -> backend
-        // генерирует под каждую должность из штатки + общее расписание).
-        function ptRegenPlan() {
-            const pid = document.getElementById('pt-plan').value;
-            if (!pid) { ptSetStatus('Выберите план.'); return; }
-            if (!confirm('Перегенерировать ВЕСЬ выбранный план — все должности? Это может занять время.')) return;
-            ptSetBusy(true);
-            ptSetStatus('Перегенерация всего плана…');
-            apiJson(`/plans/${encodeURIComponent(pid)}/generate`, { method: 'POST' })
-                .then(({ ok, data }) => {
-                    if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить'); ptSetBusy(false); return; }
-                    currentGenJob = data.job_id;
-                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); });
-                })
-                .catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
-        }
-
+        // Единая генерация/перегенерация выбранного плана. Поведение зависит от выбранной
+        // должности (селектор pt-prof):
+        //  - должность выбрана -> генерируем/перегенерируем ТОЛЬКО её расписание (profession=X);
+        //  - «Общий текст» (пусто) -> весь план под ВСЕ должности штатки + общее (без profession).
         function ptGeneratePlan() {
             const pid = document.getElementById('pt-plan').value;
             if (!pid) { ptSetStatus('Выберите план.'); return; }
             const prof = document.getElementById('pt-prof').value || '';
+            let url, status;
+            if (prof) {
+                url = `/plans/${encodeURIComponent(pid)}/generate?profession=${encodeURIComponent(prof)}`;
+                status = `Генерация для «${prof}»…`;
+            } else {
+                if (!confirm('Сгенерировать/перегенерировать ВЕСЬ план — все должности? Это может занять время.')) return;
+                url = `/plans/${encodeURIComponent(pid)}/generate`;   // без profession -> все должности + общее
+                status = 'Генерация всего плана (все должности)…';
+            }
             ptSetBusy(true);
-            ptSetStatus(prof ? `Генерация для «${prof}»…` : 'Генерация общего текста…');
-            // profession всегда передаём -> перегенерируем только выбранное расписание,
-            // а не под все должности разом. Пустой -> только общий текст.
-            apiJson(`/plans/${encodeURIComponent(pid)}/generate?profession=${encodeURIComponent(prof)}`, { method: 'POST' })
+            ptSetStatus(status);
+            apiJson(url, { method: 'POST' })
                 .then(({ ok, data }) => {
                     if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить генерацию'); ptSetBusy(false); return; }
                     currentGenJob = data.job_id;
