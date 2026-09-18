@@ -14,7 +14,7 @@ const ROLE_TITLES: Record<string, string> = { owner: 'Суперадмин', adm
 
 const EMPTY_FORM = {
   full_name: '', username: '', password: '', position: '', department: '',
-  plan_id: '', start_date: '', status: 'planned', mentor: '', manager: '', contact: '', notes: '',
+  plan_id: '', plan_profession: '', start_date: '', status: 'planned', mentor: '', manager: '', contact: '', notes: '',
 };
 type Form = typeof EMPTY_FORM;
 
@@ -32,6 +32,7 @@ export default function Accounts({ me, isOwner }: { me: Me | null; isOwner: bool
   const [status, setStatus] = useState('');
   const [credFor, setCredFor] = useState<Employee | null>(null);
   const [schedule, setSchedule] = useState<any>(null);
+  const [planProfs, setPlanProfs] = useState<string[]>([]);   // профессии выбранного общего плана
   const scheduleRef = useRef<HTMLDivElement>(null);
 
   const loadEmployees = () => api('/users').then((r) => r.json()).then((d) => setEmployees(d.users || [])).catch(() => {});
@@ -39,6 +40,14 @@ export default function Accounts({ me, isOwner }: { me: Me | null; isOwner: bool
     loadEmployees();
     api('/plans').then((r) => r.json()).then((d) => setPlans(d.plans || [])).catch(() => {});
   }, []);
+
+  // Профессии, под которые у выбранного общего плана уже сгенерированы расписания —
+  // из них выбирается «план по профессии» для рассылки.
+  useEffect(() => {
+    if (!form.plan_id) { setPlanProfs([]); return; }
+    api(`/plans/${encodeURIComponent(form.plan_id)}/professions`)
+      .then((r) => r.json()).then((d) => setPlanProfs(d.professions || [])).catch(() => setPlanProfs([]));
+  }, [form.plan_id]);
 
   const upd = (k: keyof Form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
   const positions = [...new Set(employees.map((u) => (u.position || '').trim()).filter(Boolean))].sort();
@@ -52,6 +61,7 @@ export default function Accounts({ me, isOwner }: { me: Me | null; isOwner: bool
       ...EMPTY_FORM,
       full_name: e.full_name || '', username: e.username || '', password: '',
       position: e.position || '', department: e.department || '', plan_id: e.plan_id || '',
+      plan_profession: (e as any).plan_profession || '',
       start_date: e.start_date || '', status: e.status || 'planned', mentor: e.mentor || '',
       manager: e.manager || '', contact: e.contact || '', notes: e.notes || '',
     });
@@ -65,7 +75,8 @@ export default function Accounts({ me, isOwner }: { me: Me | null; isOwner: bool
     const payload: Record<string, string | null> = {
       full_name: form.full_name || null, position: form.position || null, department: form.department || null,
       contact: form.contact || null, mentor: form.mentor || null, manager: form.manager || null,
-      plan_id: form.plan_id || null, start_date: form.start_date || null, status: form.status || null,
+      plan_id: form.plan_id || null, plan_profession: form.plan_profession || null,
+      start_date: form.start_date || null, status: form.status || null,
       notes: form.notes || null,
     };
     if (!isUpdate) { payload.username = form.username || null; payload.password = form.password || null; }
@@ -146,10 +157,18 @@ export default function Accounts({ me, isOwner }: { me: Me | null; isOwner: bool
           <Field label="Временный пароль"><input type="text" placeholder="сотрудник сменит его при первом входе" value={form.password} disabled={!!editingId} onChange={(e) => upd('password')(e.target.value)} /></Field>
           <Field label="Должность"><Combobox value={form.position} onChange={upd('position')} options={positions} placeholder="Выбор из штатки или введите свою" /></Field>
           <Field label="Подразделение"><input type="text" placeholder="Автотранспортный цех" value={form.department} onChange={(e) => upd('department')(e.target.value)} /></Field>
-          <Field label="План адаптации">
-            <select value={form.plan_id} onChange={(e) => upd('plan_id')(e.target.value)}>
+          <Field label="Общий план адаптации">
+            <select value={form.plan_id} onChange={(e) => { upd('plan_id')(e.target.value); upd('plan_profession')(''); }}>
               <option value="">— план не назначен —</option>
               {plans.map((p) => <option key={p.plan_id} value={p.plan_id}>{p.title}{p.generated ? '' : ' (без ответов)'}</option>)}
+            </select>
+          </Field>
+          <Field label="План по профессии (для рассылки)">
+            <select value={form.plan_profession} onChange={(e) => upd('plan_profession')(e.target.value)} disabled={!form.plan_id}>
+              <option value="">По должности сотрудника ({form.position || 'не указана'})</option>
+              {planProfs.map((pr) => <option key={pr} value={pr}>{pr}</option>)}
+              {form.plan_profession && !planProfs.includes(form.plan_profession)
+                ? <option value={form.plan_profession}>{form.plan_profession}</option> : null}
             </select>
           </Field>
           <Field label="Дата выхода на работу"><input type="date" value={form.start_date} onChange={(e) => upd('start_date')(e.target.value)} /></Field>

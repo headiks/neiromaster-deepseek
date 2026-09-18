@@ -68,8 +68,10 @@ def build_employee_schedule(employee: dict) -> dict:
     # Считаем смещения по дате выхода именно этого сотрудника
     items = planner.resolve_schedule({**plan, "start_date": employee["start_date"]})
 
-    # Контент — под должность сотрудника (расписание её профессии); если своего нет — общее.
-    schedule = planner.load_schedule(plan_id, employee.get("position") or "")
+    # Контент — по «плану профессии» сотрудника, если задан явно; иначе по его должности
+    # (расписание этой профессии). Если своего нет — общее (profession="").
+    profession = (employee.get("plan_profession") or "").strip() or (employee.get("position") or "")
+    schedule = planner.load_schedule(plan_id, profession)
     generated = {m["message_id"]: m for m in (schedule or {}).get("messages", [])}
 
     messages = []

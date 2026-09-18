@@ -70,6 +70,7 @@ class UserRequest(BaseModel):
     mentor: str | None = None
     manager: str | None = None
     plan_id: str | None = None
+    plan_profession: str | None = None
     start_date: str | None = None
     status: str | None = None
     notes: str | None = None

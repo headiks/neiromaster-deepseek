@@ -91,12 +91,15 @@ SCHEMA_STATEMENTS = (
         mentor                   TEXT DEFAULT '',
         manager                  TEXT DEFAULT '',
         plan_id                  TEXT,
+        plan_profession          TEXT NOT NULL DEFAULT '',
         start_date               TEXT,
         status                   TEXT DEFAULT 'planned',
         notes                    TEXT DEFAULT '',
         created_by               TEXT
     )
     """,
+    # Для БД, созданных до появления поля «план по профессии» — добавляем колонку идемпотентно.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_profession TEXT NOT NULL DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
     "CREATE INDEX IF NOT EXISTS idx_users_role     ON users(role)",
     # Сессии входа. В БД, а не в памяти процесса: переживают перезапуск приложения

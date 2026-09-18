@@ -67,7 +67,7 @@ _COLUMNS = (
     "id", "username", "full_name", "role", "active", "salt", "hash",
     "must_change_credentials", "created_at", "updated_at", "password_changed_at",
     "position", "department", "contact", "mentor", "manager", "plan_id",
-    "start_date", "status", "notes", "created_by",
+    "plan_profession", "start_date", "status", "notes", "created_by",
 )
 _BOOL_COLUMNS = ("active", "must_change_credentials")
 
@@ -201,6 +201,9 @@ def _blank_user(**fields) -> dict:
         "mentor": "",
         "manager": "",
         "plan_id": None,
+        # План по профессии: какое сгенерированное расписание использовать для рассылки.
+        # Пусто — берётся по должности сотрудника (position).
+        "plan_profession": "",
         "start_date": None,
         "status": "planned",
         "notes": "",
@@ -352,6 +355,7 @@ def _apply_profile(user: dict, raw: dict) -> dict:
         "mentor": (raw.get("mentor") or "").strip(),
         "manager": (raw.get("manager") or "").strip(),
         "plan_id": (raw.get("plan_id") or "").strip() or None,
+        "plan_profession": (raw.get("plan_profession") or "").strip(),
         "start_date": str(raw.get("start_date") or "")[:10] or None,
         "status": status,
         "notes": (raw.get("notes") or "").strip(),
