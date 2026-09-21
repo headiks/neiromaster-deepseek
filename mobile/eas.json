@@ -11,11 +11,11 @@
     "preview": {
       "distribution": "internal",
       "android": { "buildType": "apk" },
-      "env": { "EXPO_PUBLIC_API_BASE": "https://neiromaster.duckdns.org" }
+      "env": { "EXPO_PUBLIC_API_BASE": "https://smarta-office.ru" }
     },
     "production": {
       "autoIncrement": true,
-      "env": { "EXPO_PUBLIC_API_BASE": "https://neiromaster.duckdns.org" }
+      "env": { "EXPO_PUBLIC_API_BASE": "https://smarta-office.ru" }
     }
   },
   "submit": {
