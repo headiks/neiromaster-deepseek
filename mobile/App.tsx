@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, SafeAreaView, Platform } from "react-native";
+import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, SafeAreaView, Platform, StatusBar as RNStatusBar } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { S, ThemeProvider, useTheme, Palette } from "./src/theme";
+import { ChatIcon, HistoryIcon, AskIcon, SettingsIcon } from "./src/icons";
+
+// Высота системной строки состояния (Android). iOS обрабатывает SafeAreaView.
+const STATUSBAR_H = Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24) : 0;
+
+type IconCmp = React.ComponentType<{ color: string; size?: number }>;
 import { getToken, me, myMessages } from "./src/api";
 import { registerForPush, addNotificationListeners, presentLocal } from "./src/notifications";
 import Login from "./src/screens/Login";
@@ -107,35 +113,36 @@ function Root() {
       </View>
 
       <View style={st.tabbar}>
-        <TabBtn label="Сегодня" icon="💬" active={tab === "today"} onPress={() => setTab("today")} st={st} c={c} />
-        <TabBtn label="История" icon="🗂️" active={tab === "history"} onPress={() => setTab("history")} st={st} c={c} />
-        <TabBtn label="Вопрос" icon="❓" active={tab === "ask"} onPress={() => setTab("ask")} st={st} c={c} />
-        <TabBtn label="Настройки" icon="⚙️" active={tab === "settings"} onPress={() => setTab("settings")} st={st} c={c} />
+        <TabBtn label="Чат" Icon={ChatIcon} active={tab === "today"} onPress={() => setTab("today")} st={st} c={c} />
+        <TabBtn label="История" Icon={HistoryIcon} active={tab === "history"} onPress={() => setTab("history")} st={st} c={c} />
+        <TabBtn label="Вопрос" Icon={AskIcon} active={tab === "ask"} onPress={() => setTab("ask")} st={st} c={c} />
+        <TabBtn label="Настройки" Icon={SettingsIcon} active={tab === "settings"} onPress={() => setTab("settings")} st={st} c={c} />
       </View>
     </SafeAreaView>
   );
 }
 
-function TabBtn({ label, icon, active, onPress, st, c }: {
-  label: string; icon: string; active: boolean; onPress: () => void;
+function TabBtn({ label, Icon, active, onPress, st, c }: {
+  label: string; Icon: IconCmp; active: boolean; onPress: () => void;
   st: ReturnType<typeof makeStyles>; c: Palette;
 }) {
+  const tint = active ? c.primary : c.muted;
   return (
     <TouchableOpacity style={st.tab} onPress={onPress} activeOpacity={0.7}>
-      <Text style={[st.tabIcon, active && { opacity: 1 }]}>{icon}</Text>
-      <Text style={[st.tabLabel, active && { color: c.primary, fontWeight: "700" }]}>{label}</Text>
+      <Icon color={tint} size={24} />
+      <Text style={[st.tabLabel, { color: tint }, active && { fontWeight: "700" }]}>{label}</Text>
     </TouchableOpacity>
   );
 }
 
 const makeStyles = (c: Palette) => StyleSheet.create({
-  app: { flex: 1, backgroundColor: c.bg, paddingTop: Platform.OS === "android" ? 28 : 0 },
+  // paddingTop = высота статус-бара: шапка не заходит под часы/иконки системы.
+  app: { flex: 1, backgroundColor: c.bg, paddingTop: STATUSBAR_H },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: c.bg },
-  header: { paddingHorizontal: S.lg, paddingVertical: S.md, backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: c.border, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  brand: { fontSize: 18, fontWeight: "800", color: c.primary },
-  headerTab: { fontSize: 14, color: c.muted },
-  tabbar: { flexDirection: "row", borderTopWidth: 1, borderTopColor: c.border, backgroundColor: c.card },
-  tab: { flex: 1, alignItems: "center", paddingVertical: S.sm },
-  tabIcon: { fontSize: 20, opacity: 0.5 },
-  tabLabel: { fontSize: 11, color: c.muted, marginTop: 2 },
+  header: { paddingHorizontal: S.lg, paddingVertical: S.md, backgroundColor: c.card, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  brand: { fontSize: 19, fontWeight: "800", color: c.primary, letterSpacing: 0.2 },
+  headerTab: { fontSize: 13, color: c.muted },
+  tabbar: { flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border, backgroundColor: c.card, paddingBottom: Platform.OS === "android" ? 6 : 0 },
+  tab: { flex: 1, alignItems: "center", paddingTop: S.sm, paddingBottom: S.xs },
+  tabLabel: { fontSize: 11, marginTop: 4, letterSpacing: 0.1 },
 });

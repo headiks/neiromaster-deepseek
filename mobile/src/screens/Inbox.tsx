@@ -109,10 +109,10 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   dayChipText: { color: c.chipText, fontSize: 12, fontWeight: "600" },
   bubble: {
     alignSelf: "flex-start", maxWidth: "92%", backgroundColor: c.card,
-    borderRadius: 14, borderBottomLeftRadius: 4, borderWidth: 1, borderColor: c.border,
+    borderRadius: S.r, borderBottomLeftRadius: S.xs, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
     padding: S.md, marginBottom: S.sm,
   },
-  bTitle: { fontSize: 14, fontWeight: "700", color: c.primary },
+  bTitle: { fontSize: 14, fontWeight: "700", color: c.primary, letterSpacing: 0.2 },
   bBody: { fontSize: 15, color: c.text, marginTop: S.xs, lineHeight: 21 },
   bTime: { fontSize: 11, color: c.muted, marginTop: S.sm, alignSelf: "flex-end" },
 });
