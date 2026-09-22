@@ -239,8 +239,17 @@ async def get_schedule(plan_id: str, profession: str | None = None):
 
 @router.get("/plans/{plan_id}/professions", dependencies=admin_only)
 async def get_plan_professions(plan_id: str):
-    """Профессии, под которые уже сгенерированы отдельные расписания."""
-    return {"professions": planner.list_schedule_professions(plan_id)}
+    """Должности для селектора генерации:
+    - professions — под которые УЖЕ сгенерированы отдельные расписания;
+    - available — все известные должности (из профилей сотрудников и штатки), чтобы
+      админ мог выбрать введённую вручную/загруженную должность и сгенерировать под неё;
+    - generated_names — плоский список уже сгенерированных (для пометки в списке)."""
+    generated = planner.list_schedule_professions(plan_id)
+    return {
+        "professions": generated,
+        "available": _staffing_positions(),
+        "generated_names": sorted({g["profession"] for g in generated}),
+    }
 
 
 @router.post("/plans/{plan_id}/messages/{message_id}/regenerate", dependencies=admin_only)

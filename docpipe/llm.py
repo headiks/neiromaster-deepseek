@@ -13,7 +13,7 @@ import deepseek
 
 MODEL = os.environ.get("DEEPSEEK_DOCPIPE_MODEL", "") or None   # None -> дефолт deepseek.MODEL
 TIMEOUT = int(os.environ.get("NEIROMASTER_DOCPIPE_TIMEOUT", "300"))
-PROMPT_VERSION = "docpipe-7"   # v7: перевод на онлайн DeepSeek (json_object); калибровка v6 сохранена
+PROMPT_VERSION = "docpipe-8"   # v8: границы подэтапов (ВКЛЮЧАТЬ/НЕ ВКЛЮЧАТЬ из focus) + анти-обвязка
 
 _HEAD_TOKENS = 3000   # сколько начала документа отдаём в проход 1 (≈ символов * 3)
 
@@ -118,6 +118,14 @@ SECTION_SYSTEM = """Ты размечаешь ФРАГМЕНТ внутренн�
   Если в чанке есть конкретные правила, числа, условия, перечни, процедуры — это НЕ general,
   найди подходящий подэтап. Пустой substages при осмысленном содержании — почти всегда ошибка.
 
+ГРАНИЦЫ ТЕМЫ (строго): у подэтапов в списке даны пометки «ВКЛЮЧАТЬ» и «НЕ ВКЛЮЧАТЬ».
+- Размечай чанк подэтапом ТОЛЬКО если его содержание попадает в «ВКЛЮЧАТЬ» этого подэтапа.
+- Если чанк подходит под «НЕ ВКЛЮЧАТЬ» подэтапа — НЕ ставь этот подэтап, даже если тема близка
+  (напр. оглавление/сфера действия/комиссии колдоговора НЕ относятся к подэтапу про соцпакет).
+- Чисто юридическая/административная обвязка (оглавление, реквизиты и сфера действия договора,
+  состав и полномочия комиссий, порядок применения/изменения/продления ЛНА, вводные преамбулы)
+  — is_general=true, substages=[]; не привязывай её к содержательным подэтапам.
+
 Секция целиком:
 - is_meaningful=false, если ВЕСЬ фрагмент служебный (заголовок, номер, оглавление) без содержания.
 - professions — должности, для которых специфичен весь фрагмент. Копируй их ДОСЛОВНО из
@@ -129,12 +137,37 @@ SECTION_SYSTEM = """Ты размечаешь ФРАГМЕНТ внутренн�
 {"is_meaningful": true, "professions": [], "why": "Структура дохода, тарифы, КТУ и условия премирования.", "chunks": [{"marker": "Заработная плата состоит из оклада", "substages": [{"id":"first_day.pay_and_kpi","confidence":0.9}], "is_general": false}, {"marker": "Тарифная сетка и районные коэффициенты", "substages": [{"id":"first_day.pay_and_kpi","confidence":0.85}], "is_general": false}, {"marker": "Премия снижается при наличии дисциплинарного", "substages": [{"id":"first_day.pay_and_kpi","confidence":0.8}], "is_general": false}, {"marker": "Настоящее положение разработано в соответствии", "substages": [], "is_general": true}]}"""
 
 
+def _focus_for(sid, sub):
+    """Границы темы подэтапа (ИЗВЛЕЧЬ/ЗАПРЕТ) — из каталога по catalog-id, фолбэк — focus самого
+    подэтапа. Даёт классификатору те же границы, что у генерации: точнее метки, меньше мусора."""
+    f = sub.get("focus") if isinstance(sub.get("focus"), dict) else None
+    if f:
+        return f
+    try:
+        import planner
+        fmap = planner._focus_map()
+    except Exception:
+        return None
+    hit = fmap.get(sid)
+    if not hit and sid and "." not in str(sid):
+        hit = next((v for k, v in fmap.items() if k.endswith("." + str(sid))), None)
+    return hit if isinstance(hit, dict) else None
+
+
 def _plan_lines(structure: dict) -> str:
     lines = []
     for st in (structure or {}).get("stages") or []:
         for sub in st.get("substages") or []:
+            sid = sub.get("id")
             desc = (sub.get("description") or sub.get("brief") or "").strip()
-            lines.append(f"- {sub.get('id')} [{st.get('title')} / {sub.get('title')}]: {desc}")
+            line = f"- {sid} [{st.get('title')} / {sub.get('title')}]: {desc}"
+            f = _focus_for(sid, sub)
+            if f:
+                if f.get("include"):
+                    line += f"\n    ВКЛЮЧАТЬ (относится к теме): {f['include']}"
+                if f.get("exclude"):
+                    line += f"\n    НЕ ВКЛЮЧАТЬ (не относится): {f['exclude']}"
+            lines.append(line)
     return "\n".join(lines)
 
 

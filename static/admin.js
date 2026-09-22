@@ -350,15 +350,20 @@
         function loadPlanTexts() {
             const pid = document.getElementById('pt-plan').value;
             if (!pid) { document.getElementById('pt-body').innerHTML = '<div class="empty-hint">Выберите план.</div>'; return; }
-            // список должностей, под которые есть отдельные тексты (+ «общий»)
-            api(`/plans/${encodeURIComponent(pid)}/professions`).then(r => r.ok ? r.json() : { professions: [] })
+            // Селектор должностей: объединяем ДОСТУПНЫЕ (из профилей сотрудников и штатки)
+            // с УЖЕ сгенерированными — чтобы введённую вручную/загруженную должность можно
+            // было выбрать и сгенерировать под неё. ✓ помечает те, где текст уже есть.
+            api(`/plans/${encodeURIComponent(pid)}/professions`).then(r => r.ok ? r.json() : {})
                 .then(d => {
-                    const profs = d.professions || [];
+                    const gen = new Set(d.generated_names
+                        || (d.professions || []).map(p => (typeof p === 'string') ? p : (p.profession || p.slug || '')));
+                    const names = Array.from(new Set([...(d.available || []), ...gen]))
+                        .sort((a, b) => a.localeCompare(b, 'ru'));
                     document.getElementById('pt-prof').innerHTML =
                         '<option value="">Общий текст</option>' +
-                        profs.map(p => {
-                            const name = (typeof p === 'string') ? p : (p.profession || p.slug || '');
-                            return `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`;
+                        names.map(name => {
+                            const mark = gen.has(name) ? '✓ ' : '';
+                            return `<option value="${escapeHtml(name)}">${mark}${escapeHtml(name)}</option>`;
                         }).join('');
                 }).finally(renderPlanTexts);
         }
@@ -1706,20 +1711,36 @@
                 list.appendChild(li);
             });
         }
-        function comboOpen(input, items) {
-            const panel = comboEls();
-            comboTarget = input; comboAll = items;
-            const r = input.getBoundingClientRect();
+        // Панель position:fixed — координаты вьюпорта. Пересчитываем их на КАЖДЫЙ скролл/ресайз,
+        // пока список открыт, иначе панель «отклеивается» от поля при прокрутке страницы.
+        function comboPosition() {
+            const panel = document.getElementById('combo-panel');
+            if (!comboTarget || !panel || !panel.classList.contains('open')) return;
+            const r = comboTarget.getBoundingClientRect();
             panel.style.left = r.left + 'px';
             panel.style.top = (r.bottom + 4) + 'px';
             panel.style.width = Math.max(r.width, 240) + 'px';
+        }
+        function comboOpen(input, items) {
+            const panel = comboEls();
+            comboTarget = input; comboAll = items;
             const s = document.getElementById('combo-search');
             s.value = '';
             comboRender('');
             panel.classList.add('open');
+            comboPosition();
             s.focus();
+            // capture=true — ловим скролл любого прокручиваемого предка, не только window.
+            window.addEventListener('scroll', comboPosition, true);
+            window.addEventListener('resize', comboPosition);
         }
-        function comboClose() { const p = document.getElementById('combo-panel'); if (p) p.classList.remove('open'); comboTarget = null; }
+        function comboClose() {
+            const p = document.getElementById('combo-panel');
+            if (p) p.classList.remove('open');
+            comboTarget = null;
+            window.removeEventListener('scroll', comboPosition, true);
+            window.removeEventListener('resize', comboPosition);
+        }
 
         // Привязка полей карточки к combobox (клик открывает список всех значений с поиском).
         (function () {

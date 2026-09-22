@@ -100,3 +100,10 @@ async def doc_breakdown_page(request: Request):
 async def queue_test_page(request: Request):
     """Диагностика очередей (RQ/Redis): статус воркеров, длина очереди, тест-задача."""
     return page_for_admin(request, "queue_test.html")
+
+
+@router.get("/globaltest", response_class=HTMLResponse)
+async def globaltest_page(request: Request):
+    """Хаб тестирования и диагностики: все служебные инструменты в одном месте
+    (реестр/доска документов, разбор, S3, база планов, тест уведомлений, очереди, журнал)."""
+    return page_for_admin(request, "globaltest.html")
