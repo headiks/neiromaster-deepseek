@@ -353,7 +353,7 @@ def import_records(records: list) -> dict:
                 user = users.create_user(
                     {"username": username, "password": password, "full_name": name,
                      "position": position, "department": department, "start_date": date or None},
-                    role=users.ROLE_EMPLOYEE, must_change_credentials=True)
+                    role=users.ROLE_EMPLOYEE, issued_password=True)
             except ValueError as e:
                 skipped.append({"full_name": name, "reason": str(e)})
                 continue
@@ -377,7 +377,7 @@ def credentials_xlsx(rows: list) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Доступы"
-    ws.append(["ФИО", "Логин", "Временный пароль", "Должность", "Подразделение"])
+    ws.append(["ФИО", "Логин", "Пароль", "Должность", "Подразделение"])
     for r in rows:
         ws.append([r.get("full_name") or "", r.get("username") or "",
                    r.get("temp_password") or r.get("password") or "",

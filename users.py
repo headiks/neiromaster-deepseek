@@ -405,11 +405,17 @@ def _apply_profile(user: dict, raw: dict) -> dict:
 
 
 def create_user(raw: dict, actor: Optional[dict] = None, role: str = ROLE_EMPLOYEE,
-                active: bool = True, must_change_credentials: bool = False) -> dict:
+                active: bool = True, must_change_credentials: bool = False,
+                issued_password: bool = False) -> dict:
     """
     Создаёт пользователя. Логин и пароль необязательны: администратор может завести
     профиль заранее, а логин выдать позже — войти без пароля всё равно нельзя.
+    issued_password — пароль выдал администратор: храним, чтобы показать/выгрузить.
+    Сотрудник пароль не меняет (только через администратора), поэтому флага
+    «сменить при входе» у сотрудника не бывает.
     """
+    if role == ROLE_EMPLOYEE:
+        must_change_credentials = False
     username = raw.get("username")
     password = raw.get("password")
 
@@ -438,7 +444,7 @@ def create_user(raw: dict, actor: Optional[dict] = None, role: str = ROLE_EMPLOY
             user["salt"], user["hash"] = hash_password(password)
             user["password_changed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             user["must_change_credentials"] = must_change_credentials
-            user["temp_password"] = password if must_change_credentials else ""
+            user["temp_password"] = password if (must_change_credentials or issued_password) else ""
 
         _insert(user)
     return dict(user)
@@ -468,7 +474,10 @@ def set_username(user_id: str, username: str) -> dict:
     return dict(user)
 
 
-def set_password(user_id: str, password: str, must_change: bool = False) -> dict:
+def set_password(user_id: str, password: str, must_change: bool = False,
+                 issued: bool = False) -> dict:
+    """issued — пароль выдал администратор (виден ему в списке и в Excel). Сотруднику
+    флаг «сменить при входе» не ставится: пароль сотрудника меняет только администратор."""
     validate_password(password)
     salt_hex, hash_hex = hash_password(password)
     with _lock:
@@ -478,9 +487,11 @@ def set_password(user_id: str, password: str, must_change: bool = False) -> dict
         user["salt"] = salt_hex
         user["hash"] = hash_hex
         user["password_changed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        if user.get("role") == ROLE_EMPLOYEE:
+            must_change = False
         user["must_change_credentials"] = must_change
-        # Выдан администратором (must_change) — помним до первого входа; свой — забываем.
-        user["temp_password"] = password if must_change else ""
+        # Выдан администратором — помним, чтобы показать; свой (админ сменил себе) — забываем.
+        user["temp_password"] = password if (must_change or issued) else ""
         user["updated_at"] = user["password_changed_at"]
         _save_user(user)
     return dict(user)

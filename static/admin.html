@@ -24,6 +24,7 @@
         <button class="tab" data-tab="builder"><span class="tab-step">3</span><i data-lucide="calendar-cog"></i> Планы</button>
         <button class="tab" data-tab="plantexts"><span class="tab-step">4</span><i data-lucide="message-square-text"></i> Сообщения</button>
         <button class="tab" data-tab="questions"><i data-lucide="help-circle"></i> Вопросы <span id="questions-badge" class="q-badge" style="display:none;"></span></button>
+        <button class="tab" data-tab="testing"><i data-lucide="flask-conical"></i> Тестирование</button>
     </div>
 
     <div class="tab-pane" id="pane-plantexts">
@@ -77,6 +78,27 @@
             <div class="stage-hint">Привязка — по разметке ИИ (каталог этапов). Нужна для проверки, в обычной работе достаточно сводки выше.</div>
             <div class="stage-board" id="stage-board"><div class="empty-hint">Загрузка структуры...</div></div>
         </details>
+    </div>
+
+    <!-- ==================== ТЕСТИРОВАНИЕ: тестовые сообщения ==================== -->
+    <div class="tab-pane" id="pane-testing">
+        <div class="section-head-row">
+            <h2 class="section-title"><i data-lucide="flask-conical"></i> Тестовые сообщения</h2>
+            <a class="ghost-btn" href="/globaltest" style="text-decoration:none;"><i data-lucide="wrench"></i> Прочая диагностика</a>
+        </div>
+        <div class="stage-hint">Отправьте пользователю сообщения любого типа — они придут в приложение (пушем) и
+            в кабинет на сайте точно так же, как сообщения плана адаптации. Содержимое, тип и задержку можно менять.</div>
+        <div class="toolbar" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:12px;">
+            <div class="field"><label>Кому</label><select id="tm-user" style="min-width:280px;"></select></div>
+            <button class="ghost-btn" onclick="tmLoadSamples()"><i data-lucide="layers"></i> Примеры всех типов</button>
+            <div class="field"><label>Добавить сообщение</label>
+                <select id="tm-add-kind" onchange="tmAdd(this.value); this.value='';"><option value="">— тип —</option></select></div>
+        </div>
+        <div id="tm-list"></div>
+        <div class="toolbar" style="margin-top:14px;">
+            <button class="primary-btn" id="tm-send" onclick="tmSend()"><i data-lucide="send-horizontal"></i> Отправить</button>
+            <span id="tm-status" style="color:#475569;font-size:14px;"></span>
+        </div>
     </div>
 
     <!-- ==================== ВОПРОСЫ БЕЗ ОТВЕТА ==================== -->
@@ -154,9 +176,9 @@
         <div class="card" id="staffing-block" style="display:none;">
             <p class="muted" style="color:#64748b;font-size:14px;margin-top:0;">
                 Загрузите штатку (xlsx, xls, csv) — ИИ сам определит структуру. Строки с ФИО станут
-                профилями сотрудников (логин из фамилии и инициалов, временный пароль), строки без ФИО —
+                профилями сотрудников (логин из фамилии и инициалов, пароль), строки без ФИО —
                 вакансиями. Уже заведённые люди и вакансии пропускаются. Сразу после создания
-                скачается Excel с логинами и временными паролями.
+                скачается Excel с логинами и паролями.
             </p>
             <div class="dropzone" id="staffing-dropzone">
                 <div><i data-lucide="file-spreadsheet" style="width:28px;height:28px;display:block;margin:0 auto 8px;color:var(--color-accent);"></i> Перетащите штатку сюда или нажмите, чтобы выбрать файл</div>
@@ -174,7 +196,7 @@
                 <label>Подразделение</label>
                 <select id="dept-filter" onchange="renderEmployees(employeesCache)"><option value="">Все подразделения</option></select>
             </div>
-            <a class="ghost-btn" href="/users/credentials.xlsx" style="align-self:end;text-decoration:none;" title="Все, кто ещё не задал свой пароль"><i data-lucide="download"></i> Логины и временные пароли (Excel)</a>
+            <a class="ghost-btn" href="/users/credentials.xlsx" style="align-self:end;text-decoration:none;" title="Логины и пароли сотрудников"><i data-lucide="download"></i> Логины и пароли (Excel)</a>
             <button class="del-btn" id="bulk-delete-btn" style="align-self:end;display:none;" onclick="bulkDelete()"><i data-lucide="user-x"></i> Удалить отмеченных</button>
         </div>
         <div id="employee-list"><div class="empty-hint">Загрузка списка пользователей...</div></div>
@@ -192,7 +214,7 @@
                 <input type="text" id="emp-full_name" placeholder="Иванов Иван Иванович">
             </div>
             <div class="field">
-                <label>Логин <span class="help" title="Создаётся один раз из фамилии и инициалов и не меняется. Временный пароль выдаётся автоматически — его видно в списке и в Excel, пока сотрудник не задаст свой.">?</span></label>
+                <label>Логин <span class="help" title="Создаётся один раз из фамилии и инициалов и не меняется. Пароль выдаётся автоматически и виден в списке и в Excel. Сотрудник пароль не меняет — только администратор (кнопка «Доступ»).">?</span></label>
                 <input type="text" id="emp-username" disabled placeholder="создастся из ФИО">
             </div>
             <div class="field">
@@ -251,10 +273,10 @@
         <h3 style="margin-top:0;" id="cred-title">Доступ</h3>
         <input type="hidden" id="cred-user-id">
         <div style="margin-bottom:10px;">Логин: <b id="cred-login"></b></div>
-        <label>Новый временный пароль</label>
+        <label>Новый пароль</label>
         <input type="text" id="cred-password" placeholder="пусто — сгенерируем автоматически">
         <div style="font-size:12px;color:#94a3b8;margin:-8px 0 14px;">
-            Старый пароль перестанет действовать. При входе сотрудник задаст свой пароль.
+            Старый пароль перестанет действовать, сотрудника разлогинит на всех устройствах.
         </div>
         <div id="cred-result" class="plan-note" style="display:none;margin-bottom:12px;"></div>
         <div class="error" id="cred-error" style="display:none;margin-bottom:12px;"></div>

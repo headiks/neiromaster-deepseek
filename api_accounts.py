@@ -119,6 +119,8 @@ async def api_setup_credentials(req: CredentialsRequest, response: Response,
 @router.post("/api/password")
 async def api_change_password(req: PasswordChangeRequest, response: Response,
                               user: dict = Depends(current_user)):
+    if user.get("role") == users.ROLE_EMPLOYEE:
+        raise HTTPException(status_code=403, detail="Пароль сотрудника меняет администратор")
     try:
         auth.change_own_password(user, req.old_password, req.new_password)
     except ValueError as e:
@@ -171,17 +173,16 @@ async def api_answer_message(message_id: str, req: AnswersRequest,
     return {"saved": True}
 
 
-@router.post("/api/my/messages/test-kinds", dependencies=logged_in)
-async def api_test_all_kinds(user: dict = Depends(require_setup_done)):
-    """Прислать себе по сообщению каждого типа — посмотреть, как они выглядят."""
-    return {"sent": len(messaging.send_all_kinds(user["id"]))}
-
-
 @router.post("/api/my/status", dependencies=logged_in)
 async def api_set_my_status(req: SickRequest, user: dict = Depends(require_setup_done)):
     """Сотрудник сам ставит/снимает больничный. Пауза приостанавливает доставку
     сообщений плана (см. messaging.dispatch_due). Возвращает актуальный статус."""
+    was_sick = user.get("status") == "paused"
     updated = users.set_status(user["id"], "paused" if req.sick else "active")
+    if was_sick != req.sick:
+        messaging.notify_mentor_sick(updated, req.sick)
+        activitylog.log("action", user=user, path="/api/my/status",
+                        detail={"action": "sick_on" if req.sick else "sick_off"})
     return {"status": updated["status"], "sick": updated["status"] == "paused"}
 
 

@@ -69,12 +69,8 @@ export const markRead = (id: string) =>
 // Ответы на чек-лист/опрос/тест — хранятся на сервере (видны и в кабинете на сайте).
 export const answer = (id: string, answers: Record<string, any>) =>
   request(`/api/my/messages/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify({ answers }) });
-// Тест: прислать себе по сообщению каждого типа.
-export const testAllKinds = () => request<{ sent: number }>("/api/my/messages/test-kinds", { method: "POST" });
 export const ask = (question: string, session_id?: string | null) =>
   request("/ask", { method: "POST", body: JSON.stringify({ question, session_id }) });
-export const changePassword = (old_password: string, new_password: string) =>
-  request("/api/password", { method: "POST", body: JSON.stringify({ old_password, new_password }) });
 // Больничный: пауза приостанавливает доставку сообщений плана на сервере.
 export const setSick = (sick: boolean) =>
   request<{ status: string; sick: boolean }>("/api/my/status", {

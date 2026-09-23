@@ -104,6 +104,10 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_password TEXT DEFAULT ''",
+    # Пароль сотрудника меняет только администратор: флага «сменить при входе» у
+    # сотрудников нет. Раньше он стоял у всех из штатки и блокировал /api/my/* (403) —
+    # приложение не получало сообщений и не регистрировало push-токен.
+    "UPDATE users SET must_change_credentials = FALSE WHERE role = 'employee' AND must_change_credentials",
     "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
     "CREATE INDEX IF NOT EXISTS idx_users_role     ON users(role)",
     # Сессии входа. В БД, а не в памяти процесса: переживают перезапуск приложения

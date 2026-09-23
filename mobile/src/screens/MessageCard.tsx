@@ -6,7 +6,7 @@ import React, { useMemo, useState } from "react";
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { S, useTheme, Palette } from "../theme";
 import * as api from "../api";
-import { Msg, title, body, hhmm, KIND_LABEL } from "../format";
+import { Msg, title, body, hhmm } from "../format";
 
 type Answers = Record<string, any>;
 
@@ -16,7 +16,6 @@ export default function MessageCard({ m }: { m: Msg }) {
   const [answers, setAnswers] = useState<Answers>(m.answers || {});
   const [saved, setSaved] = useState(!!m.answers && Object.keys(m.answers).length > 0);
   const p: any = m.payload || {};
-  const kind = m.kind || "message";
 
   const save = (next: Answers) => {
     setAnswers(next);
@@ -84,14 +83,11 @@ export default function MessageCard({ m }: { m: Msg }) {
     content = body(m) ? <Text style={st.body}>{body(m)}</Text> : null;
   }
 
+  // Тип сообщения сотруднику не показываем — только содержимое.
   const t = hhmm(m);
-  const label = KIND_LABEL[kind];
   return (
     <View style={st.bubble}>
-      <View style={st.head}>
-        <Text style={st.title}>{title(m)}</Text>
-        {label ? <Text style={st.chip}>{label}</Text> : null}
-      </View>
+      <Text style={st.title}>{title(m)}</Text>
       {content}
       {t ? <Text style={st.time}>{t}</Text> : null}
     </View>
@@ -104,10 +100,7 @@ const makeStyles = (c: Palette) => StyleSheet.create({
     borderRadius: S.r, borderBottomLeftRadius: S.xs, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
     padding: S.md, marginBottom: S.sm,
   },
-  head: { flexDirection: "row", alignItems: "flex-start", gap: S.sm },
-  title: { flex: 1, fontSize: 14, fontWeight: "700", color: c.primary, letterSpacing: 0.2 },
-  chip: { fontSize: 11, color: c.chipText, backgroundColor: c.chipBg, borderRadius: 8,
-    paddingHorizontal: 6, paddingVertical: 2, overflow: "hidden" },
+  title: { fontSize: 14, fontWeight: "700", color: c.primary, letterSpacing: 0.2 },
   body: { fontSize: 15, color: c.text, marginTop: S.xs, lineHeight: 21 },
   meta: { fontSize: 12, color: c.muted, marginTop: S.sm },
   time: { fontSize: 11, color: c.muted, marginTop: S.sm, alignSelf: "flex-end" },

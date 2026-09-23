@@ -300,6 +300,27 @@ def save_answers(employee_id: str, message_row_id: str, answers: dict) -> bool:
     return bool(rows)
 
 
+# ---------- Больничный ----------
+def notify_mentor_sick(employee: dict, sick: bool) -> bool:
+    """Сотрудник ушёл на больничный / вернулся -> уведомление его наставнику (инбокс + пуш).
+    Наставник в карточке — ФИО; ищем пользователя с таким ФИО. Не нашли -> False."""
+    name = (employee.get("mentor") or "").strip().lower()
+    if not name:
+        return False
+    mentor = next((u for u in users.list_users()
+                   if (u.get("full_name") or "").strip().lower() == name and u["id"] != employee["id"]), None)
+    if mentor is None:
+        return False
+    who = employee.get("full_name") or employee.get("username") or "Сотрудник"
+    if sick:
+        deliver_now(mentor["id"], f"{who} на больничном",
+                    f"{who} отметил(а) больничный. Сообщения плана адаптации приостановлены до выхода.")
+    else:
+        deliver_now(mentor["id"], f"{who} вернулся(ась) к работе",
+                    f"{who} снял(а) отметку о больничном. Сообщения плана адаптации возобновлены.")
+    return True
+
+
 # ---------- Тест: по сообщению каждого типа ----------
 _SAMPLE = {
     "message": ("Добро пожаловать!", {
@@ -336,16 +357,55 @@ _SAMPLE = {
 }
 
 
-def send_all_kinds(user_id: str) -> list:
-    """Кладёт в инбокс (и шлёт пушем) по одному сообщению КАЖДОГО типа — в том же формате,
-    что и сообщения плана (msgconvert). Для проверки отображения в приложении и на сайте."""
+TEST_FIELDS = ("intro", "body", "checklist", "questions")
+
+
+def test_samples() -> list:
+    """Примеры тестовых сообщений всех типов в формате редактора админки:
+    {kind, title, intro, body, checklist[], questions[{text, options[{text, correct}], explanation}]}.
+    У текстовых типов всё содержимое сведено в body — его админ и правит."""
     import msgconvert
     out = []
     for kind, (title, raw) in _SAMPLE.items():
-        content = {"title": title, **raw}
+        item = {"kind": kind, "title": title, "intro": raw.get("intro", ""), "body": raw.get("body", ""),
+                "checklist": list(raw.get("checklist") or []), "questions": [], "delay": 0}
+        if msgconvert.KIND_TO_FORMAT.get(kind) == "message":
+            item["intro"], item["body"] = "", msgconvert.to_text({"title": "", **raw})
+        for q in raw.get("questions") or []:
+            item["questions"].append({
+                "text": q["text"], "explanation": q.get("explanation", ""),
+                "options": [o if isinstance(o, dict) else {"text": o} for o in q.get("options") or []]})
+        out.append(item)
+    return out
+
+
+def send_test_messages(user_id: str, items: list | None = None) -> list:
+    """Тестовые сообщения из админки (вкладка «Тестирование»): любые типы и содержимое,
+    в том же формате, что сообщения плана (msgconvert), — чтобы проверить, как они выглядят
+    и приходят в приложение. delay>0 — выпустит планировщик через delay секунд.
+    items=None — по одному примеру каждого типа."""
+    import uuid
+    import msgconvert
+    out = []
+    for it in (items if items is not None else test_samples()):
+        kind = it.get("kind") if it.get("kind") in msgconvert.KIND_TO_FORMAT else "message"
+        title = (it.get("title") or "").strip() or "Тестовое сообщение"
+        content = {"title": title, **{k: it.get(k) for k in TEST_FIELDS if it.get(k)}}
         payload = msgconvert.convert(content, kind)
-        out.append(deliver_now(user_id, f"Тест · {title}", msgconvert.to_text(content),
-                               kind=kind, payload=payload))
+        text = msgconvert.to_text(content)
+        delay = max(0, int(it.get("delay") or 0))
+        if delay <= 0:
+            out.append(deliver_now(user_id, title, text, kind=kind, payload=payload))
+            continue
+        mid = f"test-{uuid.uuid4().hex[:8]}"
+        row_id = f"{user_id}:{mid}"
+        db.execute(
+            "INSERT INTO scheduled_messages "
+            "(id, employee_id, message_id, title, body, kind, payload, send_at, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, now() + make_interval(secs => %s), 'pending')",
+            (row_id, user_id, mid, title, text, kind, Json(payload), delay),
+        )
+        out.append(row_id)
     return out
 
 
