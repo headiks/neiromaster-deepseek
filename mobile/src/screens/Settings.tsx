@@ -19,6 +19,8 @@ export default function Settings({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [newp, setNewp] = useState("");
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+  const [testBusy, setTestBusy] = useState(false);
 
   useEffect(() => {
     api.me().then((u: any) => { setMe(u); setSick(u?.status === "paused"); }).catch(() => {});
@@ -48,6 +50,19 @@ export default function Settings({ onLoggedOut }: { onLoggedOut: () => void }) {
       setMsg({ text: e?.message || "Не удалось сменить пароль", ok: false });
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Тест: сервер присылает по сообщению каждого типа — сразу в «Чат» и пушем на телефон.
+  async function testKinds() {
+    setTestBusy(true); setTestMsg(null);
+    try {
+      const r = await api.testAllKinds();
+      setTestMsg(`Отправлено сообщений: ${r.sent}. Откройте «Чат» — там по одному каждого типа.`);
+    } catch (e: any) {
+      setTestMsg(e?.message || "Не удалось отправить");
+    } finally {
+      setTestBusy(false);
     }
   }
 
@@ -83,6 +98,17 @@ export default function Settings({ onLoggedOut }: { onLoggedOut: () => void }) {
             : <Switch value={sick} onValueChange={toggleSick}
                 trackColor={{ true: c.primary, false: c.border }} thumbColor="#fff" />}
         </View>
+      </View>
+
+      <Text style={[st.h, { marginTop: S.xl }]}>Уведомления</Text>
+      <View style={st.card}>
+        <Text style={st.tTitle}>Проверить все типы сообщений</Text>
+        <Text style={st.tSub}>Придёт по одному сообщению каждого типа: текст, напоминание,
+          чек-лист, проверка, опрос, мини-тест, передача наставнику.</Text>
+        {testMsg ? <Text style={[st.msg, { color: c.muted }]}>{testMsg}</Text> : null}
+        <TouchableOpacity style={[st.btn, testBusy && st.off]} onPress={testKinds} disabled={testBusy}>
+          {testBusy ? <ActivityIndicator color={c.primaryText} /> : <Text style={st.btnText}>Прислать тестовые сообщения</Text>}
+        </TouchableOpacity>
       </View>
 
       <Text style={[st.h, { marginTop: S.xl }]}>Профиль</Text>

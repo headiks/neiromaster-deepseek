@@ -66,6 +66,11 @@ export const myMessages = () => request<{ messages: any[]; unread: number }>("/a
 export const myQuestions = () => request<{ questions: any[] }>("/api/my/questions");
 export const markRead = (id: string) =>
   request(`/api/my/messages/${encodeURIComponent(id)}/read`, { method: "POST" });
+// Ответы на чек-лист/опрос/тест — хранятся на сервере (видны и в кабинете на сайте).
+export const answer = (id: string, answers: Record<string, any>) =>
+  request(`/api/my/messages/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify({ answers }) });
+// Тест: прислать себе по сообщению каждого типа.
+export const testAllKinds = () => request<{ sent: number }>("/api/my/messages/test-kinds", { method: "POST" });
 export const ask = (question: string, session_id?: string | null) =>
   request("/ask", { method: "POST", body: JSON.stringify({ question, session_id }) });
 export const changePassword = (old_password: string, new_password: string) =>
