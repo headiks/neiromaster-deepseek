@@ -69,7 +69,8 @@
                 if (tab.dataset.tab === 'plantexts') ensurePlanTextsLoaded();
                 if (tab.dataset.tab === 'employees') ensureEmployeesLoaded();
                 if (tab.dataset.tab === 'questions') loadQuestions();
-                if (tab.dataset.tab === 'docs') loadStageBoard();
+                renderNextStep();
+                if (tab.dataset.tab === 'docs') { loadCoverage(); if (document.getElementById('stage-details').open) loadStageBoard(); }
             });
         });
 
@@ -84,7 +85,6 @@
             if (employeesCache.length) renderEmployees(employeesCache);
             if (docsCache.length) renderDocuments(docsCache);   // группировка по владельцу — только суперадмину
             // «Переанализировать всё» задевает документы всех администраторов -> только суперадмину
-            if (isOwner) document.getElementById('btn-reanalyze-all').style.display = '';
         }).catch(() => {});
 
         function logout() {
@@ -122,7 +122,6 @@
         const dropzone = document.getElementById('dropzone');
         const fileInput = document.getElementById('file-input');
         const docList = document.getElementById('doc-list');
-        const folderGrid = document.getElementById('folder-grid');
         const uploadProgress = document.getElementById('upload-progress');
 
         dropzone.addEventListener('click', () => fileInput.click());
@@ -158,14 +157,34 @@
             fileInput.value = '';
         }
 
-        function uploadFile(file) {
+        function uploadFile(file, mode) {
             const formData = new FormData();
             formData.append('file', file);
             uploadStatus[file.name] = 'загрузка...';
             renderUploadStatus();
 
-            apiJson('/documents/upload', { method: 'POST', body: formData })
+            apiJson('/documents/upload' + (mode ? '?mode=' + mode : ''), { method: 'POST', body: formData })
                 .then(({ ok, data }) => {
+                    if (data && data.conflict === 'same_name') {
+                        // Новая версия документа: одной кнопкой заменить старую или сохранить рядом.
+                        const who = data.uploaded_by_name ? `, загрузил ${data.uploaded_by_name}` : '';
+                        const replace = data.can_replace && confirm(
+                            `Документ «${data.filename}» уже есть (${(data.uploaded_at || '').replace('T', ' ')}${who}).\n\n`
+                            + 'ОК — заменить старую версию новой (старая удалится, сообщения по ней обновятся).\n'
+                            + 'Отмена — выбрать другое действие.');
+                        if (replace) { uploadFile(file, 'replace'); return; }
+                        if (confirm(`Сохранить новый файл как отдельный документ (под именем «${data.filename.replace(/(\.[^.]+)$/, ' (2)$1')}» или похожим)?`)) {
+                            uploadFile(file, 'separate'); return;
+                        }
+                        delete uploadStatus[file.name];
+                        renderUploadStatus();
+                        return;
+                    }
+                    if (data && data.duplicate) {
+                        uploadStatus[file.name] = escapeHtml(data.message);
+                        renderUploadStatus();
+                        return;
+                    }
                     if (!ok) {
                         uploadStatus[file.name] = `${escapeHtml(data.detail || 'ошибка загрузки')}`;
                         renderUploadStatus();
@@ -207,7 +226,7 @@
                 }
             });
             renderUploadStatus();
-            if (settled) loadFolders();   // документ отнесён к папкам -> пересчитать «N док.»
+            if (settled) { loadFolders(); loadCoverage(); renderNextStep(); }
         }
 
         // Живая сводка над списком: какой документ сейчас обрабатывается и сколько в очереди.
@@ -231,10 +250,7 @@
             el.innerHTML = parts.join(' · ');
             el.style.display = 'block';
 
-            // Общий прогресс НЕ считаем по статусам во время полной переклассификации:
-            // там и готовые, и ещё не тронутые документы одинаково «indexed», из-за чего
-            // бар прыгал 86%→100% на каждом документе. Его ведёт задача (reanalyzeAll → NM.runJob).
-            if (overall && !reanalyzeJobActive) {
+            if (overall) {
                 // Здесь бар осмыслен только для загрузок (uploaded→processing→indexed).
                 const uploads = docs.filter(d => d.status === 'uploaded' || d.status === 'processing');
                 if (!uploads.length) { overall.style.display = 'none'; return; }
@@ -268,7 +284,6 @@
         }
 
         let anyReanalyzing = false;   // есть документы в статусе reanalyzing -> опрашиваем чаще
-        let reanalyzeJobActive = false;   // идёт полная переклассификация -> общий бар ведёт задача
         let docsCache = [];
         function loadDocuments() {
             return api('/documents').then(r => r.json()).then(d => {
@@ -288,7 +303,8 @@
 
         function loadFolders() {
             return api('/folders').then(r => r.json())
-                .then(d => { allFolders = d.folders || []; renderFolders(); loadStageBoard(); }).catch(() => {});
+                .then(d => { allFolders = d.folders || [];
+                    if (document.getElementById('stage-details').open) loadStageBoard(); }).catch(() => {});
         }
 
         // Форматы соответствуют config.SUPPORTED_EXT. Ключ — расширение файла (оно же mime в реестре).
@@ -360,7 +376,7 @@
                     const names = Array.from(new Set([...(d.available || []), ...gen]))
                         .sort((a, b) => a.localeCompare(b, 'ru'));
                     document.getElementById('pt-prof').innerHTML =
-                        '<option value="">Общий текст</option>' +
+                        '<option value="">Общие (для всех должностей)</option>' +
                         names.map(name => {
                             const mark = gen.has(name) ? '✓ ' : '';
                             return `<option value="${escapeHtml(name)}">${mark}${escapeHtml(name)}</option>`;
@@ -377,7 +393,7 @@
             api(`/plans/${encodeURIComponent(pid)}/schedule${prof ? '?profession=' + encodeURIComponent(prof) : ''}`)
                 .then(r => r.status === 404 ? null : r.json())
                 .then(sch => {
-                    if (!sch) { meta.textContent = ''; body.innerHTML = '<div class="empty-hint">Тексты ещё не сгенерированы. Сгенерируйте план во вкладке «Планы».</div>'; return; }
+                    if (!sch) { meta.textContent = ''; renderPlanSkeleton(pid, body); return; }
                     const msgs = sch.messages || [];
                     meta.textContent = `сообщений: ${msgs.length}${sch.generated_at ? ' · ' + sch.generated_at.replace('T', ' ') : ''}`;
                     // группировка по этапам -> подэтапам (порядок как в расписании)
@@ -422,16 +438,68 @@
                 .catch(() => { body.innerHTML = '<div class="empty-hint">Не удалось загрузить тексты.</div>'; });
         }
 
+        // Сообщений ещё нет: показываем структуру ВЫБРАННОГО плана (свой или стандартный) —
+        // какие этапы/подэтапы будут, и что делать дальше.
+        function renderPlanSkeleton(pid, body) {
+            api(`/plans/${encodeURIComponent(pid)}`).then(r => r.ok ? r.json() : null).then(d => {
+                const stages = ((d || {}).plan || {}).stages || [];
+                const note = `<div class="plan-note"><i data-lucide="info"></i> Сообщений по этому плану ещё нет.
+                    Нажмите «Обновить сообщения плана» — ИИ напишет их по загруженным документам.</div>`;
+                body.innerHTML = note + stages.map((st, i) => `<section class="pt-stage"><h3 class="pt-stage-h">${i + 1}. ${escapeHtml(st.title)}</h3>`
+                    + (st.substages || []).map(sub => `<div class="pt-sub"><div class="pt-sub-h"><b>${escapeHtml(sub.title)}</b>
+                        <span class="pt-status pt-status-pending">ещё не сгенерировано</span></div>
+                        ${sub.brief ? `<div class="pt-src">О чём: ${escapeHtml(sub.brief.slice(0, 220))}</div>` : ''}</div>`).join('')
+                    + '</section>').join('');
+                refreshIcons();
+            }).catch(() => { body.innerHTML = '<div class="empty-hint">Сообщений ещё нет.</div>'; });
+        }
+
         function regenPlanText(messageId, btn) {
             const pid = document.getElementById('pt-plan').value;
             const prof = document.getElementById('pt-prof').value || '';
             if (!pid || !messageId) return;
+            if (!confirm('Переписать это сообщение заново? Текущий текст (в том числе ручные правки) будет заменён.')) return;
             if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader"></i> Генерация…'; refreshIcons(); }
             const q = prof ? '?profession=' + encodeURIComponent(prof) : '';
             api(`/plans/${encodeURIComponent(pid)}/messages/${encodeURIComponent(messageId)}/regenerate${q}`, { method: 'POST' })
                 .then(r => r.ok ? r.json() : Promise.reject(new Error('regenerate')))
                 .then(() => renderPlanTexts())
                 .catch(() => { if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="triangle-alert"></i> Ошибка, повторить'; refreshIcons(); } });
+        }
+
+        // Сводка для пользователя: сколько документов и хватает ли их планам адаптации.
+        let coverageCache = [];
+        function loadCoverage() {
+            const box = document.getElementById('doc-summary');
+            api('/plans/coverage').then(r => r.ok ? r.json() : { plans: [] }).then(d => {
+                coverageCache = d.plans || [];
+                const ready = docsCache.filter(x => x.status === 'indexed').length;
+                const head = `<div class="doc-summary-head"><b>Загружено в систему: ${docsCache.length} ${plural(docsCache.length, 'документ', 'документа', 'документов')}</b>`
+                    + (ready !== docsCache.length ? ` · готовы к работе: ${ready}` : '') + '</div>';
+                if (!coverageCache.length) {
+                    box.innerHTML = head + '<div class="stage-hint">Планов адаптации пока нет — создайте план на вкладке «Планы», и здесь появится, хватает ли ему документов.</div>';
+                    return;
+                }
+                box.innerHTML = head + coverageCache.map(p => {
+                    const pct = p.total ? Math.round(100 * p.covered / p.total) : 0;
+                    const gaps = (p.missing || []).map(m =>
+                        `<li><b>${escapeHtml(m.stage)}:</b> ${m.substages.map(escapeHtml).join(', ')}</li>`).join('');
+                    return `<div class="cov-plan">
+                        <div class="cov-head"><span>${escapeHtml(p.title || '')}</span>
+                            <span class="cov-num ${pct === 100 ? 'ok' : ''}">${p.covered} из ${p.total} подэтапов обеспечены документами</span></div>
+                        <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
+                        ${gaps ? `<details class="cov-gaps"><summary>Нет материалов для ${p.total - p.covered} ${plural(p.total - p.covered, 'подэтапа', 'подэтапов', 'подэтапов')} — догрузите документы по этим темам</summary><ul>${gaps}</ul></details>`
+                               : '<div class="cov-ok">Документов достаточно для всего плана.</div>'}
+                    </div>`;
+                }).join('');
+                refreshIcons();
+            }).catch(() => { box.innerHTML = '<div class="empty-hint">Не удалось посчитать покрытие.</div>'; });
+        }
+        function plural(n, one, few, many) {
+            const m10 = n % 10, m100 = n % 100;
+            if (m10 === 1 && m100 !== 11) return one;
+            if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+            return many;
         }
 
         function loadStageBoard() {
@@ -490,82 +558,6 @@
                      + `<div class="txt">${escapeHtml((s.text || '').slice(0, 600))}</div>${subs}${prof}${why}</div>`;
             }).join('');
             refreshIcons();
-        }
-
-        function renderFolders() {
-            if (!folderGrid) return;   // сетка папок убрана из UI — рендерить некуда
-            if (!allFolders.length) {
-                folderGrid.innerHTML = `<div class="empty-hint">Папок пока нет — создайте первую.</div>`;
-                return;
-            }
-            folderGrid.innerHTML = allFolders.map(f => `
-                <div class="folder-card ${f.enabled ? '' : 'disabled'}">
-                    <div class="name"><i data-lucide="folder"></i> ${escapeHtml(f.name)}${f.enabled ? '' : ' <span class="badge">выкл.</span>'}</div>
-                    ${f.description ? `<div class="desc">${escapeHtml(f.description)}</div>` : ''}
-                    <div class="count">${f.criteria.length} критериев · ${f.documents || 0} док.</div>
-                    <div class="row-actions">
-                        <button class="icon-btn" title="Показать чанки" onclick="showFolderChunks('${escapeHtml(f.slug)}','${escapeHtml(f.name)}')"><i data-lucide="layers"></i></button>
-                        <button class="icon-btn" title="Изменить" onclick="openFolderDialog('${f.id}')"><i data-lucide="pencil"></i></button>
-                        <button class="icon-btn" title="${f.enabled ? 'Отключить' : 'Включить'}" onclick="toggleFolder('${f.id}',${!f.enabled})"><i data-lucide="${f.enabled ? 'eye-off' : 'eye'}"></i></button>
-                        <button class="icon-btn danger" title="Удалить" onclick="deleteFolder('${f.id}')"><i data-lucide="trash-2"></i></button>
-                    </div>
-                </div>
-            `).join('');
-            refreshIcons();
-        }
-
-        function critRow(val = '') {
-            const div = document.createElement('div');
-            div.className = 'crit-row';
-            div.innerHTML = `<textarea placeholder="Признак, по которому документ относится к папке"></textarea>` +
-                `<button class="icon-btn danger" onclick="this.parentElement.remove()"><i data-lucide="x"></i></button>`;
-            div.querySelector('textarea').value = val;
-            return div;
-        }
-        function addCriterion() { document.getElementById('folder-criteria').appendChild(critRow()); refreshIcons(); }
-
-        function openFolderDialog(id) {
-            const f = id ? allFolders.find(x => x.id === id) : null;
-            document.getElementById('folder-dialog-title').textContent = f ? 'Изменить папку' : 'Новая папка';
-            document.getElementById('folder-id').value = f ? f.id : '';
-            document.getElementById('folder-name').value = f ? f.name : '';
-            document.getElementById('folder-description').value = f ? f.description : '';
-            const crit = document.getElementById('folder-criteria');
-            crit.innerHTML = '';
-            const list = f ? f.criteria : [];
-            (list.length ? list : ['']).forEach(c => crit.appendChild(critRow(c)));
-            document.getElementById('folder-error').style.display = 'none';
-            document.getElementById('folder-dialog').showModal();
-            refreshIcons();
-        }
-
-        function submitFolder() {
-            const id = document.getElementById('folder-id').value;
-            const name = document.getElementById('folder-name').value.trim();
-            const err = document.getElementById('folder-error');
-            if (!name) { err.textContent = 'Укажите название'; err.style.display = 'block'; return; }
-            const criteria = [...document.querySelectorAll('#folder-criteria textarea')].map(t => t.value.trim()).filter(Boolean);
-            const description = document.getElementById('folder-description').value.trim();
-            const body = JSON.stringify({ name, description, criteria });
-            const opts = { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body };
-            api(id ? '/folders/' + id : '/folders', opts)
-                .then(r => r.json().then(d => ({ ok: r.ok, d })))
-                .then(({ ok, d }) => {
-                    if (!ok) { err.textContent = d.detail || 'Не удалось сохранить'; err.style.display = 'block'; return; }
-                    document.getElementById('folder-dialog').close();
-                    loadFolders();
-                });
-        }
-
-        function toggleFolder(id, enabled) {
-            api('/folders/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
-                .then(() => loadFolders());
-        }
-
-        function deleteFolder(id) {
-            const f = allFolders.find(x => x.id === id);
-            if (!confirm(`Удалить папку «${f ? f.name : ''}»? Документы останутся в общей базе.`)) return;
-            api('/folders/' + id, { method: 'DELETE' }).then(() => loadFolders());
         }
 
         // Суперадмин видит документы ВСЕХ администраторов и группирует их по владельцу
@@ -642,9 +634,6 @@
                     : (doc.status === 'indexed' ? `<div class="doc-meta">Общая база «Все документы» (без папки)</div>` : '');
                 const summaryLine = doc.summary
                     ? `<div class="doc-meta" style="color:#475569;margin-top:4px;">${escapeHtml(doc.summary.slice(0, 200))}${doc.summary.length > 200 ? '…' : ''}</div>` : '';
-                const similar = (doc.similar || []);
-                const similarLine = similar.length
-                    ? `<div class="warn" style="margin-top:8px;"><i data-lucide="triangle-alert"></i> Похоже на: ${similar.map(s => escapeHtml(s.filename)).join(', ')} — возможен дубль/обновление. Удалите устаревший документ или дайте уточнение.</div>` : '';
                 const clarLine = doc.clarification
                     ? `<div class="doc-meta" style="color:#0369a1;margin-top:4px;"><i data-lucide="info"></i> Уточнение: ${escapeHtml(doc.clarification)}</div>` : '';
                 const errorLine = doc.status === 'error' && doc.error
@@ -666,106 +655,32 @@
                         </div>
                         <div class="doc-status">
                             <span class="status-badge ${doc.status}">${statusLabel(doc.status)}</span>
-                            ${doc.chunks ? `<button class="icon-btn" title="Переклассифицировать" onclick="reanalyzeDoc('${escapeHtml(doc.filename)}')"><i data-lucide="refresh-cw"></i></button>` : ''}
-                            ${(doc.status === 'error' || doc.status === 'uploaded') ? `<button class="icon-btn" title="Переиндексировать заново (полный разбор)" onclick="reprocessDoc('${escapeHtml(doc.filename)}')"><i data-lucide="rotate-ccw"></i></button>` : ''}
-                            <button class="del-btn" onclick="deleteDocument('${escapeHtml(doc.filename)}')">Удалить</button>
+                            ${doc.status === 'indexed' ? `<button class="icon-btn" title="Что ИИ нашёл в документе и к каким этапам отнёс" onclick="openSubstageMap(this.dataset.fn)" data-fn="${escapeHtml(doc.filename)}"><i data-lucide="eye"></i> Посмотреть</button>` : ''}
+                            ${canEditDoc(doc) ? `<button class="del-btn" onclick="deleteDocument('${escapeHtml(doc.filename)}')">Удалить</button>`
+                                              : '<span class="doc-meta" title="Документ суперадмина доступен всем администраторам">общий · только чтение</span>'}
                         </div>
                       </div>
                       ${docProgress(doc)}
-                      ${similarLine}
-                      ${similar.length ? `<div style="display:flex;gap:8px;margin-top:8px;">
-                            <input type="text" id="clar-${escapeHtml(doc.filename)}" placeholder="Уточнение для ассистента (напр.: старый документ неактуален)" style="flex:1;">
-                            <button class="ghost-btn" onclick="clarifyDoc('${escapeHtml(doc.filename)}')"><i data-lucide="save"></i> Сохранить</button>
-                        </div>` : ''}
                     </div>
                 `;
         }
 
+        function canEditDoc(doc) {
+            return isOwner || (currentUser && doc.uploaded_by === currentUser.id);
+        }
+
         function folderName(slug) { const f = allFolders.find(x => x.slug === slug); return f ? f.name : slug; }
 
-        function reanalyzeDoc(filename) {
-            api('/documents/' + encodeURIComponent(filename) + '/reanalyze', { method: 'POST' })
-                .then(() => { anyReanalyzing = true; loadDocuments(); bumpDocPolling(); });   // мгновенный рефреш + опрос
-        }
-
-        function clarifyDoc(filename) {
-            const val = (document.getElementById('clar-' + filename) || {}).value || '';
-            if (!val.trim()) return;
-            api('/documents/' + encodeURIComponent(filename) + '/clarify', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ clarification: val.trim() })
-            }).then(() => loadDocuments());
-        }
-
-        function reprocessDoc(filename) {
-            api('/documents/' + encodeURIComponent(filename) + '/reprocess', { method: 'POST' })
-                .then(() => { pendingDocs.add(filename); loadDocuments(); bumpDocPolling(); })
-                .catch(err => alert('Не удалось переиндексировать: ' + err.message));
-        }
-
-        function reanalyzeAll() {
-            if (!confirm('Запустить повторный анализ всей базы под текущую структуру папок?')) return;
-            const btn = document.getElementById('btn-reanalyze-all');
-            const overall = document.getElementById('doc-overall');
-            NM.busy(btn, true, 'Переанализ…');
-            apiJson('/documents/reanalyze', { method: 'POST' }).then(({ ok, data }) => {
-                if (!ok || !data.job_id) { NM.busy(btn, false); return; }
-                reanalyzeJobActive = true;               // общий бар ведёт задача, не эвристика статусов
-                anyReanalyzing = true; loadDocuments(); bumpDocPolling();   // карточки документов — свои бары
-                NM.runJob('reanalyze-all', data.job_id, {
-                    onProgress: (job) => {
-                        // Плавность: к завершённым документам добавляем прогресс текущего внутри него.
-                        const cur = docsCache.find(d => d.filename === job.current && d.status === 'reanalyzing');
-                        const frac = cur ? (Number(cur.progress) || 0) / 100 : 0;
-                        const pct = job.total ? Math.min(100, Math.round(100 * (job.done + frac) / job.total)) : 0;
-                        overall.style.display = 'block';
-                        document.getElementById('doc-overall-label').textContent =
-                            `Переклассификация: документ ${Math.min(job.done + 1, job.total)} из ${job.total}${job.current ? ' · ' + escapeHtml(job.current) : ''}`;
-                        document.getElementById('doc-overall-pct').textContent = pct + '%';
-                        document.getElementById('doc-overall-fill').style.width = pct + '%';
-                    },
-                    onDone: (job) => {
-                        reanalyzeJobActive = false;
-                        NM.busy(btn, false);
-                        document.getElementById('doc-overall-label').textContent =
-                            job.status === 'done' ? 'Переклассификация завершена' : `Ошибка: ${job.error || ''}`;
-                        document.getElementById('doc-overall-pct').textContent = '100%';
-                        document.getElementById('doc-overall-fill').style.width = '100%';
-                        loadDocuments(); loadFolders();
-                        setTimeout(() => { if (!reanalyzeJobActive) overall.style.display = 'none'; }, 4000);
-                    },
-                });
-            }).catch(() => NM.busy(btn, false));
-        }
-
-        // Раскладка чанков по этапам: фоновая задача с живым прогресс-баром (NM.runJob).
-        function assignChunksToStages(ev) {
-            if (!confirm('Разложить все чанки по этапам адаптации? Нужно после загрузки документов, чтобы генерация плана брала чанки нужного этапа.')) return;
-            const btn = (ev && ev.currentTarget) || document.querySelector('[onclick^="assignChunksToStages"]');
-            NM.busy(btn, true, 'Раскладка…');
-            setStatus('Раскладываю чанки по этапам…');
-            apiJson('/chunks/assign-stages', { method: 'POST' }).then(({ ok, data }) => {
-                if (!ok || !data.job_id) { setStatus('Не удалось запустить раскладку'); NM.busy(btn, false); return; }
-                NM.runJob('assign-stages', data.job_id, {
-                    onProgress: (job) => {
-                        const pct = job.total ? Math.round(100 * job.done / job.total) : 0;
-                        setStatus(`Раскладка чанков по этапам: ${job.done}/${job.total} (${pct}%)`);
-                    },
-                    onDone: (job) => {
-                        NM.busy(btn, false);
-                        setStatus(job.status === 'done'
-                            ? `Готово: разложено чанков — ${(job.result || {}).chunks ?? job.done}`
-                            : `Ошибка раскладки: ${job.error || ''}`);
-                        loadStageBoard();   // доска «этапы ↔ документы» обновляется динамически
-                    },
-                });
-            }).catch(err => { setStatus(err.message); NM.busy(btn, false); });
-        }
-
-        // ---------------- Штатное расписание ----------------
-        const STAFFING_LABELS = { full_name: 'ФИО', position: 'Должность', department: 'Отдел', start_date: 'Дата приёма/выхода' };
+        // ---------------- Штатное расписание (внутри «Пользователи системы») ----------------
+        const STAFFING_LABELS = { full_name: 'ФИО', position: 'Должность', department: 'Подразделение', start_date: 'Дата приёма/выхода' };
         const STAFFING_KEYS = ['full_name', 'position', 'department', 'start_date'];
         let staffingRecords = [];
+
+        function toggleStaffing() {
+            const el = document.getElementById('staffing-block');
+            el.style.display = el.style.display === 'none' ? '' : 'none';
+            if (el.style.display === '') el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
 
         function staffingPreview(fileArg) {
             const file = fileArg || document.getElementById('staffing-file').files[0];
@@ -781,30 +696,33 @@
                     if (!ok) { status.innerHTML = `<span class="err">${escapeHtml(data.detail || 'ошибка разбора')}</span>`; return; }
                     staffingRecords = data.records || [];
                     const withName = staffingRecords.filter(r => (r.full_name || '').trim()).length;
-                    status.textContent = `Найдено строк: ${data.count} (с ФИО: ${withName}, вакансий: ${data.count - withName}). Поля можно отредактировать.`;
-                    window._staffingCols = (data.mapping || {}).columns || {};
-                    renderStaffingPreview(window._staffingCols);
+                    const exists = staffingRecords.filter(r => r.exists).length;
+                    status.textContent = `Найдено строк: ${data.count} (с ФИО: ${withName}, вакансий: ${data.count - withName})`
+                        + (exists ? ` · уже есть в системе и будут пропущены: ${exists}` : '') + '. Поля можно отредактировать.';
+                    renderStaffingPreview();
                 })
                 .catch(err => { status.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`; });
         }
 
-        function renderStaffingPreview(cols) {
+        function renderStaffingPreview() {
             const preview = document.getElementById('staffing-preview');
             if (!staffingRecords.length) {
-                preview.innerHTML = '<div class="warn"><i data-lucide="triangle-alert"></i> В таблице не найдено данных. Проверьте файл или добавьте строки вручную.</div>';
+                preview.innerHTML = '<div class="warn"><i data-lucide="triangle-alert"></i> В таблице не найдено данных. Проверьте файл.</div>';
                 refreshIcons();
                 return;
             }
-            const head = STAFFING_KEYS.map(f => `<th>${STAFFING_LABELS[f]}</th>`).join('') + '<th></th>';
+            const head = STAFFING_KEYS.map(f => `<th>${STAFFING_LABELS[f]}</th>`).join('') + '<th></th><th></th>';
             const rows = staffingRecords.map((r, i) =>
-                `<tr>${STAFFING_KEYS.map(f =>
+                `<tr${r.exists ? ' class="row-exists" title="Уже есть в системе — будет пропущен"' : ''}>${STAFFING_KEYS.map(f =>
                     `<td><input type="text" style="width:100%;box-sizing:border-box;" value="${escapeHtml(r[f] || '')}"
                           oninput="staffingRecords[${i}]['${f}']=this.value"></td>`).join('')}
+                 <td style="white-space:nowrap;font-size:12px;color:#b45309;">${r.exists ? 'уже есть' : ''}</td>
                  <td><button class="icon-btn danger" title="Убрать строку" onclick="staffingRemoveRow(${i})"><i data-lucide="x"></i></button></td></tr>`).join('');
+            const fresh = staffingRecords.filter(r => !r.exists).length;
             preview.innerHTML = `
                 <div class="section-head-row" style="margin:14px 0 6px;">
                     <div class="doc-meta muted">Строки с ФИО станут профилями, без ФИО — вакансиями.</div>
-                    <button class="ghost-btn" onclick="staffingImport()"><i data-lucide="user-plus"></i> Создать (${staffingRecords.length})</button>
+                    <button class="primary-btn" onclick="staffingImport()"><i data-lucide="user-plus"></i> Создать (${fresh})</button>
                 </div>
                 <div style="overflow-x:auto;"><table class="tst" style="font-size:13px;">
                     <thead><tr>${head}</tr></thead><tbody id="staffing-tbody">${rows}</tbody></table></div>`;
@@ -813,37 +731,38 @@
 
         function staffingRemoveRow(i) {
             staffingRecords.splice(i, 1);
-            renderStaffingPreview(window._staffingCols || {});
+            renderStaffingPreview();
+        }
+
+        function downloadCredentials(ids) {
+            const a = document.createElement('a');
+            a.href = '/users/credentials.xlsx' + (ids && ids.length ? '?ids=' + encodeURIComponent(ids.join(',')) : '');
+            a.download = 'логины_и_пароли.xlsx';
+            document.body.appendChild(a); a.click(); a.remove();
         }
 
         function staffingImport() {
             if (!staffingRecords.length) return;
-            if (!confirm(`Создать ${staffingRecords.length} записей? Строки с ФИО — профили (существующие по ФИО пропускаются), без ФИО — вакансии.`)) return;
+            if (!confirm(`Создать записи из ${staffingRecords.length} строк? Уже заведённые будут пропущены.`)) return;
             const status = document.getElementById('staffing-status');
             status.textContent = 'Создаём…';
             apiJson('/staffing/import', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ records: staffingRecords })
+                body: JSON.stringify({ records: staffingRecords.map(({ exists, ...r }) => r) })
             }).then(({ ok, data }) => {
                 if (!ok) { status.innerHTML = `<span class="err">${escapeHtml(data.detail || 'ошибка создания')}</span>`; return; }
                 const profiles = data.profiles || [], vacancies = data.vacancies || [], skipped = data.skipped || [];
                 status.textContent = `Профилей: ${profiles.length}, вакансий: ${vacancies.length}, пропущено: ${skipped.length}.`;
-                window._staffingCreated = profiles;
-                const pRows = profiles.map(c =>
-                    `<tr><td>${escapeHtml(c.full_name)}</td><td class="mono">${escapeHtml(c.username)}</td><td class="mono">${escapeHtml(c.password)}</td><td>${escapeHtml(c.position || '')}</td></tr>`).join('');
-                const vRows = vacancies.map(v => `<tr><td>${escapeHtml(v.position)}</td><td>${escapeHtml(v.department || '')}</td></tr>`).join('');
+                document.getElementById('staffing-preview').innerHTML = '';
+                staffingRecords = [];
                 const skipRows = skipped.map(s => `<div class="muted">${escapeHtml(s.full_name)} — ${escapeHtml(s.reason)}</div>`).join('');
                 document.getElementById('staffing-result').innerHTML = `
-                    ${profiles.length ? `<div class="warn" style="margin:12px 0;"><i data-lucide="triangle-alert"></i> Пароли показываются один раз — выгрузите их сейчас.</div>
-                    <button class="ghost-btn" onclick="downloadStaffingCsv()"><i data-lucide="download"></i> Скачать логины и пароли (CSV)</button>
-                    <div style="overflow-x:auto;margin-top:10px;"><table class="tst" style="font-size:13px;">
-                        <thead><tr><th>ФИО</th><th>Логин</th><th>Пароль</th><th>Должность</th></tr></thead><tbody>${pRows}</tbody></table></div>` : ''}
-                    ${vacancies.length ? `<div style="margin-top:14px;font-weight:600;">Вакансии (${vacancies.length}):</div>
-                    <div style="overflow-x:auto;margin-top:6px;"><table class="tst" style="font-size:13px;">
-                        <thead><tr><th>Должность</th><th>Отдел</th></tr></thead><tbody>${vRows}</tbody></table></div>` : ''}
-                    ${skipRows ? `<div style="margin-top:12px;"><strong>Пропущены:</strong>${skipRows}</div>` : ''}`;
+                    ${profiles.length ? `<div class="plan-note" style="margin:12px 0;"><i data-lucide="download"></i>
+                        Excel с логинами и временными паролями скачан. Повторно — кнопкой «Логины и временные пароли (Excel)»:
+                        пароли видны, пока сотрудник не задаст свой.</div>` : ''}
+                    ${skipRows ? `<details style="margin-top:8px;"><summary>Пропущены (${skipped.length})</summary>${skipRows}</details>` : ''}`;
                 refreshIcons();
-                employeesLoaded = false;
+                if (profiles.length) downloadCredentials(profiles.map(p => p.id));
                 loadEmployees();
             }).catch(err => { status.innerHTML = `<span class="err">${escapeHtml(err.message)}</span>`; });
         }
@@ -854,127 +773,16 @@
             const inp = document.getElementById('staffing-file');
             if (!dz || !inp) return;
             dz.addEventListener('click', () => inp.click());
-            inp.addEventListener('change', () => { if (inp.files[0]) staffingPreview(inp.files[0]); });
+            inp.addEventListener('change', () => { if (inp.files[0]) staffingPreview(inp.files[0]); inp.value = ''; });
             ['dragenter', 'dragover'].forEach(evt => dz.addEventListener(evt, e => { e.preventDefault(); dz.classList.add('dragover'); }));
             ['dragleave', 'drop'].forEach(evt => dz.addEventListener(evt, e => { e.preventDefault(); dz.classList.remove('dragover'); }));
             dz.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) staffingPreview(f); });
         })();
 
-        function downloadStaffingCsv() {
-            const created = window._staffingCreated || [];
-            if (!created.length) return;
-            const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-            const lines = [['ФИО', 'Логин', 'Пароль', 'Должность'].join(';')]
-                .concat(created.map(c => [c.full_name, c.username, c.password, c.position || ''].map(esc).join(';')));
-            const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'staffing_credentials.csv';
-            a.click();
-            URL.revokeObjectURL(a.href);
-        }
-
-        function showDocDetail(filename) {
-            const dialog = document.getElementById('doc-detail-dialog');
-            const body = document.getElementById('doc-detail-body');
-            document.getElementById('doc-detail-title').textContent = `${filename}`;
-            body.innerHTML = `<div class="empty-hint">Загружаем чанки и векторы…</div>`;
-            dialog.showModal();
-            apiJson(`/documents/${encodeURIComponent(filename)}/chunks`)
-                .then(({ ok, data }) => {
-                    if (!ok) { body.innerHTML = `<div class="warn"><i data-lucide="triangle-alert"></i> ${escapeHtml(data.detail || 'Не удалось получить данные')}</div>`; return; }
-                    body.innerHTML = renderDocDetail(data);
-                })
-                .catch(err => { body.innerHTML = `<div class="error">Ошибка: ${escapeHtml(err.message)}</div>`; });
-        }
-
-        function showFolderChunks(slug, name) {
-            const dialog = document.getElementById('doc-detail-dialog');
-            const body = document.getElementById('doc-detail-body');
-            document.getElementById('doc-detail-title').textContent = `Папка: ${name}`;
-            body.innerHTML = `<div class="empty-hint">Загружаем чанки папки…</div>`;
-            dialog.showModal();
-            apiJson(`/folders/${encodeURIComponent(slug)}/chunks`)
-                .then(({ ok, data }) => {
-                    if (!ok) { body.innerHTML = `<div class="warn"><i data-lucide="triangle-alert"></i> ${escapeHtml(data.detail || 'Не удалось получить данные')}</div>`; return; }
-                    body.innerHTML = renderFolderChunks(data);
-                    refreshIcons();
-                })
-                .catch(err => { body.innerHTML = `<div class="error">Ошибка: ${escapeHtml(err.message)}</div>`; });
-        }
-
-        function renderFolderChunks(data) {
-            const chunks = data.chunks || [];
-            if (!chunks.length) return `<div class="empty-hint">В этой папке пока нет чанков. Загрузите/переанализируйте документы под текущую структуру папок.</div>`;
-            const head = `<div class="doc-meta" style="margin-bottom:12px;">
-                Чанков в папке: <strong>${data.count}</strong>${data.truncated ? ' (показаны первые)' : ''}.
-                Это конкретные фрагменты документов, отнесённые к папке по смыслу — именно из них
-                формируется ответ на вопрос в этой теме.
-            </div>`;
-            const rows = chunks.map(c => {
-                const meta = [
-                    c.section ? `§ ${escapeHtml(c.section)}` : null,
-                    c.page != null ? `стр. ${c.page}` : null,
-                    c.length != null ? `${c.length} симв.` : null,
-                ].filter(Boolean).join(' · ');
-                return `<div class="card" style="margin-bottom:10px;">
-                    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-                        <strong><i data-lucide="file-text"></i> ${escapeHtml(c.source || '—')} · чанк #${c.chunk_index != null ? c.chunk_index : '?'}</strong>
-                        <small style="color:#94a3b8;">id: ${escapeHtml(c.id)}</small>
-                    </div>
-                    ${meta ? `<div class="doc-meta" style="margin:4px 0;">${meta}</div>` : ''}
-                    <div class="msg-text" style="white-space:pre-wrap;margin-top:6px;">${escapeHtml(c.text || '—')}</div>
-                </div>`;
-            }).join('');
-            return head + rows;
-        }
-
-        function renderDocDetail(data) {
-            const chunks = data.chunks || [];
-            const dim = chunks.length ? chunks[0].vector.dim : 0;
-            const head = `<div class="doc-meta" style="margin-bottom:12px;">
-                Всего чанков: <strong>${chunks.length}</strong> ·
-                размерность вектора: <strong>${dim}</strong> ·
-                модель эмбеддинга: <strong>bge-m3</strong>.
-                Каждый чанк — отдельная точка в Qdrant: слева текст, ушедший в эмбеддинг,
-                справа — вектор этого текста (норма и первые 16 из ${dim} значений).
-            </div>`;
-            const rows = chunks.map(c => {
-                const headings = (c.headings || []).filter(Boolean).join(' / ');
-                const meta = [
-                    c.section ? `§ ${escapeHtml(c.section)}` : null,
-                    c.page != null ? `стр. ${c.page}` : null,
-                    c.length != null ? `${c.length} симв.` : null,
-                    `папки: ${(c.folders && c.folders.length) ? c.folders.map(s => escapeHtml(folderName(s))).join(', ') : '— (общая база)'}`,
-                ].filter(Boolean).join(' · ');
-                const vec = c.vector || { dim: 0, norm: 0, preview: [] };
-                const preview = (vec.preview || []).map(v => v.toFixed(4)).join(', ');
-                return `<div class="card" style="margin-bottom:10px;">
-                    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-                        <strong>Чанк #${c.chunk_index != null ? c.chunk_index : '?'}</strong>
-                        <small style="color:#94a3b8;">id: ${escapeHtml(c.id)}</small>
-                    </div>
-                    <div class="doc-meta" style="margin:4px 0;">${meta}</div>
-                    ${headings ? `<div class="doc-meta" style="color:#475569;"><i data-lucide="milestone"></i> ${escapeHtml(headings)}</div>` : ''}
-                    <div class="chunk-detail-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;">
-                        <div>
-                            <div class="doc-meta" style="margin-bottom:4px;">Текст (ушёл в эмбеддинг):</div>
-                            <div class="msg-text" style="white-space:pre-wrap;">${escapeHtml(c.text || '—')}</div>
-                        </div>
-                        <div>
-                            <div class="doc-meta" style="margin-bottom:4px;">Вектор: dim=${vec.dim}, ‖v‖=${vec.norm}</div>
-                            <code style="display:block;background:#0f172a;color:#a5b4fc;padding:8px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all;">[${preview}${vec.dim > (vec.preview || []).length ? ', …' : ''}]</code>
-                        </div>
-                    </div>
-                </div>`;
-            }).join('');
-            return head + (rows || `<div class="empty-hint">Чанков нет.</div>`);
-        }
-
         function deleteDocument(filename) {
-            if (!confirm(`Удалить документ "${filename}" и все его данные из индекса?`)) return;
+            if (!confirm(`Удалить документ «${filename}»? Сообщения, написанные по нему, обновятся автоматически.`)) return;
             api(`/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' })
-                .then(() => { loadDocuments(); loadFolders(); })
+                .then(() => { loadDocuments().then(loadCoverage); loadFolders(); })
                 .catch(err => alert(`Ошибка удаления: ${err.message}`));
         }
 
@@ -988,7 +796,7 @@
         }
         function bumpDocPolling() { scheduleDocPoll(); }   // ускорить сразу после загрузки файла
 
-        loadDocuments();
+        loadDocuments().then(loadCoverage);
         loadFolders();
         scheduleDocPoll();
 
@@ -1024,13 +832,13 @@
             const select = document.getElementById('stage-catalog-select');
             select.innerHTML = catalog.stages
                 .map(s => `<option value="${s.id}">${escapeHtml(s.title)}</option>`).join('')
-                + `<option value="__custom__">— свой этап —</option>`;
+                + `<option value="__custom__">＋ Свой этап (создать)</option>`;
         }
 
         function fillPlanSelect(plans) {
             const select = document.getElementById('plan-select');
             const current = plan.plan_id || '';
-            select.innerHTML = `<option value="">— выберите план —</option>` + plans.map(p =>
+            select.innerHTML = `<option value="">＋ Создать свой план</option>` + plans.map(p =>
                 `<option value="${escapeHtml(p.plan_id)}">${escapeHtml(p.title)}${p.role ? ' · ' + escapeHtml(p.role) : ''}</option>`
             ).join('');
             select.value = current;
@@ -1046,17 +854,18 @@
         function onPlanSelect() {
             const id = document.getElementById('plan-select').value;
             if (!id) {
-                // Создание нового плана отключено — просто очищаем редактор.
+                // «Создать свой план»: пустой редактор, при сохранении создаётся новый план.
                 plan = emptyPlan();
-                document.getElementById('stages-container').innerHTML = '';
                 fillPlanMeta();
-                setStatus('Выберите план для редактирования');
+                renderStages();
+                setStatus('Новый план: задайте название, добавьте этапы и подэтапы, затем сохраните.');
                 return;
             }
             api(`/plans/${encodeURIComponent(id)}`).then(r => r.json()).then(data => {
                 plan = data.plan;
                 fillPlanMeta();
                 renderStages();
+                setStatus('');
             });
         }
 
@@ -1084,9 +893,9 @@
 
         function deletePlan() {
             if (!plan.plan_id) { newPlan(); return; }
-            if (!confirm(`Удалить план «${plan.title}» вместе со сгенерированным расписанием?`)) return;
+            if (!confirm(`Удалить план «${plan.title}» вместе с его сообщениями? Сотрудники с этим планом останутся без плана.`)) return;
             api(`/plans/${encodeURIComponent(plan.plan_id)}`, { method: 'DELETE' })
-                .then(() => { newPlan(); refreshPlanList(); });
+                .then(() => { newPlan(); refreshPlanList(); _planTextsLoaded = false; setStatus('План удалён'); });
         }
 
         function duplicatePlan() {
@@ -1109,8 +918,7 @@
 
         function fillPlanMeta() {
             document.getElementById('plan-title').value = plan.title || '';
-            document.getElementById('plan-role').value = plan.role || '';
-            document.getElementById('plan-start').value = plan.start_date || '';
+            document.getElementById('plan-delete-btn').style.display = plan.plan_id ? '' : 'none';
         }
 
         function planField(field, value) { plan[field] = value; }
@@ -1145,8 +953,8 @@
         }
 
         function sendDateLabel(offsetDays, time) {
-            if (!plan.start_date) return `${offsetDays >= 0 ? '+' : ''}${offsetDays} дн. от даты выхода, ${time}`;
-            return `${shiftDate(plan.start_date, offsetDays)} ${time}`;
+            if (offsetDays === 0) return `в день выхода, ${time}`;
+            return `${Math.abs(offsetDays)} дн. ${offsetDays > 0 ? 'после' : 'до'} выхода, ${time}`;
         }
 
         let uidCounter = 0;
@@ -1278,7 +1086,7 @@
                 const offset = offsets[stage.uid] || 0;
                 const templateOptions = substageTemplates(stage).map(t =>
                     `<option value="${t.id}">${escapeHtml(t.title)}</option>`).join('')
-                    + `<option value="__custom__">— свой подэтап (текст вручную) —</option>`;
+                    + `<option value="__custom__">＋ Свой подэтап (создать)</option>`;
 
                 const substagesHtml = stage.substages.map((sub, subIndex) => {
                     const dayOptions = Array.from({ length: span }, (_, i) =>
@@ -1300,18 +1108,20 @@
                                 <button class="icon-btn danger" onclick="removeSubstage(${stageIndex}, ${subIndex})"><i data-lucide="x"></i></button>
                             </div>
                             <div style="margin-top:10px;">
-                                <label style="font-size:12px;color:#64748b;">Что должен написать бот (основа для генерации по документам)</label>
+                                <label style="font-size:12px;color:#64748b;">О чём сообщение
+                                    <span class="help" title="Задание для ИИ, а не готовый текст. Опишите, что сотрудник должен узнать или сделать в этот момент, например: «Рассказать, где получить пропуск и спецодежду, к кому подойти в первый день». Готовое сообщение ИИ напишет сам по загруженным документам компании — его можно будет поправить на вкладке «Сообщения».">?</span></label>
                                 <textarea class="brief-ta" style="overflow-y:hidden;"
                                           oninput="subField(${stageIndex}, ${subIndex}, 'brief', this.value); autosize(this)"
-                                          placeholder="Опишите, о чём сообщение. Текст можно взять из шаблона или написать свой.">${escapeHtml(sub.brief)}</textarea>
+                                          placeholder="Что сотрудник должен узнать или сделать. Например: где получить пропуск и к кому подойти в первый день.">${escapeHtml(sub.brief)}</textarea>
+                                ${sub.catalog_id ? '' : `<div class="stage-hint" style="margin-top:4px;">Свой подэтап: подходящие документы подберутся по смыслу названия и описания при сохранении плана${(sub.topic_keys || []).length ? ' · подобрано тем: ' + sub.topic_keys.length : ''}.</div>`}
                             </div>
                             <div class="sub-grid">
                                 <div class="field">
-                                    <label>Тип</label>
+                                    <label>Тип <span class="help" title="Сообщение — просто текст. Чек-лист — список дел с отметками. Опрос — вопросы о самочувствии/впечатлениях. Мини-тест — вопросы с вариантами ответа для проверки знаний. Напоминание — короткое напоминание о событии.">?</span></label>
                                     <select onchange="subField(${stageIndex}, ${subIndex}, 'kind', this.value)">${kindOptions}</select>
                                 </div>
                                 <div class="field">
-                                    <label>День внутри этапа</label>
+                                    <label>День внутри этапа <span class="help" title="В какой день этапа отправить сообщение. Этап, заданный в часах, длится меньше суток — выбирается только время.">?</span></label>
                                     <select ${dayChoice ? '' : 'disabled'}
                                             onchange="subSchedule(${stageIndex}, ${subIndex}, 'day', this.value)">
                                         ${dayChoice ? dayOptions : '<option>— этап задан в часах —</option>'}
@@ -1356,7 +1166,7 @@
                                 <select onchange="durationField(${stageIndex}, 'unit', this.value)">${unitOptions}</select>
                             </div>
                             <div class="field">
-                                <label>Отсчёт</label>
+                                <label>Отсчёт <span class="help" title="«До выхода на работу» — этап идёт перед первым рабочим днём (приглашение, документы). «От даты выхода» — после.">?</span></label>
                                 <select onchange="stageField(${stageIndex}, 'anchor', this.value)">
                                     <option value="from_start" ${stage.anchor !== 'before_start' ? 'selected' : ''}>от даты выхода</option>
                                     <option value="before_start" ${stage.anchor === 'before_start' ? 'selected' : ''}>до выхода на работу</option>
@@ -1385,8 +1195,6 @@
         function planPayload() {
             return {
                 title: plan.title || 'План адаптации',
-                role: plan.role || '',
-                start_date: plan.start_date || null,
                 stages: plan.stages.map(stage => ({
                     id: stage.id || null,
                     catalog_id: stage.catalog_id,
@@ -1409,19 +1217,18 @@
         }
 
         function savePlan() {
-            // Создание нового плана отключено — редактируем только выбранный существующий.
-            if (!plan.plan_id) {
-                setStatus('Выберите план для редактирования — создание нового отключено');
-                return Promise.reject(new Error('план не выбран'));
-            }
+            if (!(plan.title || '').trim()) { setStatus('Укажите название плана'); return Promise.resolve(); }
+            if (!plan.stages.some(s => s.substages.length)) { setStatus('Добавьте хотя бы один этап с подэтапом'); return Promise.resolve(); }
             setStatus('Сохранение...');
-            return api(`/plans/${encodeURIComponent(plan.plan_id)}`, {
-                method: 'PUT',
+            // Нет plan_id — это новый («Создать свой план»): POST, иначе правка существующего.
+            return api(plan.plan_id ? `/plans/${encodeURIComponent(plan.plan_id)}` : '/plans', {
+                method: plan.plan_id ? 'PUT' : 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(planPayload()),
             })
-                .then(res => res.json())
+                .then(res => res.json().then(d => { if (!res.ok) throw new Error(d.detail || 'ошибка'); return d; }))
                 .then(saved => {
+                    _planTextsLoaded = false;   // список планов на вкладке «Сообщения» обновится
                     const uids = plan.stages.map(s => ({ uid: s.uid, subs: s.substages.map(x => x.uid) }));
                     plan = saved;
                     plan.stages.forEach((stage, i) => {
@@ -1432,7 +1239,8 @@
                     });
                     fillPlanMeta();
                     renderStages();
-                    setStatus(`Сохранено: ${saved.title}`);
+                    setStatus(`Сохранено: ${saved.title}. Дальше — вкладка «Сообщения».`);
+                    renderNextStep();
                     return refreshPlanList().then(() => {
                         document.getElementById('plan-select').value = saved.plan_id;
                     });
@@ -1440,59 +1248,47 @@
                 .catch(err => setStatus(`Ошибка сохранения: ${err.message}`));
         }
 
-        // ---------------- Генерация/перегенерация во вкладке «Тексты плана» ----------------
+        // ---------------- Генерация во вкладке «Сообщения» ----------------
         function ptSetStatus(text) { document.getElementById('pt-status').textContent = text || ''; }
         function ptSetBusy(busy) {
             document.getElementById('pt-generate-btn').disabled = busy;
-            document.getElementById('pt-generate-missing-btn').disabled = busy;
-            document.getElementById('pt-generate-all-btn').disabled = busy;
             document.getElementById('pt-cancel-btn').style.display = busy ? '' : 'none';
         }
 
-        // Единая генерация/перегенерация выбранного плана. Поведение зависит от выбранной
-        // должности (селектор pt-prof):
-        //  - должность выбрана -> генерируем/перегенерируем ТОЛЬКО её расписание (profession=X);
-        //  - «Общий текст» (пусто) -> весь план под ВСЕ должности штатки + общее (без profession).
+        // Одна кнопка: сервер сверяет SHA-256 отпечатки (документы, описание подэтапа, должность)
+        // и зовёт ИИ только там, где что-то изменилось или сообщения нет. Перед запуском
+        // показываем, сколько будет запросов, — дорогие запуски только с подтверждением.
         function ptGeneratePlan() {
             const pid = document.getElementById('pt-plan').value;
             if (!pid) { ptSetStatus('Выберите план.'); return; }
-            const prof = document.getElementById('pt-prof').value || '';
-            let url, status;
-            let prefix;
-            if (prof) {
-                url = `/plans/${encodeURIComponent(pid)}/generate?profession=${encodeURIComponent(prof)}`;
-                status = `Генерация для «${prof}»…`;
-                prefix = `Должность: ${prof}`;
-            } else {
-                if (!confirm('Сгенерировать/перегенерировать ВЕСЬ план — все должности? Это может занять время.')) return;
-                url = `/plans/${encodeURIComponent(pid)}/generate`;   // без profession -> все должности + общее
-                status = 'Генерация всего плана (все должности)…';
-                prefix = 'Весь план — все должности';
-            }
+            const prof = document.getElementById('pt-prof').value;
+            // Должность выбрана — только её сообщения; «Общие» — все должности адресатов плана.
+            const q = prof ? `?profession=${encodeURIComponent(prof)}` : '';
             ptSetBusy(true);
-            ptSetStatus(status);
+            ptSetStatus('Проверяем, что изменилось…');
+            apiJson(`/plans/${encodeURIComponent(pid)}/generate-estimate${q}`).then(({ ok, data }) => {
+                if (!ok) { ptSetStatus(data.detail || 'Не удалось проверить'); ptSetBusy(false); return; }
+                if (!data.llm_calls) {
+                    ptSetStatus(`Всё актуально — запросов к ИИ не нужно (актуальных: ${data.up_to_date}, без документов: ${data.skipped}).`);
+                    ptSetBusy(false);
+                    return;
+                }
+                const scope = prof ? `должность «${prof}»` : `должностей: ${data.professions}`;
+                if (data.llm_calls > 5 && !confirm(`Будет сгенерировано сообщений: ${data.llm_calls} (${scope}).\n`
+                    + `Актуальные (${data.up_to_date}) не трогаем. Запустить?`)) { ptSetStatus(''); ptSetBusy(false); return; }
+                ptStartJob(`/plans/${encodeURIComponent(pid)}/generate${q}`, prof ? `Должность: ${prof}` : 'Все должности');
+            }).catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
+        }
+
+        function ptStartJob(url, prefix) {
+            ptSetStatus('Генерация…');
             apiJson(url, { method: 'POST' })
                 .then(({ ok, data }) => {
                     if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить генерацию'); ptSetBusy(false); return; }
+                    if (data.status === 'up_to_date') { ptSetStatus('Всё актуально — запросов к ИИ не нужно.'); ptSetBusy(false); return; }
+                    if (data.already_running) ptSetStatus('Генерация этого плана уже идёт — показываем её ход.');
                     currentGenJob = data.job_id;
                     ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); }, prefix);
-                })
-                .catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
-        }
-
-        // Догенерация: заново прогоняет ТОЛЬКО пропущенные/ошибочные подэтапы выбранного
-        // расписания (после загрузки недостающих документов). Готовые тексты не трогаются.
-        function ptGenerateMissing() {
-            const pid = document.getElementById('pt-plan').value;
-            if (!pid) { ptSetStatus('Выберите план.'); return; }
-            const prof = document.getElementById('pt-prof').value || '';
-            ptSetBusy(true);
-            ptSetStatus('Догенерация недостающих…');
-            apiJson(`/plans/${encodeURIComponent(pid)}/generate-missing?profession=${encodeURIComponent(prof)}`, { method: 'POST' })
-                .then(({ ok, data }) => {
-                    if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить догенерацию'); ptSetBusy(false); return; }
-                    currentGenJob = data.job_id;
-                    ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); }, prof ? `Догенерация · ${prof}` : 'Догенерация');
                 })
                 .catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
         }
@@ -1508,21 +1304,21 @@
                 api(`/jobs/${encodeURIComponent(jobId)}`).then(r => r.json()).then(job => {
                     const percent = job.total ? Math.round(100 * job.done / job.total) : 0;
                     fill.style.width = `${percent}%`;
-                    // Масштаб: всего подэтапов = подэтапы плана × число должностей.
-                    const profs = job.professions ? ` · должностей: ${job.professions}` : '';
-                    const extra = `${job.skipped ? ' · пропущено: ' + job.skipped : ''}${job.errors ? ' · ошибок: ' + job.errors : ''}`;
-                    label.textContent = job.status === 'running'
-                        ? `${pre}Подэтап ${job.done} из ${job.total}${profs}${job.current ? ' · ' + job.current : ''}${extra}`
-                        : `${pre}Статус: ${job.status} · ${job.done} из ${job.total}${profs}${extra}`;
+                    const extra = `${job.reused ? ' · актуальных: ' + job.reused : ''}${job.skipped ? ' · без документов: ' + job.skipped : ''}${job.errors ? ' · ошибок: ' + job.errors : ''}`;
+                    const calls = `запросов к ИИ: ${job.llm_calls || 0}${job.llm_planned ? ' из ~' + job.llm_planned : ''}`;
+                    label.textContent = job.status === 'running' || job.status === 'queued'
+                        ? `${pre}${job.done} из ${job.total} · ${calls}${job.current ? ' · ' + job.current : ''}${extra}`
+                        : `${pre}Статус: ${job.status} · ${calls}${extra}`;
                     if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
                         clearInterval(pollTimer);
                         currentGenJob = null;
                         ptSetBusy(false);
-                        const skippedNote = job.skipped ? ` · пропущено (нет документа): ${job.skipped} — загрузите документы и нажмите «Догенерировать недостающие»` : '';
-                        ptSetStatus(job.status === 'done' ? `Генерация завершена${skippedNote}`
-                            : job.status === 'cancelled' ? 'Генерация отменена (сгенерированное сохранено)'
+                        const skippedNote = job.skipped ? ` · без документов: ${job.skipped} — загрузите документы, эти сообщения допишутся сами` : '';
+                        ptSetStatus(job.status === 'done' ? `Готово · ${calls}${skippedNote}`
+                            : job.status === 'cancelled' ? 'Остановлено (сгенерированное сохранено)'
                             : (job.error || 'Ошибка'));
                         if (onDone) onDone();
+                        renderNextStep();
                     }
                 }).catch(() => clearInterval(pollTimer));
             }, 1500);
@@ -1530,38 +1326,8 @@
 
         function ptCancelGeneration() {
             if (!currentGenJob) return;
-            ptSetStatus('Отмена…');
+            ptSetStatus('Остановка…');
             api(`/jobs/${encodeURIComponent(currentGenJob)}/cancel`, { method: 'POST' }).catch(() => {});
-        }
-
-        // Перегенерация всех планов подряд: один за другим прогоняем полную генерацию.
-        function ptGenerateAll() {
-            if (!confirm('Перегенерировать тексты ВСЕХ планов? Это может занять время.')) return;
-            ptSetBusy(true);
-            api('/plans').then(r => r.json()).then(d => {
-                const ids = (d.plans || []).map(p => p.plan_id);
-                if (!ids.length) { ptSetStatus('Планов нет.'); ptSetBusy(false); return; }
-                let i = 0;
-                const next = () => {
-                    if (i >= ids.length) {
-                        ptSetStatus(`Готово: перегенерировано планов — ${ids.length}`);
-                        ptSetBusy(false);
-                        renderPlanTexts(); loadPlanTexts();
-                        return;
-                    }
-                    const pid = ids[i++];
-                    const planNo = i, planTotal = ids.length;
-                    ptSetStatus(`Генерация плана ${planNo} из ${planTotal}…`);
-                    apiJson(`/plans/${encodeURIComponent(pid)}/generate`, { method: 'POST' })
-                        .then(({ ok, data }) => {
-                            if (!ok) { next(); return; }   // план без подэтапов пропускаем
-                            currentGenJob = data.job_id;
-                            ptPollJob(data.job_id, next, `План ${planNo} из ${planTotal}`);
-                        })
-                        .catch(() => next());
-                };
-                next();
-            }).catch(err => { ptSetStatus(err.message); ptSetBusy(false); });
         }
 
         // ---------------- Ручная правка текста сообщения ----------------
@@ -1624,10 +1390,11 @@
             `).join('');
         }
 
-        // ---------------- Пользователи ----------------
+        // ---------------- Пользователи системы ----------------
         let employeesLoaded = false;
         let editingEmployeeId = null;
         let employeesCache = [];
+        const selectedUsers = new Set();   // отмеченные галочками — для массового удаления
         // Должности, под которые уже сгенерирован план адаптации (для пометки ✓ в комбобоксе должности).
         let profReadySet = new Set();
         let defaultPlanId = null;
@@ -1641,7 +1408,7 @@
         }
         function deleteProfPlan(prof) {
             if (!defaultPlanId) { alert('Общий план не назначен — удалять нечего.'); return; }
-            if (!confirm(`Удалить сгенерированные тексты плана для должности «${prof}»?`)) return;
+            if (!confirm(`Удалить сгенерированные сообщения плана для должности «${prof}»?`)) return;
             api(`/plans/${encodeURIComponent(defaultPlanId)}/schedule?profession=${encodeURIComponent(prof)}`,
                 { method: 'DELETE' }).then(r => r.json().then(d => ({ ok: r.ok, d })))
                 .then(({ ok, d }) => {
@@ -1651,11 +1418,10 @@
                 }).catch(() => alert('Ошибка сети'));
         }
 
-        // Логин и пароль отправляются только при создании: у существующего пользователя
-        // они меняются отдельной ручкой /users/{id}/credentials
-        const PROFILE_FIELDS = ['full_name', 'position', 'department', 'contact',
-                                'mentor', 'manager', 'plan_id', 'start_date', 'status', 'notes'];
-        const CREDENTIAL_FIELDS = ['username', 'password'];
+        // Логин и пароль сюда не входят: логин создаётся из ФИО один раз, пароль — «Доступ».
+        // Статус тоже: он считается сам по дате выхода (пауза — отдельной кнопкой).
+        const PROFILE_FIELDS = ['full_name', 'position', 'department', 'phone', 'email',
+                                'mentor', 'manager', 'plan_id', 'start_date', 'notes'];
         const EMPLOYEE_STATUS_TITLES = {
             planned: 'Запланирован', active: 'Проходит адаптацию',
             paused: 'Приостановлен', done: 'Завершил',
@@ -1673,7 +1439,7 @@
             const select = document.getElementById('emp-plan_id');
             const current = select.value;
             select.innerHTML = `<option value="">— план не назначен —</option>` + plans.map(p =>
-                `<option value="${escapeHtml(p.plan_id)}">${p.generated ? '✓ ' : ''}${escapeHtml(p.title)}${p.generated ? ' — тексты готовы' : ' — без ответов'}</option>`
+                `<option value="${escapeHtml(p.plan_id)}">${p.generated ? '✓ ' : ''}${escapeHtml(p.title)}${p.generated ? ' — сообщения готовы' : ' — без сообщений'}</option>`
             ).join('');
             select.value = current;
         }
@@ -1681,23 +1447,35 @@
         function loadEmployees() {
             api('/users').then(r => r.json()).then(d => {
                 employeesCache = d.users || [];
+                fillDeptFilter();
                 renderEmployees(employeesCache);
+                renderNextStep();
             }).catch(() => {});
         }
 
-        function deleteNonAdmins() {
-            if (!confirm('Удалить ВСЕХ пользователей, кроме администраторов? Профили и доступы будут удалены безвозвратно.')) return;
-            if (!confirm('Точно удалить всех сотрудников? Действие необратимо.')) return;
-            apiJson('/users/delete-non-admins', { method: 'POST' }).then(({ ok, data }) => {
-                if (!ok) { alert(data.detail || 'Не удалось удалить (нужны права главного администратора).'); return; }
-                alert(`Удалено пользователей: ${data.deleted}.`);
-                loadEmployees();
-            }).catch(err => alert('Ошибка: ' + err.message));
+        // ---- Справочник подразделений: строится из штатки (профилей), как справочник должностей ----
+        function departmentList() {
+            return [...new Set(employeesCache.map(u => (u.department || '').trim()).filter(Boolean))]
+                .sort((a, b) => a.localeCompare(b, 'ru'));
+        }
+        function fillDeptFilter() {
+            const sel = document.getElementById('dept-filter');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">Все подразделения</option>'
+                + departmentList().map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+            sel.value = departmentList().includes(cur) ? cur : '';
         }
 
         // ---- Combobox с поиском: клик по полю -> скроллируемый список + строка поиска ----
         function comboPositions() { return [...new Set(employeesCache.map(u => (u.position || '').trim()).filter(Boolean))].sort(); }
-        function comboUserNames() { return [...new Set(employeesCache.map(u => (u.full_name || '').trim()).filter(Boolean))].sort(); }
+        // Наставник/руководитель — реальные люди: без вакансий и без самого редактируемого.
+        function comboUserNames() {
+            return [...new Set(employeesCache
+                .filter(u => u.id !== editingEmployeeId && !(u.full_name || '').startsWith('(вакансия)'))
+                .map(u => (u.full_name || '').trim()).filter(Boolean))].sort();
+        }
+        // Поля, где можно добавить своё значение (нет в списке): должность и подразделение.
+        const COMBO_FREE = new Set(['emp-position', 'emp-department']);
 
         let comboTarget = null, comboAll = [];
         function comboEls() {
@@ -1707,11 +1485,14 @@
                 panel.className = 'combo-panel';
                 panel.id = 'combo-panel';
                 panel.innerHTML = `<input type="text" class="combo-search" id="combo-search" placeholder="Поиск…"><ul class="combo-list" id="combo-list"></ul>`;
-                document.body.appendChild(panel);
+                // Панель внутри открытого <dialog>, иначе она окажется под модальным окном.
+                (document.querySelector('dialog[open]') || document.body).appendChild(panel);
                 document.getElementById('combo-search').addEventListener('input', e => comboRender(e.target.value));
                 document.getElementById('combo-search').addEventListener('keydown', e => {
-                    if (e.key === 'Escape') { comboClose(); return; }
-                    if (e.key === 'Enter' && comboTarget && comboTarget.id === 'emp-position') {
+                    // Escape закрывает только список; фокус снимаем со скрытого поиска, чтобы
+                    // следующий Escape закрыл окно карточки.
+                    if (e.key === 'Escape') { e.preventDefault(); comboClose(); e.target.blur(); return; }
+                    if (e.key === 'Enter' && comboTarget && COMBO_FREE.has(comboTarget.id)) {
                         const raw = e.target.value.trim();
                         if (raw) { e.preventDefault(); commitCombo(raw); }
                     }
@@ -1720,6 +1501,8 @@
                     if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== comboTarget) comboClose();
                 });
             }
+            const host = document.querySelector('dialog[open]') || document.body;
+            if (panel.parentElement !== host) host.appendChild(panel);
             return panel;
         }
         function commitCombo(v) {
@@ -1729,28 +1512,28 @@
         function comboRender(query) {
             const raw = (query || '').trim();
             const q = raw.toLowerCase();
-            // Для должности: разрешаем ввести свою (нет в списке) и помечаем ✓ те,
-            // под которые уже сгенерирован план адаптации (profReadySet).
+            // Должность: ✓ у тех, под которые уже сгенерирован план адаптации (profReadySet).
             const isPos = comboTarget && comboTarget.id === 'emp-position';
+            const free = comboTarget && COMBO_FREE.has(comboTarget.id);
             const items = comboAll.filter(v => v.toLowerCase().includes(q));
             const list = document.getElementById('combo-list');
             list.innerHTML = '';
             const exact = items.some(v => v.toLowerCase() === q);
-            if (isPos && comboTarget.value.trim()) {
+            if (comboTarget && comboTarget.value.trim()) {
                 const li = document.createElement('li');
                 li.className = 'combo-clear';
                 li.textContent = '— очистить —';
                 li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(''); });
                 list.appendChild(li);
             }
-            if (isPos && raw && !exact) {
+            if (free && raw && !exact) {
                 const li = document.createElement('li');
                 li.className = 'combo-add';
                 li.textContent = `Добавить: «${raw}»`;
                 li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(raw); });
                 list.appendChild(li);
             }
-            if (!items.length && !(isPos && raw)) { list.innerHTML += '<li class="empty">ничего не найдено</li>'; return; }
+            if (!items.length && !(free && raw)) { list.innerHTML += '<li class="empty">ничего не найдено</li>'; return; }
             items.forEach(v => {
                 const li = document.createElement('li');
                 const ready = isPos && profReadySet.has(v);
@@ -1761,10 +1544,10 @@
                 if (ready) {
                     li.classList.add('combo-ready'); li.title = 'План адаптации готов';
                     const del = document.createElement('span');
-                    del.className = 'combo-del'; del.textContent = '✕'; del.title = 'Удалить тексты плана для должности';
+                    del.className = 'combo-del'; del.textContent = '✕'; del.title = 'Удалить сообщения плана для должности';
                     del.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); deleteProfPlan(v); });
                     li.appendChild(del);
-                } else if (isPos) { li.title = 'Плана ещё нет — сгенерируйте на вкладке «Тексты плана»'; }
+                } else if (isPos) { li.title = 'Сообщений ещё нет — сгенерируйте на вкладке «Сообщения»'; }
                 if (!ready) li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(v); });
                 list.appendChild(li);
             });
@@ -1802,7 +1585,8 @@
 
         // Привязка полей карточки к combobox (клик открывает список всех значений с поиском).
         (function () {
-            const binds = { 'emp-position': comboPositions, 'emp-mentor': comboUserNames, 'emp-manager': comboUserNames };
+            const binds = { 'emp-position': comboPositions, 'emp-department': departmentList,
+                            'emp-mentor': comboUserNames, 'emp-manager': comboUserNames };
             Object.entries(binds).forEach(([id, provider]) => {
                 const el = document.getElementById(id);
                 if (el) {
@@ -1817,41 +1601,39 @@
             return `<span class="status-badge ${cls}">${escapeHtml(ROLE_TITLES[user.role] || user.role)}</span>`;
         }
 
+        function canManageRow(user) {
+            return isOwner || user.role === 'employee';
+        }
+
         function userActions(user) {
             const id = user.id;
             const isSelf = currentUser && currentUser.id === id;
             const buttons = [`<button class="icon-btn" onclick="showEmployeeSchedule('${id}')"><i data-lucide="calendar-days"></i> Расписание</button>`];
-
-            // Обычный администратор правит только сотрудников — админов и главного трогать нельзя
-            const manageable = isOwner || user.role === 'employee';
-            if (manageable) {
-                buttons.push(`<button class="icon-btn" onclick="editEmployee('${id}')"><i data-lucide="pencil"></i> Изменить</button>`);
+            // Обычный администратор правит только сотрудников — админов и суперадминов трогать нельзя.
+            // Роль меняет суперадмин в окне «Изменить».
+            if (canManageRow(user)) {
+                buttons.push(`<button class="icon-btn" onclick="openEmployeeDialog('${id}')"><i data-lucide="pencil"></i> Изменить</button>`);
                 buttons.push(`<button class="icon-btn" onclick="openCredentialsDialog('${id}')"><i data-lucide="key-round"></i> Доступ</button>`);
+                if (user.role === 'employee' && user.plan_id) {
+                    buttons.push(user.status === 'paused'
+                        ? `<button class="icon-btn" onclick="setUserPaused('${id}', false)" title="Возобновить доставку сообщений плана"><i data-lucide="play"></i> Возобновить</button>`
+                        : `<button class="icon-btn" onclick="setUserPaused('${id}', true)" title="Больничный и т.п.: сообщения плана не приходят, пока не возобновите"><i data-lucide="pause"></i> Приостановить</button>`);
+                }
                 if (!isSelf) {
                     buttons.push(user.active
-                        ? `<button class="icon-btn" onclick="setUserActive('${id}', false)"><i data-lucide="ban"></i> Заблокировать</button>`
+                        ? `<button class="icon-btn" onclick="setUserActive('${id}', false)" title="Запретить вход в систему"><i data-lucide="ban"></i> Заблокировать</button>`
                         : `<button class="icon-btn" onclick="setUserActive('${id}', true)"><i data-lucide="check"></i> Подтвердить</button>`);
+                    buttons.push(`<button class="icon-btn danger" onclick="deleteEmployee('${id}')"><i data-lucide="x"></i> Удалить</button>`);
                 }
-            }
-
-            // Раздача прав и удаление — только у суперадмина. Суперадминов может быть
-            // несколько: администратора можно повысить сразу до суперадмина, а другого
-            // суперадмина — понизить (последнего сервер снять не даст).
-            if (isOwner && !isSelf) {
-                if (user.role === 'owner') {
-                    buttons.push(`<button class="icon-btn" onclick="setUserRole('${id}', 'admin')"><i data-lucide="arrow-down"></i> Убрать из суперадминов</button>`);
-                } else if (user.role === 'admin') {
-                    buttons.push(`<button class="icon-btn" onclick="setUserRole('${id}', 'employee')"><i data-lucide="arrow-down"></i> Убрать из администраторов</button>`);
-                    buttons.push(`<button class="icon-btn" onclick="setUserRole('${id}', 'owner')"><i data-lucide="crown"></i> Сделать суперадмином</button>`);
-                } else {
-                    buttons.push(`<button class="icon-btn" onclick="setUserRole('${id}', 'admin')"><i data-lucide="arrow-up"></i> Назначить администратором</button>`);
-                }
-            }
-            // Удаление: суперадмин — любого (кроме себя), обычный админ — только сотрудников.
-            if (!isSelf && (isOwner || user.role === 'employee')) {
-                buttons.push(`<button class="icon-btn danger" onclick="deleteEmployee('${id}')"><i data-lucide="x"></i> Удалить</button>`);
             }
             return buttons.join(' ');
+        }
+
+        function loginCell(e) {
+            if (!e.username) return '<span style="color:#b45309;">нет логина — выдайте доступ</span>';
+            const tmp = e.temp_password
+                ? ` · временный пароль: <code class="mono">${escapeHtml(e.temp_password)}</code>` : '';
+            return '@' + escapeHtml(e.username) + tmp;
         }
 
         function renderEmployees(list) {
@@ -1862,31 +1644,39 @@
                    Пока учётная запись не подтверждена, войти в систему нельзя.</div>`
                 : '';
 
-            if (!list.length) {
-                container.innerHTML = `<div class="empty-hint">Пользователей пока нет — заведите первого в форме выше.</div>`;
+            const dept = document.getElementById('dept-filter').value;
+            const shown = dept ? list.filter(u => (u.department || '').trim() === dept) : list;
+            [...selectedUsers].forEach(id => { if (!shown.some(u => u.id === id)) selectedUsers.delete(id); });
+            updateBulkButton();
+
+            if (!shown.length) {
+                container.innerHTML = `<div class="empty-hint">${list.length
+                    ? 'В этом подразделении никого нет.'
+                    : 'Пользователей пока нет — загрузите штатное расписание или добавьте сотрудника вручную.'}</div>`;
                 return;
             }
+            const selectable = shown.filter(u => canManageRow(u) && !(currentUser && currentUser.id === u.id));
+            const allOn = selectable.length && selectable.every(u => selectedUsers.has(u.id));
             container.innerHTML = `
                 <table class="schedule">
                     <thead><tr>
+                        <th style="width:28px;"><input type="checkbox" title="Отметить всех" ${allOn ? 'checked' : ''} onchange="toggleAllUsers(this.checked)"></th>
                         <th>Пользователь</th><th>Роль</th><th>План адаптации</th>
                         <th>Дата выхода</th><th>Статус</th><th>Действия</th>
                     </tr></thead>
-                    <tbody>${list.map(e => `
+                    <tbody>${shown.map(e => `
                         <tr${e.active ? '' : ' style="background:#fffbeb;"'}>
+                            <td>${selectable.includes(e) ? `<input type="checkbox" ${selectedUsers.has(e.id) ? 'checked' : ''} onchange="toggleUser('${e.id}', this.checked)">` : ''}</td>
                             <td>
                                 <strong>${escapeHtml(e.full_name)}</strong>
-                                <div class="msg-meta">${e.username
-                                    ? '@' + escapeHtml(e.username)
-                                    : '<span style="color:#b45309;">нет логина — войти не может</span>'}
-                                    ${e.must_change_credentials ? ' · сменит пароль при входе' : ''}</div>
+                                <div class="msg-meta">${loginCell(e)}</div>
                                 <div class="msg-meta">${escapeHtml([e.position, e.department].filter(Boolean).join(' · ') || '—')}</div>
                                 ${e.active ? '' : '<div class="msg-meta" style="color:#b45309;">не подтверждён</div>'}
                             </td>
                             <td>${roleBadge(e)}</td>
                             <td>
                                 ${e.plan_title ? escapeHtml(e.plan_title) : '<span style="color:#dc2626;">не назначен</span>'}
-                                ${e.plan_title && !e.plan_generated ? '<div class="msg-meta" style="color:#b45309;">ответы не сгенерированы</div>' : ''}
+                                ${e.plan_title && !e.plan_generated ? '<div class="msg-meta" style="color:#b45309;">сообщения не сгенерированы</div>' : ''}
                             </td>
                             <td style="white-space:nowrap;">${escapeHtml(e.start_date || '—')}</td>
                             <td><span class="status-badge ${e.status}">${escapeHtml(EMPLOYEE_STATUS_TITLES[e.status] || e.status)}</span></td>
@@ -1897,69 +1687,97 @@
             `;
         }
 
-        function employeePayload(includeCredentials) {
+        function toggleUser(id, on) { on ? selectedUsers.add(id) : selectedUsers.delete(id); updateBulkButton(); }
+        function toggleAllUsers(on) {
+            const dept = document.getElementById('dept-filter').value;
+            employeesCache.filter(u => (!dept || (u.department || '').trim() === dept)
+                && canManageRow(u) && !(currentUser && currentUser.id === u.id))
+                .forEach(u => on ? selectedUsers.add(u.id) : selectedUsers.delete(u.id));
+            renderEmployees(employeesCache);
+        }
+        function updateBulkButton() {
+            const btn = document.getElementById('bulk-delete-btn');
+            btn.style.display = selectedUsers.size ? '' : 'none';
+            btn.innerHTML = `<i data-lucide="user-x"></i> Удалить отмеченных (${selectedUsers.size})`;
+        }
+        function bulkDelete() {
+            const names = employeesCache.filter(u => selectedUsers.has(u.id)).map(u => u.full_name);
+            if (!names.length) return;
+            const preview = names.slice(0, 10).join('\n') + (names.length > 10 ? `\n…и ещё ${names.length - 10}` : '');
+            if (!confirm(`Удалить ${names.length} пользовател(я/ей) безвозвратно?\n\n${preview}`)) return;
+            apiJson('/users/bulk-delete', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: [...selectedUsers] }),
+            }).then(({ ok, data }) => {
+                if (!ok) { alert(data.detail || 'Не удалось удалить'); return; }
+                const skipped = (data.skipped || []).map(s => `${s.full_name} — ${s.reason}`).join('\n');
+                alert(`Удалено: ${data.deleted}.${skipped ? '\nНе удалены:\n' + skipped : ''}`);
+                selectedUsers.clear();
+                document.getElementById('employee-schedule').innerHTML = '';
+                loadEmployees();
+            });
+        }
+
+        function employeePayload() {
             const payload = {};
             PROFILE_FIELDS.forEach(field => {
                 payload[field] = document.getElementById(`emp-${field}`).value || null;
             });
-            if (includeCredentials) {
-                CREDENTIAL_FIELDS.forEach(field => {
-                    payload[field] = document.getElementById(`emp-${field}`).value || null;
-                });
-            }
             return payload;
         }
 
-        function resetEmployeeForm() {
-            editingEmployeeId = null;
-            PROFILE_FIELDS.concat(CREDENTIAL_FIELDS).forEach(field => {
-                const el = document.getElementById(`emp-${field}`);
-                el.value = field === 'status' ? 'planned' : '';
-                el.disabled = false;
-            });
-            document.getElementById('employee-form-title').textContent = 'Новый сотрудник';
-            document.getElementById('employee-status').textContent = '';
-        }
-
-        function editEmployee(id) {
-            const employee = employeesCache.find(e => e.id === id);
-            if (!employee) return;
-            editingEmployeeId = id;
+        // Карточка сотрудника — во всплывающем окне: страница не прыгает наверх к форме.
+        function openEmployeeDialog(id) {
+            const employee = id ? employeesCache.find(e => e.id === id) : null;
+            editingEmployeeId = employee ? id : null;
             PROFILE_FIELDS.forEach(field => {
-                document.getElementById(`emp-${field}`).value = employee[field] || (field === 'status' ? 'planned' : '');
+                document.getElementById(`emp-${field}`).value = employee ? (employee[field] || '') : '';
             });
-            // Логин и пароль существующего пользователя меняются кнопкой «Доступ»
-            CREDENTIAL_FIELDS.forEach(field => {
-                const el = document.getElementById(`emp-${field}`);
-                el.value = field === 'username' ? (employee.username || '') : '';
-                el.disabled = true;
-            });
-            document.getElementById('employee-form-title').textContent = `Редактирование: ${employee.full_name}`;
+            document.getElementById('emp-username').value = employee ? (employee.username || '') : '';
+            const roleField = document.getElementById('emp-role-field');
+            const showRole = isOwner && employee && !(currentUser && currentUser.id === id);
+            roleField.style.display = showRole ? '' : 'none';
+            if (showRole) document.getElementById('emp-role').value = employee.role;
+            document.getElementById('employee-form-title').textContent =
+                employee ? `Редактирование: ${employee.full_name}` : 'Новый сотрудник';
             document.getElementById('employee-status').textContent = '';
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            document.getElementById('employee-dialog').showModal();
+            refreshIcons();
         }
+        function closeEmployeeDialog() { comboClose(); document.getElementById('employee-dialog').close(); }
 
-        function saveEmployee() {
-            const isUpdate = Boolean(editingEmployeeId);
-            const payload = employeePayload(!isUpdate);
-            if (!payload.full_name) {
-                document.getElementById('employee-status').textContent = 'Укажите ФИО';
-                return;
-            }
-            const url = isUpdate ? `/users/${encodeURIComponent(editingEmployeeId)}` : '/users';
-            apiJson(url, {
-                method: isUpdate ? 'PUT' : 'POST',
+        const ROLE_CONFIRM = {
+            owner: 'Сделать суперадмином? Полный доступ: все документы, все сотрудники, раздача прав.',
+            admin: 'Сделать администратором? Доступ к документам, планам и сотрудникам своего подразделения.',
+            employee: 'Сделать обычным сотрудником? Доступ к админке пропадёт.',
+        };
+
+        async function saveEmployee() {
+            const status = document.getElementById('employee-status');
+            const payload = employeePayload();
+            if (!payload.full_name) { status.textContent = 'Укажите ФИО'; return; }
+            const id = editingEmployeeId;
+            const before = id ? employeesCache.find(e => e.id === id) : null;
+            const { ok, data } = await apiJson(id ? `/users/${encodeURIComponent(id)}` : '/users', {
+                method: id ? 'PUT' : 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
-            }).then(({ ok, data }) => {
-                if (!ok) {
-                    document.getElementById('employee-status').textContent = `${data.detail || 'Не удалось сохранить'}`;
-                    return;
-                }
-                document.getElementById('employee-status').textContent = `Сохранён: ${data.full_name}`;
-                resetEmployeeForm();
-                loadEmployees();
             });
+            if (!ok) { status.textContent = data.detail || 'Не удалось сохранить'; return; }
+            const role = document.getElementById('emp-role').value;
+            if (before && isOwner && document.getElementById('emp-role-field').style.display !== 'none'
+                && role !== before.role && confirm(ROLE_CONFIRM[role])) {
+                const r = await apiJson(`/users/${encodeURIComponent(id)}/role`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role }),
+                });
+                if (!r.ok) alert(r.data.detail || 'Роль не изменена');
+            }
+            closeEmployeeDialog();
+            if (!id) {
+                alert(`Сотрудник создан.\nЛогин: ${data.username}\nВременный пароль: ${data.temp_password}\n\n`
+                    + 'Пароль виден в списке и в Excel, пока сотрудник не задаст свой.');
+            }
+            loadEmployees();
         }
 
         function deleteEmployee(id) {
@@ -1967,7 +1785,7 @@
             if (!confirm(`Удалить пользователя «${employee ? employee.full_name : id}»? Действие необратимо.`)) return;
             apiJson(`/users/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(({ ok, data }) => {
                 if (!ok) { alert(data.detail || 'Не удалось удалить'); return; }
-                if (editingEmployeeId === id) resetEmployeeForm();
+                selectedUsers.delete(id);
                 document.getElementById('employee-schedule').innerHTML = '';
                 loadEmployees();
             });
@@ -1984,70 +1802,49 @@
             });
         }
 
-        function setUserRole(id, role) {
+        function setUserPaused(id, paused) {
             const employee = employeesCache.find(e => e.id === id);
-            const questions = {
-                owner: `Сделать «${employee.full_name}» суперадмином? Он получит полный доступ: все документы всех администраторов и все сотрудники, раздача прав, удаление.`,
-                admin: employee.role === 'owner'
-                    ? `Убрать «${employee.full_name}» из суперадминов? Останется обычным администратором (только свой отдел и свои документы).`
-                    : `Назначить «${employee.full_name}» администратором? Он получит доступ к базе знаний, конструктору планов и заведению сотрудников.`,
-                employee: `Убрать «${employee.full_name}» из администраторов?`,
-            };
-            if (!confirm(questions[role] || 'Сменить роль?')) return;
-            apiJson(`/users/${encodeURIComponent(id)}/role`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ role }),
+            if (paused && !confirm(`Приостановить адаптацию «${employee ? employee.full_name : ''}»? Сообщения плана не будут приходить, пока не возобновите.`)) return;
+            apiJson(`/users/${encodeURIComponent(id)}/pause`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused }),
             }).then(({ ok, data }) => {
-                if (!ok) { alert(data.detail || 'Не удалось изменить роль'); return; }
+                if (!ok) { alert(data.detail || 'Не удалось изменить'); return; }
                 loadEmployees();
             });
-        }
-
-        function transferOwnership(id) {
-            const employee = employeesCache.find(e => e.id === id);
-            if (!confirm(`Передать права главного администратора пользователю «${employee.full_name}»?\n\n`
-                       + `Вы станете обычным администратором и потеряете право удалять пользователей `
-                       + `и раздавать права. Обе учётные записи будут разлогинены.`)) return;
-            apiJson(`/users/${encodeURIComponent(id)}/transfer-ownership`, { method: 'POST' })
-                .then(({ ok, data }) => {
-                    if (!ok) { alert(data.detail || 'Не удалось передать права'); return; }
-                    alert('Права переданы. Войдите заново.');
-                    window.location.href = '/login';
-                });
         }
 
         function openCredentialsDialog(id) {
             const employee = employeesCache.find(e => e.id === id);
             document.getElementById('cred-user-id').value = id;
-            document.getElementById('cred-username').value = employee.username || '';
+            document.getElementById('cred-login').textContent = employee.username || 'создастся из ФИО';
             document.getElementById('cred-password').value = '';
             document.getElementById('cred-title').textContent = `Доступ: ${employee.full_name}`;
             document.getElementById('cred-error').style.display = 'none';
+            document.getElementById('cred-result').style.display = 'none';
+            document.getElementById('cred-submit').disabled = false;
             document.getElementById('credentials-dialog').showModal();
         }
 
         function submitCredentials() {
             const id = document.getElementById('cred-user-id').value;
             const errorBox = document.getElementById('cred-error');
-            const username = document.getElementById('cred-username').value.trim();
             const password = document.getElementById('cred-password').value;
-            if (!username && !password) {
-                errorBox.textContent = 'Укажите логин или пароль';
-                errorBox.style.display = 'block';
-                return;
-            }
+            const btn = document.getElementById('cred-submit');
+            btn.disabled = true;
             apiJson(`/users/${encodeURIComponent(id)}/credentials`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: username || null, password: password || null }),
+                body: JSON.stringify({ password: password || null }),
             }).then(({ ok, data }) => {
                 if (!ok) {
+                    btn.disabled = false;
                     errorBox.textContent = data.detail || 'Не удалось сохранить';
                     errorBox.style.display = 'block';
                     return;
                 }
-                document.getElementById('credentials-dialog').close();
+                const res = document.getElementById('cred-result');
+                res.innerHTML = `Логин: <b>${escapeHtml(data.username)}</b> · временный пароль: <code class="mono">${escapeHtml(data.temp_password)}</code>`;
+                res.style.display = 'block';
                 loadEmployees();
             });
         }
@@ -2058,12 +1855,13 @@
             apiJson(`/users/${encodeURIComponent(id)}/schedule`).then(({ ok, data }) => {
                 if (!ok) {
                     container.innerHTML = `<div class="warn"><i data-lucide="triangle-alert"></i> ${escapeHtml(data.detail)}</div>`;
+                    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     return;
                 }
                 const base = `/users/${encodeURIComponent(id)}/export`;
                 const notGenerated = !data.plan_generated
-                    ? `<div class="warn"><i data-lucide="triangle-alert"></i> У плана «${escapeHtml(data.plan_title)}» ещё не сгенерированы ответы.
-                       Даты рассчитаны, тексты пустые — запустите генерацию на вкладке «Конструктор плана».</div>` : '';
+                    ? `<div class="warn"><i data-lucide="triangle-alert"></i> У плана «${escapeHtml(data.plan_title)}» ещё нет сообщений.
+                       Даты рассчитаны, тексты пустые — обновите сообщения на вкладке «Сообщения».</div>` : '';
                 container.innerHTML = `
                     <h2 class="section-title"><i data-lucide="calendar-days"></i> Расписание: ${escapeHtml(data.employee.full_name)}</h2>
                     <div class="stage-hint">
@@ -2156,3 +1954,30 @@
         }
 
         refreshQuestionsBadge();
+        ensureEmployeesLoaded();
+
+        // ==================== Подсказка «что дальше» (путь: пользователи → документы → планы → сообщения) ====================
+        // Одна подсказка на все вкладки: первый незавершённый шаг с кнопкой перехода. Нужна тому,
+        // кто видит систему впервые, — без инструкции понятно, что делать следующим.
+        function goTab(id) { const t = document.querySelector(`.tab[data-tab="${id}"]`); if (t) t.click(); }
+        function renderNextStep() {
+            api('/plans').then(r => r.ok ? r.json() : { plans: [] }).then(d => {
+                const plans = d.plans || [];
+                const people = employeesCache.filter(u => u.role === 'employee');
+                const docsReady = docsCache.filter(x => x.status === 'indexed').length;
+                let step = null;
+                if (!people.length) step = ['employees', 'Шаг 1 из 4. Добавьте сотрудников: загрузите штатное расписание или добавьте человека вручную.'];
+                else if (!docsCache.length) step = ['docs', 'Шаг 2 из 4. Загрузите документы компании (регламенты, инструкции) — по ним ИИ напишет сообщения и будет отвечать на вопросы.'];
+                else if (!plans.length) step = ['builder', 'Шаг 3 из 4. Создайте план адаптации: этапы и подэтапы с датами отправки.'];
+                else if (docsReady && !plans.some(p => p.generated)) step = ['plantexts', 'Шаг 4 из 4. Сгенерируйте сообщения плана — кнопка «Обновить сообщения плана».'];
+                else if (people.some(u => !u.plan_id || !u.start_date)) step = ['employees', 'Осталось: назначьте сотрудникам план и дату выхода (кнопка «Изменить» у сотрудника) — с даты выхода начнут приходить сообщения.'];
+                document.querySelectorAll('.next-step').forEach(el => {
+                    const pane = el.closest('.tab-pane');
+                    const here = step && pane && pane.id === `pane-${step[0]}`;
+                    el.innerHTML = step ? `<i data-lucide="footprints"></i> <span>${escapeHtml(step[1])}</span>`
+                        + (here ? '' : ` <button class="ghost-btn" onclick="goTab('${step[0]}')">Перейти →</button>`) : '';
+                    el.style.display = step ? '' : 'none';
+                });
+                refreshIcons();
+            }).catch(() => {});
+        }

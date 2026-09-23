@@ -13,54 +13,34 @@
         <div class="head-actions">
             <span id="whoami"></span>
             <a class="ghost-btn" href="/" style="text-decoration:none;"><i data-lucide="user"></i> Страница сотрудника</a>
-            <a class="ghost-btn" href="/globaltest" style="text-decoration:none;"><i data-lucide="flask-conical"></i> Тестирование</a>
             <button class="ghost-btn" onclick="openPasswordDialog()"><i data-lucide="key-round"></i> Сменить пароль</button>
             <button class="ghost-btn" onclick="logout()"><i data-lucide="log-out"></i> Выйти</button>
         </div>
     </div>
 
     <div class="tabs">
-        <button class="tab active" data-tab="staffing"><i data-lucide="table"></i> Штатное расписание</button>
-        <button class="tab" data-tab="builder"><i data-lucide="calendar-cog"></i> Планы</button>
-        <button class="tab" data-tab="plantexts"><i data-lucide="file-text"></i> Тексты плана</button>
-        <button class="tab" data-tab="docs"><i data-lucide="database"></i> База знаний</button>
+        <button class="tab active" data-tab="employees"><span class="tab-step">1</span><i data-lucide="users"></i> Пользователи системы</button>
+        <button class="tab" data-tab="docs"><span class="tab-step">2</span><i data-lucide="database"></i> Документы</button>
+        <button class="tab" data-tab="builder"><span class="tab-step">3</span><i data-lucide="calendar-cog"></i> Планы</button>
+        <button class="tab" data-tab="plantexts"><span class="tab-step">4</span><i data-lucide="message-square-text"></i> Сообщения</button>
         <button class="tab" data-tab="questions"><i data-lucide="help-circle"></i> Вопросы <span id="questions-badge" class="q-badge" style="display:none;"></span></button>
-        <button class="tab" data-tab="employees"><i data-lucide="users"></i> Аккаунты</button>
-    </div>
-
-    <!-- ==================== БАЗА ЗНАНИЙ ==================== -->
-    <div class="tab-pane active" id="pane-staffing">
-        <h2><i data-lucide="table"></i> Штатное расписание</h2>
-        <p class="muted" style="color:#64748b;font-size:14px;">
-            Первичный инструмент: загрузите штатку (xlsx, xls, csv) — ИИ сам определит структуру.
-            Если в файле есть ФИО — создаются профили сотрудников (логин по ФИО, временный пароль).
-            Если это расписание должностей без людей — создаются профили-вакансии (по должностям и
-            подразделениям, заполните ФИО позже). Должности попадут в список при заполнении карточек.
-        </p>
-        <div class="dropzone" id="staffing-dropzone">
-            <div><i data-lucide="file-spreadsheet" style="width:28px;height:28px;display:block;margin:0 auto 8px;color:var(--color-accent);"></i> Перетащите штатку (xlsx или csv) сюда или нажмите, чтобы выбрать файл</div>
-            <small>Форматы .xlsx, .xls, .csv · ИИ сам определит структуру таблицы и найдёт нужные данные</small>
-            <input type="file" id="staffing-file" accept=".xlsx,.xls,.csv,.tsv">
-        </div>
-        <div id="staffing-status" class="muted" style="margin-top:10px;color:#64748b;font-size:14px;"></div>
-        <div id="staffing-preview"></div>
-        <div id="staffing-result"></div>
     </div>
 
     <div class="tab-pane" id="pane-plantexts">
-        <h2 class="section-title"><i data-lucide="file-text"></i> Тексты плана адаптации</h2>
-        <p class="hint">Сгенерированные сообщения плана по этапам и подэтапам — то, что получит сотрудник. Выберите план и, при необходимости, должность.</p>
-        <div class="row" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0;">
-            <select id="pt-plan" onchange="loadPlanTexts()" style="min-width:280px;"></select>
-            <select id="pt-prof" onchange="renderPlanTexts()" style="min-width:200px;"></select>
-            <button class="ghost-btn" onclick="refreshPlanTexts()"><i data-lucide="refresh-cw"></i> Обновить</button>
+        <h2 class="section-title"><i data-lucide="message-square-text"></i> Сообщения сотрудникам</h2>
+        <p class="hint">То, что получит сотрудник по плану адаптации: ИИ пишет сообщения по загруженным
+            документам. После загрузки новых документов недостающие и устаревшие сообщения обновляются
+            сами — менять вручную нужно только то, что хочется поправить.</p>
+        <div class="next-step" id="next-step-plantexts"></div>
+        <div class="row" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0;">
+            <div class="field"><label>План</label><select id="pt-plan" onchange="loadPlanTexts()" style="min-width:280px;"></select></div>
+            <div class="field"><label>Для должности <span class="help" title="Сообщения можно подстроить под должность. «Общие» получают сотрудники, для чьей должности отдельных сообщений нет. ✓ — сообщения уже есть.">?</span></label>
+                <select id="pt-prof" onchange="renderPlanTexts()" style="min-width:220px;"></select></div>
             <span id="pt-meta" class="hint" style="margin-left:auto;"></span>
         </div>
         <div class="toolbar" style="margin:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-            <button class="primary-btn" id="pt-generate-btn" onclick="ptGeneratePlan()" title="Должность выбрана — генерируем/перегенерируем её расписание; «Общий текст» (пусто) — весь план под все должности сразу"><i data-lucide="sparkles"></i> Сгенерировать / Перегенерировать</button>
-            <button class="ghost-btn" id="pt-generate-missing-btn" onclick="ptGenerateMissing()" title="Догенерировать только пропущенные подэтапы (после загрузки недостающих документов)"><i data-lucide="file-plus"></i> Догенерировать недостающие</button>
-            <button class="ghost-btn" id="pt-generate-all-btn" onclick="ptGenerateAll()"><i data-lucide="layers"></i> Перегенерировать все планы</button>
-            <button class="ghost-btn" id="pt-cancel-btn" onclick="ptCancelGeneration()" style="display:none;"><i data-lucide="x-circle"></i> Отменить генерацию</button>
+            <button class="primary-btn" id="pt-generate-btn" onclick="ptGeneratePlan()" title="Сгенерирует только недостающие сообщения и те, чьи документы или описание изменились. Если всё актуально — запросов к ИИ не будет."><i data-lucide="sparkles"></i> Обновить сообщения плана</button>
+            <button class="ghost-btn" id="pt-cancel-btn" onclick="ptCancelGeneration()" style="display:none;"><i data-lucide="x-circle"></i> Остановить</button>
             <span id="pt-status" style="color:#475569;font-size:14px;"></span>
         </div>
         <div class="progress-wrap" id="pt-progress-wrap" style="display:none;">
@@ -71,37 +51,32 @@
     </div>
 
     <div class="tab-pane" id="pane-docs">
-        <h2 class="section-title"><i data-lucide="upload-cloud"></i> Загрузка регламентов</h2>
+        <h2 class="section-title"><i data-lucide="upload-cloud"></i> Загрузка документов</h2>
         <div class="dropzone" id="dropzone">
-            <div><i data-lucide="upload" style="width:28px;height:28px;display:block;margin:0 auto 8px;color:var(--color-accent);"></i> Перетащите PDF или DOCX сюда, или нажмите, чтобы выбрать файл</div>
-            <small>PDF, DOCX, DOC, PPTX, HTML, MD, TXT · до 50 МБ · папку по содержанию выберет ассистент</small>
+            <div><i data-lucide="upload" style="width:28px;height:28px;display:block;margin:0 auto 8px;color:var(--color-accent);"></i> Перетащите регламенты, инструкции, положения сюда или нажмите, чтобы выбрать файлы</div>
+            <small>PDF, DOCX, DOC, PPTX, HTML, MD, TXT · до 50 МБ · ИИ сам разнесёт документ по этапам адаптации</small>
             <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.pptx,.html,.htm,.md,.txt" />
         </div>
         <div class="upload-progress" id="upload-progress"></div>
+        <div class="next-step" id="next-step-docs"></div>
 
-        <div class="section-head-row">
-            <h2 class="section-title"><i data-lucide="layers"></i> Этапы и подэтапы</h2>
-            <button class="ghost-btn" onclick="loadStageBoard()"><i data-lucide="refresh-cw"></i> Обновить</button>
-        </div>
-        <div class="stage-hint">Этапы и подэтапы адаптации и закреплённые за ними документы. Привязка — по классификации DeepSeek (docpipe).</div>
-        <div class="stage-board" id="stage-board"><div class="empty-hint">Загрузка структуры...</div></div>
+        <div class="card doc-summary" id="doc-summary"><div class="empty-hint">Считаем покрытие планов документами…</div></div>
 
-        <div class="section-head-row" style="margin-top:34px;">
+        <div class="section-head-row" style="margin-top:22px;">
             <h2 class="section-title"><i data-lucide="file-text"></i> Документы</h2>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <a class="ghost-btn" href="/documents-table"><i data-lucide="table"></i> Реестр (таблица)</a>
-                <a class="ghost-btn" href="/doc-breakdown"><i data-lucide="scan-text"></i> Разбор (блоки и метки)</a>
-                <a class="ghost-btn" href="/s3"><i data-lucide="hard-drive"></i> S3-хранилище</a>
-                <button class="ghost-btn" id="btn-reanalyze-all" style="display:none;" onclick="reanalyzeAll()"><i data-lucide="refresh-cw"></i> Переклассифицировать всё</button>
-            </div>
         </div>
-        <div class="stage-hint">DeepSeek классифицирует документы по этапам и подэтапам при загрузке. Переклассификация — под изменившийся каталог.</div>
         <div id="doc-proc-summary" style="display:none;margin:6px 0 2px;font-size:13px;font-weight:600;"></div>
         <div id="doc-overall" class="doc-overall" style="display:none;">
             <div class="doc-overall-head"><span id="doc-overall-label"></span><span id="doc-overall-pct"></span></div>
             <div class="pbar"><div id="doc-overall-fill" class="pbar-fill"></div></div>
         </div>
         <div class="doc-list" id="doc-list"><div class="empty-hint">Загрузка списка документов...</div></div>
+
+        <details class="details-block" id="stage-details" ontoggle="if (this.open) loadStageBoard()">
+            <summary>Посмотреть детали: как документы разнесены по этапам и подэтапам</summary>
+            <div class="stage-hint">Привязка — по разметке ИИ (каталог этапов). Нужна для проверки, в обычной работе достаточно сводки выше.</div>
+            <div class="stage-board" id="stage-board"><div class="empty-hint">Загрузка структуры...</div></div>
+        </details>
     </div>
 
     <!-- ==================== ВОПРОСЫ БЕЗ ОТВЕТА ==================== -->
@@ -124,44 +99,36 @@
     <div class="tab-pane" id="pane-builder">
         <h2 class="section-title"><i data-lucide="calendar-cog"></i> Конструктор плана адаптации</h2>
 
+        <div class="next-step" id="next-step-builder"></div>
         <div class="toolbar">
             <div class="field">
-                <label>Готовый план (редактирование)</label>
-                <select id="plan-select" onchange="onPlanSelect()"><option value="">— выберите план —</option></select>
+                <label>План</label>
+                <select id="plan-select" onchange="onPlanSelect()"><option value="">＋ Создать свой план</option></select>
             </div>
-        </div>
-        <div class="stage-hint">
-            План можно редактировать (этапы, подэтапы, сроки, тексты) и сохранять.
-            Создание новых планов отключено — правьте существующий.
+            <button class="ghost-btn danger-text" id="plan-delete-btn" style="align-self:end;display:none;" onclick="deletePlan()"><i data-lucide="trash-2"></i> Удалить план</button>
         </div>
 
         <div class="card">
             <div class="plan-meta">
-                <div class="field">
+                <div class="field" style="flex:1;">
                     <label>Название плана</label>
                     <input type="text" id="plan-title" placeholder="Например: Адаптация водителя" oninput="planField('title', this.value)">
                 </div>
-                <div class="field">
-                    <label>Должность / роль</label>
-                    <input type="text" id="plan-role" placeholder="Водитель" oninput="planField('role', this.value)">
-                </div>
-                <div class="field">
-                    <label>Дата выхода (для предпросмотра)</label>
-                    <input type="date" id="plan-start" onchange="planField('start_date', this.value)">
-                </div>
             </div>
             <div class="stage-hint">
-                План — это шаблон. Дата здесь нужна только для предпросмотра дат;
-                у каждого сотрудника на вкладке «Сотрудники» своя дата выхода, и расписание
-                пересчитывается под неё автоматически.
+                План — это шаблон: сроки считаются от даты выхода, у каждого сотрудника она своя
+                (задаётся в карточке сотрудника), и расписание пересчитывается под неё само.
             </div>
         </div>
 
         <div id="stages-container"></div>
 
-        <div class="add-row">
-            <select id="stage-catalog-select"></select>
-            <button class="ghost-btn" onclick="addStageFromCatalog()">＋ Добавить этап</button>
+        <div class="add-row add-stage-row">
+            <div class="field" style="flex:1;">
+                <label>Выберите этап или создайте свой</label>
+                <select id="stage-catalog-select"></select>
+            </div>
+            <button class="ghost-btn" style="align-self:end;" onclick="addStageFromCatalog()">＋ Добавить этап</button>
         </div>
 
         <div class="toolbar" style="margin-top:24px;">
@@ -169,101 +136,131 @@
             <span id="plan-status" style="color:#475569;font-size:14px;"></span>
         </div>
         <div class="stage-hint" style="margin-top:12px;">
-            Генерация текстов, перегенерация и правка сообщений — на вкладке «Тексты плана».
+            Сообщения сотрудникам по плану генерируются и правятся на вкладке «Сообщения».
         </div>
     </div>
 
-    <!-- ==================== ПОЛЬЗОВАТЕЛИ ==================== -->
-    <div class="tab-pane" id="pane-employees">
-        <h2 class="section-title"><i data-lucide="users"></i> Пользователи, роли и назначенные планы</h2>
+    <!-- ==================== ПОЛЬЗОВАТЕЛИ СИСТЕМЫ ==================== -->
+    <div class="tab-pane active" id="pane-employees">
+        <div class="section-head-row">
+            <h2 class="section-title"><i data-lucide="users"></i> Пользователи системы</h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="primary-btn" onclick="toggleStaffing()"><i data-lucide="file-spreadsheet"></i> Загрузить штатное расписание</button>
+                <button class="ghost-btn" onclick="openEmployeeDialog()"><i data-lucide="user-plus"></i> Добавить сотрудника вручную</button>
+            </div>
+        </div>
+        <div class="next-step" id="next-step-employees"></div>
 
-        <div class="card">
-            <div id="employee-form-title" style="font-weight:600;color:#0f172a;margin-bottom:12px;">Новый сотрудник</div>
-            <div class="employee-form">
-                <div class="field">
-                    <label>ФИО *</label>
-                    <input type="text" id="emp-full_name" placeholder="Иванов Иван Иванович">
-                </div>
-                <div class="field">
-                    <label>Логин <span id="login-hint" style="color:#94a3b8;">(можно выдать позже)</span></label>
-                    <input type="text" id="emp-username" placeholder="ivanov">
-                </div>
-                <div class="field">
-                    <label>Временный пароль</label>
-                    <input type="text" id="emp-password" placeholder="сотрудник сменит его при первом входе">
-                </div>
-                <div class="field">
-                    <label>Должность</label>
-                    <input type="text" id="emp-position" autocomplete="off" placeholder="Нажмите — выбор из штатки или введите свою">
-                </div>
-                <div class="field">
-                    <label>Подразделение</label>
-                    <input type="text" id="emp-department" placeholder="Автотранспортный цех">
-                </div>
-                <div class="field">
-                    <label>План адаптации</label>
-                    <select id="emp-plan_id"></select>
-                </div>
-                <div class="field">
-                    <label>Дата выхода на работу</label>
-                    <input type="date" id="emp-start_date">
-                </div>
-                <div class="field">
-                    <label>Статус</label>
-                    <select id="emp-status">
-                        <option value="planned">Запланирован</option>
-                        <option value="active">Проходит адаптацию</option>
-                        <option value="paused">Приостановлен</option>
-                        <option value="done">Завершил</option>
-                    </select>
-                </div>
-                <div class="field">
-                    <label>Наставник</label>
-                    <input type="text" id="emp-mentor" autocomplete="off" placeholder="Нажмите — выбор из сотрудников">
-                </div>
-                <div class="field">
-                    <label>Руководитель</label>
-                    <input type="text" id="emp-manager" autocomplete="off" placeholder="Нажмите — выбор из сотрудников">
-                </div>
-                <div class="field">
-                    <label>Контакт сотрудника</label>
-                    <input type="text" id="emp-contact" placeholder="телефон, telegram или email">
-                </div>
+        <div class="card" id="staffing-block" style="display:none;">
+            <p class="muted" style="color:#64748b;font-size:14px;margin-top:0;">
+                Загрузите штатку (xlsx, xls, csv) — ИИ сам определит структуру. Строки с ФИО станут
+                профилями сотрудников (логин из фамилии и инициалов, временный пароль), строки без ФИО —
+                вакансиями. Уже заведённые люди и вакансии пропускаются. Сразу после создания
+                скачается Excel с логинами и временными паролями.
+            </p>
+            <div class="dropzone" id="staffing-dropzone">
+                <div><i data-lucide="file-spreadsheet" style="width:28px;height:28px;display:block;margin:0 auto 8px;color:var(--color-accent);"></i> Перетащите штатку сюда или нажмите, чтобы выбрать файл</div>
+                <small>Форматы .xlsx, .xls, .csv</small>
+                <input type="file" id="staffing-file" accept=".xlsx,.xls,.csv,.tsv">
             </div>
-            <div class="field" style="margin-top:12px;">
-                <label>Заметки</label>
-                <textarea id="emp-notes" placeholder="Любые пометки по сотруднику"></textarea>
-            </div>
-            <div class="toolbar">
-                <button class="primary-btn" onclick="saveEmployee()"><i data-lucide="save"></i> Сохранить</button>
-                <button class="ghost-btn" onclick="resetEmployeeForm()">Очистить форму</button>
-                <span id="employee-status" style="color:#475569;font-size:14px;"></span>
-            </div>
+            <div id="staffing-status" class="muted" style="margin-top:10px;color:#64748b;font-size:14px;"></div>
+            <div id="staffing-preview"></div>
+            <div id="staffing-result"></div>
         </div>
 
         <div id="pending-block"></div>
-        <div class="section-head-row" style="margin-top:24px;">
-            <h2 class="section-title"><i data-lucide="users"></i> Список пользователей</h2>
-            <button class="del-btn" onclick="deleteNonAdmins()"><i data-lucide="user-x"></i> Удалить всех (кроме админов)</button>
+        <div class="toolbar users-toolbar">
+            <div class="field">
+                <label>Подразделение</label>
+                <select id="dept-filter" onchange="renderEmployees(employeesCache)"><option value="">Все подразделения</option></select>
+            </div>
+            <a class="ghost-btn" href="/users/credentials.xlsx" style="align-self:end;text-decoration:none;" title="Все, кто ещё не задал свой пароль"><i data-lucide="download"></i> Логины и временные пароли (Excel)</a>
+            <button class="del-btn" id="bulk-delete-btn" style="align-self:end;display:none;" onclick="bulkDelete()"><i data-lucide="user-x"></i> Удалить отмеченных</button>
         </div>
         <div id="employee-list"><div class="empty-hint">Загрузка списка пользователей...</div></div>
         <div id="employee-schedule"></div>
     </div>
 
+    <dialog id="employee-dialog" style="max-width:820px;width:94vw;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+            <h3 style="margin:0;" id="employee-form-title">Новый сотрудник</h3>
+            <button class="ghost-btn" onclick="closeEmployeeDialog()">Закрыть</button>
+        </div>
+        <div class="employee-form" style="margin-top:14px;">
+            <div class="field">
+                <label>ФИО *</label>
+                <input type="text" id="emp-full_name" placeholder="Иванов Иван Иванович">
+            </div>
+            <div class="field">
+                <label>Логин <span class="help" title="Создаётся один раз из фамилии и инициалов и не меняется. Временный пароль выдаётся автоматически — его видно в списке и в Excel, пока сотрудник не задаст свой.">?</span></label>
+                <input type="text" id="emp-username" disabled placeholder="создастся из ФИО">
+            </div>
+            <div class="field">
+                <label>Должность</label>
+                <input type="text" id="emp-position" autocomplete="off" placeholder="Выбор из штатки или введите свою">
+            </div>
+            <div class="field">
+                <label>Подразделение <span class="help" title="Справочник строится из штатного расписания. Новое подразделение можно добавить, набрав его название в поиске.">?</span></label>
+                <input type="text" id="emp-department" autocomplete="off" readonly placeholder="Выбор из справочника">
+            </div>
+            <div class="field">
+                <label>План адаптации</label>
+                <select id="emp-plan_id"></select>
+            </div>
+            <div class="field">
+                <label>Дата выхода на работу <span class="help" title="По дате выхода статус меняется сам: до неё — «Запланирован», во время плана — «Проходит адаптацию», после — «Завершил».">?</span></label>
+                <input type="date" id="emp-start_date">
+            </div>
+            <div class="field">
+                <label>Наставник</label>
+                <input type="text" id="emp-mentor" autocomplete="off" readonly placeholder="Выбор из сотрудников">
+            </div>
+            <div class="field">
+                <label>Руководитель</label>
+                <input type="text" id="emp-manager" autocomplete="off" readonly placeholder="Выбор из сотрудников">
+            </div>
+            <div class="field">
+                <label>Телефон</label>
+                <input type="tel" id="emp-phone" placeholder="+7 900 000-00-00">
+            </div>
+            <div class="field">
+                <label>Email</label>
+                <input type="email" id="emp-email" placeholder="ivanov@company.ru">
+            </div>
+            <div class="field" id="emp-role-field" style="display:none;">
+                <label>Роль <span class="help" title="Администратор — база знаний, планы и сотрудники своего подразделения. Суперадмин — всё и все.">?</span></label>
+                <select id="emp-role">
+                    <option value="employee">Сотрудник</option>
+                    <option value="admin">Администратор</option>
+                    <option value="owner">Суперадмин</option>
+                </select>
+            </div>
+        </div>
+        <div class="field" style="margin-top:12px;">
+            <label>Заметки</label>
+            <textarea id="emp-notes" placeholder="Любые пометки по сотруднику"></textarea>
+        </div>
+        <div class="toolbar">
+            <button class="primary-btn" onclick="saveEmployee()"><i data-lucide="save"></i> Сохранить</button>
+            <button class="ghost-btn" onclick="closeEmployeeDialog()">Отмена</button>
+            <span id="employee-status" style="color:#475569;font-size:14px;"></span>
+        </div>
+    </dialog>
+
     <dialog id="credentials-dialog">
         <h3 style="margin-top:0;" id="cred-title">Доступ</h3>
         <input type="hidden" id="cred-user-id">
-        <label>Логин</label>
-        <input type="text" id="cred-username" placeholder="ivanov">
+        <div style="margin-bottom:10px;">Логин: <b id="cred-login"></b></div>
         <label>Новый временный пароль</label>
-        <input type="text" id="cred-password" placeholder="оставьте пустым, чтобы не менять">
+        <input type="text" id="cred-password" placeholder="пусто — сгенерируем автоматически">
         <div style="font-size:12px;color:#94a3b8;margin:-8px 0 14px;">
-            После смены пароля пользователь при следующем входе задаст свой собственный.
+            Старый пароль перестанет действовать. При входе сотрудник задаст свой пароль.
         </div>
+        <div id="cred-result" class="plan-note" style="display:none;margin-bottom:12px;"></div>
         <div class="error" id="cred-error" style="display:none;margin-bottom:12px;"></div>
         <div style="display:flex;gap:10px;">
-            <button class="primary-btn" style="flex:1;padding:9px;" onclick="submitCredentials()">Сохранить</button>
-            <button class="ghost-btn" onclick="document.getElementById('credentials-dialog').close()">Отмена</button>
+            <button class="primary-btn" style="flex:1;padding:9px;" id="cred-submit" onclick="submitCredentials()">Выдать новый пароль</button>
+            <button class="ghost-btn" onclick="document.getElementById('credentials-dialog').close()">Закрыть</button>
         </div>
     </dialog>
 
@@ -280,14 +277,6 @@
         </div>
     </dialog>
 
-    <dialog id="doc-detail-dialog" style="max-width:900px;width:92vw;">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-            <h3 style="margin:0;" id="doc-detail-title">Подробности документа</h3>
-            <button class="ghost-btn" onclick="document.getElementById('doc-detail-dialog').close()">Закрыть</button>
-        </div>
-        <div id="doc-detail-body" style="margin-top:12px;max-height:72vh;overflow:auto;"></div>
-    </dialog>
-
     <dialog id="substage-map-dialog" style="max-width:920px;width:94vw;">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
             <h3 style="margin:0;" id="substage-map-title">Куски документа по подэтапам</h3>
@@ -295,29 +284,6 @@
         </div>
         <div class="stage-hint" style="margin-top:8px;">Каждый кусок текста показан с подэтапами, к которым он отнесён, и уверенностью. Метод указан вверху списка: точная разметка (LLM) или приблизительная косинусная оценка. Низкая уверенность → вероятно, попал ошибочно.</div>
         <div id="substage-map-body" style="margin-top:12px;max-height:74vh;overflow:auto;"></div>
-    </dialog>
-
-    <dialog id="folder-dialog" style="max-width:620px;width:92vw;">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-            <h3 style="margin:0;" id="folder-dialog-title">Новая папка</h3>
-            <button class="ghost-btn" onclick="document.getElementById('folder-dialog').close()">Закрыть</button>
-        </div>
-        <div style="margin-top:14px;max-height:74vh;overflow:auto;">
-            <input type="hidden" id="folder-id">
-            <div class="field" style="margin-bottom:12px;"><label>Название *</label>
-                <input type="text" id="folder-name" placeholder="Например: Охрана труда"></div>
-            <div class="field" style="margin-bottom:12px;"><label>Описание</label>
-                <textarea id="folder-description" placeholder="Коротко: что это за категория"></textarea></div>
-            <div class="field" style="margin-bottom:6px;"><label>Критерии отнесения</label></div>
-            <div class="stage-hint" style="margin:0 0 8px;">Смысловые признаки, по которым ассистент относит документ к папке (не просто ключевые слова).</div>
-            <div id="folder-criteria"></div>
-            <button class="icon-btn" onclick="addCriterion()" style="margin-top:6px;"><i data-lucide="plus"></i> Добавить критерий</button>
-            <div class="error" id="folder-error" style="display:none;margin-top:12px;"></div>
-        </div>
-        <div style="display:flex;gap:10px;margin-top:16px;">
-            <button class="primary-btn" onclick="submitFolder()"><i data-lucide="save"></i> Сохранить</button>
-            <button class="ghost-btn" onclick="document.getElementById('folder-dialog').close()">Отмена</button>
-        </div>
     </dialog>
 
     <script src="/static/admin.js"></script>

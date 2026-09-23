@@ -78,15 +78,11 @@
 
         <div class="note" style="display:flex;gap:10px;align-items:flex-start;">
             <i data-lucide="info" style="flex:none;margin-top:1px;"></i>
-            <span>Вы вошли по данным, выданным при установке системы. Замените их своими —
-            выданные логин и пароль перестанут действовать сразу после сохранения.</span>
+            <span>Вы вошли по временному паролю. Задайте свой — временный перестанет действовать
+            сразу после сохранения. Логин остаётся прежним: <b id="login-name"></b></span>
         </div>
 
         <div class="error" id="error"></div>
-
-        <label for="username">Новый логин</label>
-        <input type="text" id="username" autocomplete="username" required>
-        <div class="hint">Латинские буквы, цифры, точка, дефис, подчёркивание. От 3 символов.</div>
 
         <label for="password">Новый пароль</label>
         <input type="password" id="password" autocomplete="new-password" required>
@@ -108,7 +104,8 @@
             .then(me => {
                 if (me) {
                     document.getElementById('greeting').textContent =
-                        `${me.full_name || me.username}: задайте свои логин и пароль`;
+                        `${me.full_name || me.username}: задайте свой пароль`;
+                    document.getElementById('login-name').textContent = me.username || '';
                 }
             })
             .catch(() => {});
@@ -128,7 +125,7 @@
             fetch('/api/setup-credentials', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: document.getElementById('username').value, password }),
+                body: JSON.stringify({ password }),
             })
                 .then(res => res.json().then(data => ({ ok: res.ok, data })))
                 .then(({ ok, data }) => {
