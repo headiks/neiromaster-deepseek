@@ -21,6 +21,7 @@ import time
 
 import requests
 
+import pii
 from ratelimit import deepseek_slot
 
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -50,6 +51,10 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     use_model = model or os.environ.get("DEEPSEEK_MODEL") or MODEL
     if not api_key or api_key.startswith("sk-клю") or api_key in ("sk-ключ", "sk-key"):
         raise RuntimeError("DEEPSEEK_API_KEY не задан (env или .env).")
+    # ПДн не покидают сервер: в модель уходят метки [ФИО_1], [ТЕЛ_1]…, в ответе они
+    # заменяются обратно. Системные промпты — наши, их не трогаем.
+    masker = pii.Masker()
+    user = masker.mask(user)
     body = {
         "model": use_model,
         "messages": [{"role": "system", "content": system},
@@ -92,11 +97,51 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     if r.status_code >= 400:
         hint = " (DeepSeek перегружен — повторите позже)" if r.status_code in RETRY_STATUS else ""
         raise RuntimeError(f"DeepSeek API {r.status_code}{hint}: {r.text[:300]}")
-    ch = r.json()["choices"][0]
+    data = r.json()
+    _record_usage(use_model, data.get("usage") or {})
+    ch = data["choices"][0]
     content = (ch.get("message") or {}).get("content") or ""
     if ch.get("finish_reason") == "length":
         raise RuntimeError("DeepSeek: ответ обрезан по лимиту (увеличь max_tokens "
                            "или уменьши входной фрагмент).")
     if not content.strip():
         raise RuntimeError("DeepSeek: пустой ответ модели.")
-    return content
+    return masker.unmask(content)
+
+
+def _record_usage(model: str, usage: dict):
+    """Учёт токенов по дням (Redis-хэш nm:llm:YYYY-MM-DD, живёт 90 дней) — чтобы расход
+    было видно без личного кабинета DeepSeek (GET /api/llm-usage). Сбой учёта не мешает."""
+    try:
+        from redis_conn import get_redis
+        rd = get_redis()
+        pt, ct = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+        print(f"[deepseek] {model}: prompt={pt} completion={ct}")
+        if rd is None:
+            return
+        key = f"nm:llm:{time.strftime('%Y-%m-%d')}"
+        pipe = rd.pipeline()
+        pipe.hincrby(key, "calls", 1)
+        pipe.hincrby(key, "prompt_tokens", pt)
+        pipe.hincrby(key, "completion_tokens", ct)
+        pipe.hincrby(key, "cache_hit_tokens", int(usage.get("prompt_cache_hit_tokens") or 0))
+        pipe.expire(key, 90 * 24 * 3600)
+        pipe.execute()
+    except Exception:
+        pass
+
+
+def usage_by_day(days: int = 14) -> list:
+    """Расход токенов за последние days дней (новые сверху). Без Redis — пусто."""
+    from datetime import date, timedelta
+    from redis_conn import get_redis
+    rd = get_redis()
+    if rd is None:
+        return []
+    out = []
+    for i in range(days):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        h = rd.hgetall(f"nm:llm:{d}") or {}
+        if h:
+            out.append({"date": d, **{k: int(v) for k, v in h.items()}})
+    return out

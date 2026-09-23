@@ -236,6 +236,24 @@ def _docpipe_progress_cb(filename: str):
     return cb
 
 
+def docs_changed():
+    """База документов изменилась -> обновить сообщения планов, у которых они уже есть.
+    Модель трогает только подэтапы, чьи документы поменялись (отпечатки в planner) —
+    админу не нужно помнить про «Догенерировать недостающее»."""
+    try:
+        import qacache
+        qacache.bump_version()             # закэшированные ответы на вопросы устарели
+    except Exception as e:
+        _log("QA", f"кэш ответов не сброшен: {e}")
+    try:
+        import planner
+        n = planner.refresh_generated_plans()
+        if n:
+            _log("GEN", f"автообновление сообщений: запущено для планов — {n}")
+    except Exception as e:
+        _log("GEN", f"автообновление сообщений не запущено: {e}")
+
+
 def index_document(filepath: Path) -> dict:
     """Приём документа: docling-разбор + классификация/разметка через docpipe
     (этапы/подэтапы, метки в Postgres). Векторов/эмбеддингов нет — ретрив идёт по
@@ -253,6 +271,7 @@ def index_document(filepath: Path) -> dict:
         _update_registry(filename, status="indexed", chunks=sections, error=None,
                          indexed_in_seconds=elapsed, phase=None, progress=100, path=filename)
         _log("DONE", f"{filename}: классифицирован docpipe, секций {sections} за {elapsed} с")
+        docs_changed()
         return {"filename": filename, "status": "indexed", "chunks": sections, "elapsed": elapsed}
     except Exception as e:
         _update_registry(filename, status="error", error=str(e))
@@ -312,6 +331,16 @@ def owner_dirs(uploader: Optional[dict] = None) -> tuple:
     import users
     top = users.dir_slug(users.get_owner())
     return top, (users.dir_slug(uploader) if uploader else top)
+
+
+def free_filename(filename: str) -> str:
+    """«Регламент.pdf» занят -> «Регламент (2).pdf» (первое свободное имя)."""
+    taken = {d.get("filename") for d in list_documents()}
+    stem, ext = Path(filename).stem, Path(filename).suffix
+    n = 2
+    while f"{stem} ({n}){ext}" in taken or (DOCS_DIR / f"{stem} ({n}){ext}").exists():
+        n += 1
+    return f"{stem} ({n}){ext}"
 
 
 def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] = None) -> Path:
@@ -465,6 +494,7 @@ def reanalyze_all(job_id: str = None) -> dict:
             results.append(reanalyze_document(filename))
         if job_id:
             _set_index_job(job_id, status="done", done=total, total=total, current="")
+        docs_changed()
         return {"reanalyzed": len(results), "documents": results}
     except Exception as e:
         if job_id:
