@@ -1,7 +1,11 @@
 // Разбор строки инбокса (scheduled_messages) в вид для показа — те же поля/форматы,
 // что и в кабинете на сайте: заголовок = «Этап — Подэтап», тело = текст сообщения.
 export type Msg = {
+  id?: string;            // id строки инбокса (<сотрудник>:<сообщение>) — для «прочитано»/ответов
   message_id?: string;
+  kind?: string;          // message | reminder | checklist | system_check | survey | quiz | handover
+  payload?: any;          // структура под тип (msgconvert): пункты, вопросы, варианты
+  answers?: Record<string, any>;
   title?: string;
   body?: string;
   send_at?: string;
@@ -18,9 +22,18 @@ export function body(m: Msg): string {
   return String(m.body || "");
 }
 
+export const KIND_LABEL: Record<string, string> = {
+  reminder: "Напоминание", checklist: "Чек-лист", system_check: "Проверка",
+  survey: "Опрос", quiz: "Мини-тест", handover: "Передача",
+};
+
 // Момент попадания в инбокс (для чата важна дата доставки, а не план-время).
-function when(m: Msg): string {
-  return String(m.delivered_at || m.send_at || "");
+// Сервер отдаёт время в UTC с зоной — переводим в местное время телефона.
+function whenDate(m: Msg): Date | null {
+  const raw = String(m.delivered_at || m.send_at || "");
+  if (!raw) return null;
+  const d = new Date(raw.replace(" ", "T"));
+  return isNaN(d.getTime()) ? null : d;
 }
 
 // Локальная дата YYYY-MM-DD (для сравнения с датой сообщения).
@@ -29,16 +42,23 @@ export function ymd(d: Date = new Date()): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-// Дата сообщения как YYYY-MM-DD (обрезаем время; терпим и 'T', и пробел).
+// Местная дата сообщения YYYY-MM-DD.
 export function dayOf(m: Msg): string {
-  return when(m).replace(" ", "T").slice(0, 10);
+  const d = whenDate(m);
+  return d ? ymd(d) : "";
 }
 
-// Время HH:MM для пузыря.
+// Местное время HH:MM для пузыря.
 export function hhmm(m: Msg): string {
-  const s = when(m).replace(" ", "T");
-  const t = s.slice(11, 16);
-  return t || "";
+  const d = whenDate(m);
+  if (!d) return "";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Ключ сортировки по времени доставки.
+export function ts(m: Msg): number {
+  return whenDate(m)?.getTime() || 0;
 }
 
 // Человекочитаемая дата-заголовок группы в «Истории».

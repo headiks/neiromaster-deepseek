@@ -50,6 +50,10 @@ export async function registerForPush(): Promise<string | null> {
   }
 }
 
+// Есть ли зарегистрированный на сервере FCM-токен: тогда уведомления присылает сервер
+// (и при закрытом приложении), а локальные дубли из опроса инбокса не нужны.
+export const hasRemotePush = () => !!currentToken;
+
 // Отвязать токен на сервере (вызывать ДО logout — нужен живой Bearer).
 export async function unregisterForPush(): Promise<void> {
   try {

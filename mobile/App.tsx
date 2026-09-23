@@ -9,7 +9,7 @@ const STATUSBAR_H = Platform.OS === "android" ? (RNStatusBar.currentHeight ?? 24
 
 type IconCmp = React.ComponentType<{ color: string; size?: number }>;
 import { getToken, me, myMessages } from "./src/api";
-import { registerForPush, addNotificationListeners, presentLocal } from "./src/notifications";
+import { registerForPush, addNotificationListeners, presentLocal, hasRemotePush } from "./src/notifications";
 import Login from "./src/screens/Login";
 import Inbox from "./src/screens/Inbox";
 import Ask from "./src/screens/Ask";
@@ -56,8 +56,8 @@ function Root() {
     return off;
   }, [authed]);
 
-  // Локальные уведомления в шторке: опрашиваем инбокс и на КАЖДОЕ новое доставленное
-  // сообщение показываем уведомление. Работает без FCM, пока приложение живо.
+  // Локальные уведомления в шторке — запасной путь, когда FCM-токена нет: опрашиваем
+  // инбокс и на КАЖДОЕ новое доставленное сообщение показываем уведомление (пока приложение живо).
   // При первом проходе только запоминаем текущие id (не спамим историей).
   useEffect(() => {
     if (!authed) return;
@@ -70,10 +70,11 @@ function Root() {
         const list: any[] = res?.messages || [];
         const fresh = list.filter((m) => m?.id && !seen.has(m.id));
         list.forEach((m) => m?.id && seen.add(m.id));
-        if (!first) {
+        // Сервер уже шлёт пуш через FCM — локально не дублируем (иначе два уведомления).
+        if (!first && !hasRemotePush()) {
           for (const m of fresh) {
             if (stop) break;
-            await presentLocal(m.title || "НейроМастер", m.body || "", { message_row_id: m.id });
+            await presentLocal(m.title || "НейроМастер", m.body || "", { message_row_id: m.id, kind: m.kind || "message" });
           }
         }
         first = false;

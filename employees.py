@@ -51,6 +51,17 @@ def substitute(text: str, employee: dict) -> str:
     return text
 
 
+def _substitute_deep(value, employee: dict):
+    """Плейсхолдеры во всех строках структуры (пункты чек-листа, вопросы теста)."""
+    if isinstance(value, str):
+        return substitute(value, employee)
+    if isinstance(value, list):
+        return [_substitute_deep(v, employee) for v in value]
+    if isinstance(value, dict):
+        return {k: _substitute_deep(v, employee) for k, v in value.items()}
+    return value
+
+
 def build_employee_schedule(employee: dict) -> dict:
     """
     Собирает персональное расписание сотрудника.
@@ -80,6 +91,8 @@ def build_employee_schedule(employee: dict) -> dict:
         source = generated.get(item["message_id"], {})
         content = dict(source.get("content") or {"format": "markdown", "text": ""})
         content["text"] = substitute(content.get("text", ""), employee)
+        if content.get("converted"):
+            content["converted"] = _substitute_deep(content["converted"], employee)
         messages.append({
             **item,
             "content": content,

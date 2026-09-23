@@ -25,6 +25,8 @@ import contextlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from psycopg.types.json import Json
+
 import db
 import users
 import employees as adaptation
@@ -44,14 +46,19 @@ def _localize(iso_naive: str, tzname: str) -> datetime:
 
 
 def _message_row(employee_id: str, plan_id, msg: dict, tzname: str):
-    """Готовит поля строки scheduled_messages из позиции расписания. Чистая (тестируется)."""
+    """Готовит поля строки scheduled_messages из позиции расписания. Чистая (тестируется).
+    None — если нет даты или сообщение ещё не сгенерировано: пустой «Этап — Подэтап» без
+    текста сотруднику не шлём; появится текст — refresh_plan досоздаст строку."""
     send_iso = (msg.get("schedule") or {}).get("send_at")
     if not send_iso:
+        return None
+    content = msg.get("content") or {}
+    body = content.get("text", "") or ""
+    if not body.strip():
         return None
     stage = msg.get("stage") or {}
     sub = msg.get("substage") or {}
     title = " — ".join(p for p in (stage.get("title"), sub.get("title")) if p)
-    body = (msg.get("content") or {}).get("text", "") or ""
     return {
         "id": f"{employee_id}:{msg['message_id']}",
         "employee_id": employee_id,
@@ -61,6 +68,10 @@ def _message_row(employee_id: str, plan_id, msg: dict, tzname: str):
         "substage_id": sub.get("id"),
         "title": title,
         "body": body,
+        "kind": sub.get("kind") or content.get("kind") or "message",
+        # Структура под тип (пункты чек-листа, вопросы теста/опроса) — для показа в
+        # приложении и кабинете. Без неё — просто текст (body).
+        "payload": content.get("converted"),
         "send_at": _localize(send_iso, tzname),
     }
 
@@ -78,42 +89,58 @@ def materialize_employee(employee: dict, force: bool = False) -> int:
     plan_id = schedule.get("plan_id")
     rows = [r for r in (_message_row(employee["id"], plan_id, m, tzname)
                         for m in schedule.get("messages", [])) if r]
-    if not rows:
-        return 0
 
     if force:
-        db.execute("DELETE FROM scheduled_messages WHERE employee_id = %s AND status = 'pending'",
-                   (employee["id"],))
+        # Только строки плана: отложенные тестовые/служебные уведомления (plan_id NULL) не трогаем.
+        db.execute("DELETE FROM scheduled_messages WHERE employee_id = %s AND status = 'pending' "
+                   "AND plan_id IS NOT NULL", (employee["id"],))
+    if not rows:
+        return 0
     for r in rows:
         # Обновляем только ещё не доставленные строки — историю не переписываем.
         db.execute(
             "INSERT INTO scheduled_messages "
-            "(id, employee_id, plan_id, message_id, stage_id, substage_id, title, body, send_at) "
+            "(id, employee_id, plan_id, message_id, stage_id, substage_id, title, body, kind, payload, send_at) "
             "VALUES (%(id)s, %(employee_id)s, %(plan_id)s, %(message_id)s, %(stage_id)s, "
-            "%(substage_id)s, %(title)s, %(body)s, %(send_at)s) "
+            "%(substage_id)s, %(title)s, %(body)s, %(kind)s, %(payload)s, %(send_at)s) "
             "ON CONFLICT (id) DO UPDATE SET "
             "  title = EXCLUDED.title, body = EXCLUDED.body, send_at = EXCLUDED.send_at, "
+            "  kind = EXCLUDED.kind, payload = EXCLUDED.payload, "
             "  plan_id = EXCLUDED.plan_id, stage_id = EXCLUDED.stage_id, "
             "  substage_id = EXCLUDED.substage_id, updated_at = now() "
             "WHERE scheduled_messages.status = 'pending'",
-            r,
+            {**r, "payload": Json(r["payload"]) if r.get("payload") else None},
         )
     return len(rows)
 
 
 def ensure_all() -> int:
-    """Досоздаёт строки для сотрудников с планом и датой выхода, у которых их ещё нет.
-    Дёшево в устойчивом состоянии: после первого прохода у всех строки уже есть."""
-    present = {r["employee_id"] for r in
-              db.query("SELECT DISTINCT employee_id FROM scheduled_messages")}
+    """Досоздаёт строки плана для сотрудников с планом и датой выхода, у которых строк
+    ЭТОГО плана ещё нет. Считаем только строки плана (plan_id): раньше любая строка —
+    тестовое уведомление или ответ на вопрос — навсегда блокировала рассылку плана."""
+    present = {(r["employee_id"], r["plan_id"]) for r in
+               db.query("SELECT DISTINCT employee_id, plan_id FROM scheduled_messages "
+                        "WHERE plan_id IS NOT NULL")}
     made = 0
     for u in users.list_users():
         if u.get("role") != users.ROLE_EMPLOYEE:
             continue
-        if not u.get("plan_id") or not u.get("start_date") or u["id"] in present:
+        if not u.get("plan_id") or not u.get("start_date") or (u["id"], u["plan_id"]) in present:
             continue
         made += materialize_employee(u)
     return made
+
+
+def refresh_plan(plan_id: str) -> int:
+    """Тексты плана изменились (генерация, правка) -> пересобрать ещё не доставленные
+    сообщения у всех сотрудников с этим планом. Без этого сотрудники, заведённые до
+    генерации, получали бы пустые сообщения. -> число сотрудников."""
+    n = 0
+    for u in users.list_users():
+        if u.get("role") == users.ROLE_EMPLOYEE and u.get("plan_id") == plan_id and u.get("start_date"):
+            materialize_employee(u, force=True)
+            n += 1
+    return n
 
 
 # ---------- Доставка ----------
@@ -129,7 +156,7 @@ def dispatch_due() -> int:
         # ponytail: даты не сдвигаются — по возвращении накопившееся выйдет разом;
         # сдвиг расписания на срок болезни добавить, если понадобится.
         "AND employee_id NOT IN (SELECT id FROM users WHERE status = 'paused') "
-        "RETURNING id, employee_id, title, body",
+        "RETURNING id, employee_id, title, body, kind",
         fetch="all",
     )
     rows = rows or []
@@ -137,7 +164,8 @@ def dispatch_due() -> int:
         try:
             import push
             push.notify([{"user_id": r["employee_id"], "title": r["title"] or "НейроМастер",
-                          "body": r["body"] or "", "data": {"message_row_id": r["id"]}}
+                          "body": push_body(r.get("kind"), r["body"]),
+                          "data": {"message_row_id": r["id"], "kind": r.get("kind") or "message"}}
                          for r in rows])
         except Exception as e:
             print(f"[scheduler] push не отправлен: {e}")
@@ -168,11 +196,26 @@ def dispatch_all() -> int:
     return total
 
 
+KIND_PUSH_HINT = {
+    "checklist": "Чек-лист — отметьте выполненное в приложении.",
+    "system_check": "Проверка — отметьте выполненное в приложении.",
+    "survey": "Короткий опрос — ответьте в приложении.",
+    "quiz": "Мини-тест — ответьте в приложении.",
+}
+
+
+def push_body(kind: str, body: str) -> str:
+    """Текст пуша: у интерактивных типов — подсказка, что ответить нужно в приложении."""
+    hint = KIND_PUSH_HINT.get(kind or "")
+    text = (body or "").strip()
+    return f"{hint}\n{text}" if hint else text
+
+
 # ---------- Инбокс сотрудника ----------
 def inbox(employee_id: str, limit: int = 200) -> list:
     return db.query(
-        "SELECT id, message_id, title, body, send_at, status, delivered_at, read_at, "
-        "stage_id, substage_id FROM scheduled_messages "
+        "SELECT id, message_id, title, body, kind, payload, answers, send_at, status, "
+        "delivered_at, read_at, stage_id, substage_id FROM scheduled_messages "
         "WHERE employee_id = %s AND status IN ('delivered', 'read') "
         "ORDER BY send_at DESC LIMIT %s",
         (employee_id, max(1, min(int(limit), 500))),
@@ -185,7 +228,8 @@ def unread_count(employee_id: str) -> int:
     return r["n"] if r else 0
 
 
-def deliver_now(user_id: str, title: str = "", body: str = "", data: dict | None = None) -> str:
+def deliver_now(user_id: str, title: str = "", body: str = "", data: dict | None = None,
+                kind: str = "message", payload: dict | None = None) -> str:
     """Кладёт сообщение сразу в инбокс сотрудника (delivered) и шлёт push.
     Для уведомлений вне плана: ответ на вопрос, тест уведомлений. Сообщение видно
     в приложении (вкладка «Сегодня») даже без настроенного push. Возвращает id строки."""
@@ -195,14 +239,14 @@ def deliver_now(user_id: str, title: str = "", body: str = "", data: dict | None
     title = title or "Уведомление"
     db.execute(
         "INSERT INTO scheduled_messages "
-        "(id, employee_id, message_id, title, body, send_at, status, delivered_at) "
-        "VALUES (%s, %s, %s, %s, %s, now(), 'delivered', now())",
-        (row_id, user_id, mid, title, body or ""),
+        "(id, employee_id, message_id, title, body, kind, payload, send_at, status, delivered_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, now(), 'delivered', now())",
+        (row_id, user_id, mid, title, body or "", kind or "message", Json(payload) if payload else None),
     )
     try:
         import push
-        push.notify([{"user_id": user_id, "title": title, "body": body or "",
-                      "data": {**(data or {}), "message_row_id": row_id}}])
+        push.notify([{"user_id": user_id, "title": title, "body": push_body(kind, body),
+                      "data": {**(data or {}), "message_row_id": row_id, "kind": kind or "message"}}])
     except Exception as e:
         print(f"[deliver_now] push не отправлен: {e}")
     return row_id
@@ -233,12 +277,76 @@ def push_test(employee_id: str, title: str = "", body: str = "",
 
 
 def mark_read(employee_id: str, message_row_id: str) -> bool:
+    """message_row_id — id строки инбокса. Принимаем и голый message_id: так отмечали
+    уже установленные версии приложения (строка = <сотрудник>:<message_id>)."""
     rows = db.query(
         "UPDATE scheduled_messages SET status = 'read', read_at = now(), updated_at = now() "
-        "WHERE id = %s AND employee_id = %s AND status = 'delivered' RETURNING id",
-        (message_row_id, employee_id), fetch="all",
+        "WHERE (id = %s OR id = %s) AND employee_id = %s AND status = 'delivered' RETURNING id",
+        (message_row_id, f"{employee_id}:{message_row_id}", employee_id), fetch="all",
     )
     return bool(rows)
+
+
+def save_answers(employee_id: str, message_row_id: str, answers: dict) -> bool:
+    """Ответы сотрудника на чек-лист/опрос/тест ({id пункта/вопроса: значение}).
+    Хранятся в строке инбокса — видны и в приложении, и в кабинете на сайте."""
+    rows = db.query(
+        "UPDATE scheduled_messages SET answers = %s, "
+        "status = CASE WHEN status = 'delivered' THEN 'read' ELSE status END, "
+        "read_at = COALESCE(read_at, now()), updated_at = now() "
+        "WHERE id = %s AND employee_id = %s AND status IN ('delivered', 'read') RETURNING id",
+        (Json(answers or {}), message_row_id, employee_id), fetch="all",
+    )
+    return bool(rows)
+
+
+# ---------- Тест: по сообщению каждого типа ----------
+_SAMPLE = {
+    "message": ("Добро пожаловать!", {
+        "intro": "Здравствуйте! Рады, что вы с нами.",
+        "body": "Завтра ваш первый рабочий день. Ждём вас к 9:00 на проходной, пропуск выдаст охрана.",
+        "key_points": ["Возьмите паспорт", "Обед — с 12:00 до 13:00"],
+        "outro": "Если будут вопросы — пишите во вкладку «Вопрос»."}),
+    "reminder": ("Напоминание", {
+        "body": "Сегодня в 14:00 — вводный инструктаж по охране труда, кабинет 205."}),
+    "checklist": ("Чек-лист первого дня", {
+        "intro": "Отметьте, что уже сделано:",
+        "checklist": ["Получить пропуск", "Получить спецодежду", "Пройти вводный инструктаж",
+                      "Познакомиться с наставником"]}),
+    "system_check": ("Проверка доступов", {
+        "intro": "Проверьте, что всё работает:",
+        "checklist": ["Вход в рабочую почту", "Доступ к порталу", "Работает пропуск"]}),
+    "survey": ("Как прошла первая неделя?", {
+        "intro": "Ответьте на пару вопросов — это поможет сделать адаптацию лучше.",
+        "questions": [
+            {"text": "Насколько понятны ваши задачи?", "options": ["Всё понятно", "Частично", "Непонятно"]},
+            {"text": "Хватает ли помощи наставника?", "options": ["Да", "Скорее да", "Нет"]}]}),
+    "quiz": ("Мини-тест: охрана труда", {
+        "intro": "Проверим, что запомнилось после инструктажа.",
+        "questions": [
+            {"text": "Что делать при пожаре в первую очередь?",
+             "options": [{"text": "Сообщить по телефону 112 и начальнику", "correct": True},
+                         {"text": "Закончить работу"}, {"text": "Открыть окна"}],
+             "explanation": "Сначала — сообщить о пожаре, затем эвакуация по плану."},
+            {"text": "Где хранится аптечка первой помощи?",
+             "options": [{"text": "У мастера участка", "correct": True}, {"text": "В столовой"}],
+             "explanation": "Аптечка — у мастера участка, место отмечено на плане эвакуации."}]}),
+    "handover": ("Передача наставнику", {
+        "body": "С завтрашнего дня вас сопровождает наставник — он подойдёт к вам в 9:00."}),
+}
+
+
+def send_all_kinds(user_id: str) -> list:
+    """Кладёт в инбокс (и шлёт пушем) по одному сообщению КАЖДОГО типа — в том же формате,
+    что и сообщения плана (msgconvert). Для проверки отображения в приложении и на сайте."""
+    import msgconvert
+    out = []
+    for kind, (title, raw) in _SAMPLE.items():
+        content = {"title": title, **raw}
+        payload = msgconvert.convert(content, kind)
+        out.append(deliver_now(user_id, f"Тест · {title}", msgconvert.to_text(content),
+                               kind=kind, payload=payload))
+    return out
 
 
 # ---------- Планировщик (фоновый цикл) ----------

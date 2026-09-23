@@ -7,7 +7,8 @@ import {
 } from "react-native";
 import { S, useTheme, Palette } from "../theme";
 import * as api from "../api";
-import { Msg, title, body, hhmm, dayOf, dayLabel, ymd } from "../format";
+import { Msg, dayOf, dayLabel, ymd, ts } from "../format";
+import MessageCard from "./MessageCard";
 
 export default function Inbox({ scope }: { scope: "today" | "history" }) {
   const { c } = useTheme();
@@ -24,8 +25,8 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
       const list: Msg[] = res?.messages || [];
       setMsgs(list);
       // Показанное в чате считаем прочитанным — гасим непрочитанные (best-effort).
-      list.filter((m) => m.status === "delivered" && m.message_id)
-        .forEach((m) => api.markRead(String(m.message_id)).catch(() => {}));
+      list.filter((m) => m.status === "delivered" && m.id)
+        .forEach((m) => api.markRead(String(m.id)).catch(() => {}));
     } catch (e: any) {
       setErr(e?.message || "Не удалось загрузить сообщения");
     } finally {
@@ -44,7 +45,7 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
 
   const today = ymd();
   // Сервер отдаёт по send_at DESC; для чата упорядочим по возрастанию времени.
-  const asc = [...msgs].sort((a, b) => (dayOf(a) + hhmm(a)).localeCompare(dayOf(b) + hhmm(b)));
+  const asc = [...msgs].sort((a, b) => ts(a) - ts(b));
 
   if (loading) {
     return <View style={st.center}><ActivityIndicator color={c.primary} size="large" /></View>;
@@ -59,7 +60,7 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
         {err ? <Text style={st.err}>{err}</Text> : null}
         {list.length === 0
           ? <Text style={st.empty}>Сегодня новых сообщений плана нет.</Text>
-          : list.map((m, i) => <Bubble key={m.message_id || i} m={m} st={st} />)}
+          : list.map((m, i) => <MessageCard key={m.id || i} m={m} />)}
       </ScrollView>
     );
   }
@@ -79,22 +80,11 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
           <View key={d}>
             <View style={st.dayChip}><Text style={st.dayChipText}>{dayLabel(d)}</Text></View>
             {past.filter((m) => dayOf(m) === d)
-              .map((m, i) => <Bubble key={m.message_id || i} m={m} st={st} />)}
+              .map((m, i) => <MessageCard key={m.id || i} m={m} />)}
           </View>
         ))
       )}
     </ScrollView>
-  );
-}
-
-function Bubble({ m, st }: { m: Msg; st: ReturnType<typeof makeStyles> }) {
-  const t = hhmm(m);
-  return (
-    <View style={st.bubble}>
-      <Text style={st.bTitle}>{title(m)}</Text>
-      {body(m) ? <Text style={st.bBody}>{body(m)}</Text> : null}
-      {t ? <Text style={st.bTime}>{t}</Text> : null}
-    </View>
   );
 }
 
@@ -107,12 +97,4 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   dayChip: { alignSelf: "center", backgroundColor: c.chipBg, borderRadius: 12,
     paddingHorizontal: S.md, paddingVertical: 4, marginVertical: S.md },
   dayChipText: { color: c.chipText, fontSize: 12, fontWeight: "600" },
-  bubble: {
-    alignSelf: "flex-start", maxWidth: "92%", backgroundColor: c.card,
-    borderRadius: S.r, borderBottomLeftRadius: S.xs, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
-    padding: S.md, marginBottom: S.sm,
-  },
-  bTitle: { fontSize: 14, fontWeight: "700", color: c.primary, letterSpacing: 0.2 },
-  bBody: { fontSize: 15, color: c.text, marginTop: S.xs, lineHeight: 21 },
-  bTime: { fontSize: 11, color: c.muted, marginTop: S.sm, alignSelf: "flex-end" },
 });
