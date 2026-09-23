@@ -88,7 +88,7 @@ async def credentials_xlsx(ids: str = "", actor: dict = Depends(require_admin)):
     ids (через запятую) — только эти (сразу после загрузки штатки); пусто — все видимые."""
     wanted = {i for i in ids.split(",") if i}
     rows = [u for u in users.visible_users(actor, users.list_users(with_secrets=True))
-            if u.get("temp_password") and u.get("must_change_credentials")
+            if u.get("temp_password")
             and (not wanted or u["id"] in wanted)]
     body = staffing.credentials_xlsx(rows)
     disposition = ('attachment; filename="logins.xlsx"; '
@@ -157,8 +157,6 @@ async def get_users(actor: dict = Depends(require_admin)):
         pid = user.get("plan_id")
         if pid and pid not in full:
             full[pid] = planner.load_plan(pid)
-        if not user.get("must_change_credentials"):
-            user.pop("temp_password", None)     # свой пароль уже задан — показывать нечего
         result.append({
             **user,
             "status": users.adaptation_status(user, full.get(pid)),
@@ -186,7 +184,7 @@ async def create_user(req: UserRequest, actor: dict = Depends(require_admin)):
         payload["department"] = actor.get("department") or ""
     try:
         user = users.create_user(payload, actor=actor, role=users.ROLE_EMPLOYEE,
-                                 must_change_credentials=True)
+                                 issued_password=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {**users.public_view(user), "temp_password": payload["password"]}
@@ -275,7 +273,9 @@ async def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
     try:
         if not target.get("username"):
             users.set_username(user_id, staffing.new_username(target.get("full_name") or ""))
-        users.set_password(user_id, password, must_change=True)
+        # Сотруднику — выданный пароль (виден админу); админу — сменит при входе.
+        users.set_password(user_id, password, must_change=target.get("role") != users.ROLE_EMPLOYEE,
+                           issued=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     auth.drop_user_sessions(user_id)
@@ -286,8 +286,10 @@ async def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
 async def pause_user(user_id: str, req: PauseRequest, actor: dict = Depends(require_admin)):
     """Приостановить адаптацию (больничный и т.п.) или возобновить: пока пауза, сообщения
     плана не доставляются. То же сотрудник может сделать сам в кабинете («Я на больничном»)."""
-    _target_user(user_id, actor)
+    before = _target_user(user_id, actor)
     user = users.set_status(user_id, "paused" if req.paused else "active")
+    if (before.get("status") == "paused") != req.paused:
+        messaging.notify_mentor_sick(user, req.paused)
     return users.public_view(user)
 
 
@@ -355,12 +357,27 @@ async def notify_test(user_id: str, req: NotifyTestRequest, actor: dict = Depend
             "target": target.get("full_name") or target.get("username") or target["id"]}
 
 
-@router.post("/users/{user_id}/notify-test-kinds", dependencies=admin_only)
-async def notify_test_kinds(user_id: str, actor: dict = Depends(require_admin)):
-    """Тест отображения: по одному сообщению каждого типа (сообщение, напоминание,
-    чек-лист, проверка, опрос, мини-тест, передача) — сразу в инбокс и пушем на телефон."""
+class TestTypedMessages(BaseModel):
+    messages: list[dict] | None = None   # None — по примеру каждого типа
+
+
+@router.get("/test-messages/samples", dependencies=admin_only)
+async def test_message_samples():
+    """Примеры тестовых сообщений всех типов — заготовка для редактора во вкладке «Тестирование»."""
+    return {"messages": messaging.test_samples()}
+
+
+@router.post("/users/{user_id}/test-messages", dependencies=admin_only)
+async def send_test_messages(user_id: str, req: TestTypedMessages, actor: dict = Depends(require_admin)):
+    """Тестовые сообщения выбранному пользователю: тип, заголовок, текст, пункты чек-листа,
+    вопросы опроса/теста и задержку задаёт администратор. Приходят в инбокс и пушем."""
     target = _target_user(user_id, actor)
-    ids = messaging.send_all_kinds(target["id"])
+    items = [m for m in (req.messages or []) if isinstance(m, dict)] if req.messages is not None else None
+    if items is not None and not items:
+        raise HTTPException(status_code=400, detail="Нет сообщений для отправки")
+    ids = messaging.send_test_messages(target["id"], items)
+    activitylog.log("action", user=actor, path=f"/users/{user_id}/test-messages",
+                    detail={"action": "test_messages", "count": len(ids)})
     return {"sent": len(ids), "target": target.get("full_name") or target.get("username") or target["id"]}
 
 

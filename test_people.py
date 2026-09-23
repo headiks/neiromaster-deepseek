@@ -67,3 +67,17 @@ def test_adaptation_status_is_automatic():
     assert st(start_date="2026-09-10") == "active"
     assert st(start_date="2026-08-01") == "done"               # 30 дней прошло
     assert st(start_date="2026-09-10", status="paused") == "paused"
+
+
+def test_employee_password_only_from_admin(monkeypatch):
+    # Сотруднику флаг «сменить при входе» не ставится (он блокировал приложение), пароль,
+    # выданный администратором, виден ему; у администратора — прежний первый вход.
+    saved = {}
+    for role in ("employee", "admin"):
+        u = {"id": role, "role": role}
+        monkeypatch.setattr(real_users, "get_user", lambda uid, u=u: dict(u))
+        monkeypatch.setattr(real_users, "_save_user", lambda user: saved.__setitem__(user["id"], user))
+        real_users.set_password(role, "Secret123", must_change=True, issued=True)
+    assert saved["employee"]["must_change_credentials"] is False
+    assert saved["employee"]["temp_password"] == "Secret123"
+    assert saved["admin"]["must_change_credentials"] is True
