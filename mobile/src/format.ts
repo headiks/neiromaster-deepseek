@@ -22,11 +22,6 @@ export function body(m: Msg): string {
   return String(m.body || "");
 }
 
-export const KIND_LABEL: Record<string, string> = {
-  reminder: "Напоминание", checklist: "Чек-лист", system_check: "Проверка",
-  survey: "Опрос", quiz: "Мини-тест", handover: "Передача",
-};
-
 // Момент попадания в инбокс (для чата важна дата доставки, а не план-время).
 // Сервер отдаёт время в UTC с зоной — переводим в местное время телефона.
 function whenDate(m: Msg): Date | null {

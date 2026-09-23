@@ -18,23 +18,31 @@
             --chip-bg: #23384c; --chip-text: #b5d9fd; --input-bg: #16232f;
         }
         * { box-sizing: border-box; }
+        html, body { height: 100%; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: var(--bg);
-               color: var(--text); }
-        .shell { max-width: 760px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; }
-        .head { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center;
+               color: var(--text); overflow: hidden; }
+        /* Страница статична: шапка и вкладки неподвижны, прокручивается только окно вкладки */
+        .shell { max-width: 760px; margin: 0 auto; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
+        .head { flex: none; display: flex; justify-content: space-between; align-items: center;
                 gap: 10px; padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--border); }
         .brand { font-size: 19px; font-weight: 800; color: var(--primary); display: flex; align-items: center; gap: 8px; }
         .head-right { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
         .admin-link { color: var(--muted); text-decoration: none; border: 1px solid var(--border); border-radius: 8px;
                       padding: 5px 10px; font-size: 13px; }
-        .tabs { display: flex; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 53px; z-index: 4; }
+        .tabs { flex: none; display: flex; background: var(--card); border-bottom: 1px solid var(--border); }
         .tab { flex: 1; background: none; border: none; padding: 10px 4px 8px; color: var(--muted); font-size: 13px;
                cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; font-family: inherit;
                border-bottom: 3px solid transparent; }
         .tab.active { color: var(--primary); font-weight: 700; border-bottom-color: var(--primary); }
         .tab .dot { background: var(--danger); color: #fff; border-radius: 9px; font-size: 11px; padding: 0 6px; margin-left: 4px; }
-        main { flex: 1; padding: 16px; }
-        .pane { display: none; } .pane.active { display: block; }
+        main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px; }
+        .pane { display: none; } .pane.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+        /* Окно с прокруткой (чат, история, диалог, мои вопросы, настройки) */
+        .scroll { flex: 1; min-height: 0; overflow-y: auto; background: var(--card); border: 1px solid var(--border);
+                  border-radius: 12px; padding: 12px; overscroll-behavior: contain; }
+        .scroll .bubble { background: var(--bg); }
+        .scroll.settings { background: transparent; border: none; padding: 0 2px 16px; }
+        .scroll.settings .bubble { background: var(--card); }
         .empty { color: var(--muted); font-size: 14px; text-align: center; margin-top: 24px; }
         .err { color: var(--danger); margin-bottom: 12px; }
         .day { text-align: center; margin: 14px 0; }
@@ -45,7 +53,6 @@
                   border-bottom-left-radius: 4px; padding: 12px; margin-bottom: 8px; }
         .b-head { display: flex; gap: 8px; align-items: flex-start; }
         .b-title { flex: 1; font-size: 14px; font-weight: 700; color: var(--primary); }
-        .chip { font-size: 11px; color: var(--chip-text); background: var(--chip-bg); border-radius: 8px; padding: 2px 6px; white-space: nowrap; }
         .b-body { font-size: 15px; margin-top: 4px; line-height: 1.45; white-space: pre-wrap; }
         .b-meta { font-size: 12px; color: var(--muted); margin-top: 8px; }
         .b-time { font-size: 11px; color: var(--muted); margin-top: 8px; text-align: right; }
@@ -64,7 +71,7 @@
         .opt.bad { border-color: var(--danger); }
         .expl { font-size: 13px; color: var(--muted); }
         /* Вопрос */
-        .seg { display: flex; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 3px; margin-bottom: 14px; }
+        .seg { flex: none; display: flex; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 3px; margin-bottom: 14px; }
         .seg button { flex: 1; border: none; background: none; padding: 8px; border-radius: 8px; color: var(--muted);
                       font-family: inherit; font-size: 14px; cursor: pointer; }
         .seg button.on { background: var(--primary); color: var(--primary-text); font-weight: 600; }
@@ -73,7 +80,8 @@
         .turn-a { max-width: 92%; background: var(--card); border: 1px solid var(--border); border-radius: 10px;
                   border-bottom-left-radius: 4px; padding: 10px 12px; margin-bottom: 16px; white-space: pre-wrap; }
         .turn-a.error { color: var(--danger); }
-        .ask-row { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; }
+        .ask-row { flex: none; display: flex; gap: 8px; padding-top: 10px; }
+        #ask-chat, #ask-questions { flex: 1; min-height: 0; display: flex; flex-direction: column; }
         input[type=text], input[type=password] { flex: 1; width: 100%; border: 1px solid var(--border); border-radius: 10px;
                padding: 11px 12px; font-size: 15px; background: var(--input-bg); color: var(--text); font-family: inherit; }
         .btn { background: var(--primary); color: var(--primary-text); border: none; border-radius: 10px; padding: 11px 18px;
@@ -119,8 +127,8 @@
     </nav>
 
     <main>
-        <section class="pane active" id="pane-today"><div id="today-list"><div class="empty">Загрузка…</div></div></section>
-        <section class="pane" id="pane-history"><div id="history-list"></div></section>
+        <section class="pane active" id="pane-today"><div class="scroll" id="today-list"><div class="empty">Загрузка…</div></div></section>
+        <section class="pane" id="pane-history"><div class="scroll" id="history-list"></div></section>
 
         <section class="pane" id="pane-ask">
             <div class="seg">
@@ -128,16 +136,16 @@
                 <button id="seg-questions" onclick="setAskView('questions')">Мои вопросы</button>
             </div>
             <div id="ask-chat">
-                <div id="turns"><div class="empty">Задайте вопрос по адаптации, регламентам или процессам компании.</div></div>
+                <div class="scroll" id="turns"><div class="empty">Задайте вопрос по адаптации, регламентам или процессам компании.</div></div>
                 <div class="ask-row">
                     <input type="text" id="question-input" placeholder="Ваш вопрос…" autocomplete="off">
                     <button class="btn" id="ask-btn" onclick="ask()">Отправить</button>
                 </div>
             </div>
-            <div id="ask-questions" style="display:none;"></div>
+            <div id="ask-questions" style="display:none;"><div class="scroll" id="questions-list"></div></div>
         </section>
 
-        <section class="pane" id="pane-settings">
+        <section class="pane" id="pane-settings"><div class="scroll settings">
             <h3 class="h">Оформление</h3>
             <div class="card"><div class="row">
                 <div class="t"><div class="t-title">Тёмная тема</div><div class="t-sub">Светлое / тёмное оформление</div></div>
@@ -147,31 +155,17 @@
             <h3 class="h">План адаптации</h3>
             <div class="card"><div class="row">
                 <div class="t"><div class="t-title">Я на больничном</div>
-                    <div class="t-sub">Пока включено, сообщения плана не приходят. Выключите после выхода — накопившееся придёт.</div></div>
+                    <div class="t-sub">Пока включено, сообщения плана не приходят, а наставник получит уведомление.
+                        Выключите после выхода — накопившееся придёт.</div></div>
                 <label class="switch"><input type="checkbox" id="sick-switch" onchange="toggleSick(this.checked)"><span></span></label>
             </div></div>
-
-            <h3 class="h">Уведомления</h3>
-            <div class="card">
-                <div class="t-title">Проверить все типы сообщений</div>
-                <div class="t-sub">Придёт по одному сообщению каждого типа: текст, напоминание, чек-лист, проверка,
-                    опрос, мини-тест, передача наставнику — и в кабинет, и на телефон.</div>
-                <div class="msg" id="test-msg" style="color:var(--muted);"></div>
-                <button class="btn full" id="test-btn" onclick="testKinds()">Прислать тестовые сообщения</button>
-            </div>
 
             <h3 class="h">Профиль</h3>
             <div class="card" id="profile"></div>
 
-            <h3 class="h">Смена пароля</h3>
-            <div class="card">
-                <input type="password" id="old-password" placeholder="Текущий пароль" autocomplete="current-password">
-                <input type="password" id="new-password" placeholder="Новый пароль (от 8 символов)" autocomplete="new-password" style="margin-top:8px;">
-                <div class="msg" id="pw-msg"></div>
-                <button class="btn full" onclick="changePassword()">Сменить пароль</button>
-            </div>
+            <div class="t-sub" style="margin-top:10px;">Забыли пароль или нужно его сменить — обратитесь к администратору.</div>
             <button class="btn full logout" onclick="logout()">Выйти</button>
-        </section>
+        </div></section>
     </main>
 </div>
 
@@ -203,9 +197,8 @@
     try { if (localStorage.getItem('nm_theme_dark') === '1') { setTheme(true); document.getElementById('theme-switch').checked = true; } } catch (e) {}
 
     // ---------- Сообщения (инбокс) ----------
-    const KIND_LABEL = { reminder: 'Напоминание', checklist: 'Чек-лист', system_check: 'Проверка',
-                         survey: 'Опрос', quiz: 'Мини-тест', handover: 'Передача' };
     let messages = [];
+    let todayCount = -1;
     const pad = n => String(n).padStart(2, '0');
     const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     function when(m) { const d = new Date(String(m.delivered_at || m.send_at || '').replace(' ', 'T')); return isNaN(d) ? null : d; }
@@ -250,12 +243,22 @@
         const today = ymd(new Date());
         const todayBox = document.getElementById('today-list');
         const own = messages.filter(m => { const w = when(m); return w && ymd(w) === today; });
+        // Как в мессенджере: новые снизу; окно прокручиваем вниз, если пришло новое или
+        // пользователь и так был внизу (читающего выше не сбиваем).
+        const atBottom = todayBox.scrollHeight - todayBox.scrollTop - todayBox.clientHeight < 40;
+        const grew = own.length !== todayCount;
+        todayCount = own.length;
+        const keep = todayBox.scrollTop;
         todayBox.innerHTML = own.length ? own.map(card).join('') : '<div class="empty">Сегодня новых сообщений плана нет.</div>';
+        todayBox.scrollTop = (grew || atBottom) ? todayBox.scrollHeight : keep;
         const past = messages.filter(m => { const w = when(m); return w && ymd(w) < today; });
         const days = [...new Set(past.map(m => ymd(when(m))))].sort().reverse();
-        document.getElementById('history-list').innerHTML = days.length ? days.map(d =>
+        const historyBox = document.getElementById('history-list');
+        const keepH = historyBox.scrollTop;
+        historyBox.innerHTML = days.length ? days.map(d =>
             `<div class="day"><span>${dayLabel(d)}</span></div>` + past.filter(m => ymd(when(m)) === d).map(card).join('')
         ).join('') : '<div class="empty">История пуста — прошлых сообщений ещё нет.</div>';
+        historyBox.scrollTop = keepH;
         // Показанное в чате считаем прочитанным (как в приложении).
         if (document.getElementById('pane-today').classList.contains('active')) {
             own.filter(m => m.status === 'delivered').forEach(m => {
@@ -266,8 +269,9 @@
     }
 
     // Карточка по типу: текст / чек-лист / опрос / мини-тест (как MessageCard в приложении).
+    // Тип сообщения сотруднику не показываем — только содержимое.
     function card(m) {
-        const p = m.payload || {}, a = m.answers || {}, kind = m.kind || 'message';
+        const p = m.payload || {}, a = m.answers || {};
         const id = esc(m.id);
         let body;
         if (p.type === 'checklist' && Array.isArray(p.items)) {
@@ -297,8 +301,7 @@
             body = m.body ? `<div class="b-body">${esc(m.body)}</div>` : '';
         }
         const w = when(m);
-        return `<div class="bubble"><div class="b-head"><div class="b-title">${esc(m.title || 'Сообщение плана')}</div>
-            ${KIND_LABEL[kind] ? `<span class="chip">${KIND_LABEL[kind]}</span>` : ''}</div>${body}
+        return `<div class="bubble"><div class="b-head"><div class="b-title">${esc(m.title || 'Сообщение плана')}</div></div>${body}
             ${w ? `<div class="b-time">${pad(w.getHours())}:${pad(w.getMinutes())}</div>` : ''}</div>`;
     }
 
@@ -309,7 +312,10 @@
         const a = { ...(m.answers || {}) };
         a[key] = value === null ? !a[key] : value;
         m.answers = a;
+        const box = document.getElementById('today-list'), hist = document.getElementById('history-list');
+        const t1 = box.scrollTop, t2 = hist.scrollTop;
         renderInbox();
+        box.scrollTop = t1; hist.scrollTop = t2;
         post(`/api/my/messages/${encodeURIComponent(rowId)}/answer`, { answers: a }).catch(() => {});
     }
 
@@ -340,7 +346,8 @@
         document.getElementById('turns').innerHTML = turns.length ? turns.map(t =>
             `<div class="turn-q">${esc(t.q)}</div><div class="turn-a ${t.error ? 'error' : ''}">${t.a == null ? '…' : esc(t.a)}</div>`
         ).join('') : '<div class="empty">Задайте вопрос по адаптации, регламентам или процессам компании.</div>';
-        window.scrollTo(0, document.body.scrollHeight);
+        const box = document.getElementById('turns');
+        box.scrollTop = box.scrollHeight;
     }
     document.getElementById('question-input').addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
     function ask() {
@@ -358,7 +365,7 @@
           .finally(() => { btn.disabled = false; renderTurns(); });
     }
     function loadQuestions() {
-        const box = document.getElementById('ask-questions');
+        const box = document.getElementById('questions-list');
         api('/api/my/questions').then(r => r.json()).then(d => {
             const items = d.questions || [];
             box.innerHTML = items.length ? items.map(q => `<div class="qcard">
@@ -382,23 +389,6 @@
     function toggleSick(on) {
         const sw = document.getElementById('sick-switch');
         post('/api/my/status', { sick: on }).then(r => { sw.checked = r.sick; }).catch(() => { sw.checked = !on; });
-    }
-    function testKinds() {
-        const btn = document.getElementById('test-btn'), msg = document.getElementById('test-msg');
-        btn.disabled = true; msg.textContent = '';
-        post('/api/my/messages/test-kinds').then(r => {
-            msg.textContent = `Отправлено сообщений: ${r.sent}. Откройте «Чат» — там по одному каждого типа.`;
-            loadInbox();
-        }).catch(e => { msg.textContent = e.message; }).finally(() => { btn.disabled = false; });
-    }
-    function changePassword() {
-        const msg = document.getElementById('pw-msg');
-        const old_password = document.getElementById('old-password').value, new_password = document.getElementById('new-password').value;
-        if (!old_password || !new_password) { msg.style.color = 'var(--danger)'; msg.textContent = 'Заполните оба поля'; return; }
-        post('/api/password', { old_password, new_password }).then(() => {
-            msg.style.color = 'var(--ok)'; msg.textContent = 'Пароль изменён. Войдите заново.';
-            setTimeout(() => { location.href = '/login'; }, 1200);
-        }).catch(e => { msg.style.color = 'var(--danger)'; msg.textContent = e.message; });
     }
     function logout() { fetch('/api/logout', { method: 'POST' }).finally(() => { location.href = '/login'; }); }
 </script>
