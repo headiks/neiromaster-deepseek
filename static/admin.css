@@ -315,6 +315,7 @@
         .combo-list li:hover { background: #eff6ff; }
         .combo-list li.empty { color: #94a3b8; cursor: default; }
         .combo-list li.combo-add { color: #2563eb; font-weight: 600; }
+        .combo-list li.combo-clear { color: #64748b; }
         .combo-list li.combo-ready { color: #166534; }
         .progress-wrap { margin: 16px 0; }
         .progress-bar { height: 10px; background: #e2e8f0; border-radius: 6px; overflow: hidden; }

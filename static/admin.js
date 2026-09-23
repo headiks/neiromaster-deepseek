@@ -1736,6 +1736,13 @@
             const list = document.getElementById('combo-list');
             list.innerHTML = '';
             const exact = items.some(v => v.toLowerCase() === q);
+            if (isPos && comboTarget.value.trim()) {
+                const li = document.createElement('li');
+                li.className = 'combo-clear';
+                li.textContent = '— очистить —';
+                li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(''); });
+                list.appendChild(li);
+            }
             if (isPos && raw && !exact) {
                 const li = document.createElement('li');
                 li.className = 'combo-add';
