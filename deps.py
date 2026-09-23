@@ -100,15 +100,20 @@ def visible_documents(user: dict) -> list:
     return users.visible_docs(user, indexing.list_documents())
 
 
-def ensure_doc_access(user: dict, filename: str):
-    """403, если администратор обращается к чужому документу. Незнакомое имя
+def ensure_doc_access(user: dict, filename: str, write: bool = False):
+    """403, если администратор обращается к чужому документу (write=True — к общему
+    документу суперадмина тоже: его можно смотреть, но не менять). Незнакомое имя
     пропускаем — свой 404 отдаст сам обработчик."""
     if users.is_owner(user):
         return
     doc = next((d for d in indexing.list_documents() if d.get("filename") == filename), None)
-    if doc is not None and not can_see_doc(user, doc):
+    if doc is None:
+        return
+    if not can_see_doc(user, doc):
+        raise HTTPException(status_code=403, detail="Документ загружен другим администратором")
+    if write and not users.can_edit_doc(user, doc):
         raise HTTPException(status_code=403,
-                            detail="Документ загружен другим администратором")
+                            detail="Общий документ суперадмина: менять и удалять его может только суперадмин")
 
 
 def page_for_admin(request: Request, filename: str):

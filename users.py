@@ -20,6 +20,7 @@
 """
 
 import os
+import re
 import json
 import time
 import hmac
@@ -68,6 +69,7 @@ _COLUMNS = (
     "must_change_credentials", "created_at", "updated_at", "password_changed_at",
     "position", "department", "contact", "mentor", "manager", "plan_id",
     "plan_profession", "start_date", "status", "notes", "created_by",
+    "phone", "email", "temp_password",
 )
 _BOOL_COLUMNS = ("active", "must_change_credentials")
 
@@ -119,7 +121,8 @@ def normalize_username(username: str) -> str:
 # для этого нужно ещё шифрование диска (LUKS). Логин/поиск не затрагиваются:
 # username/role/id остаются открытыми, сортировка по ФИО идёт уже по расшифрованным
 # значениям в Python (list_users), не в SQL.
-_ENCRYPTED_COLUMNS = ("full_name", "position", "department", "contact", "mentor", "manager", "notes")
+_ENCRYPTED_COLUMNS = ("full_name", "position", "department", "contact", "mentor", "manager", "notes",
+                      "phone", "email", "temp_password")
 _PII_PREFIX = "enc:"
 
 
@@ -158,7 +161,22 @@ def _row_to_user(row) -> dict:
         user[col] = bool(user[col])
     for col in _ENCRYPTED_COLUMNS:
         user[col] = _decrypt_field(user[col])
+    # Старое единое поле «Контакт» -> раздельные телефон/email (до первого сохранения).
+    if not (user.get("phone") or user.get("email")) and user.get("contact"):
+        user["phone"], user["email"] = split_contact(user["contact"])
     return user
+
+
+def split_contact(contact: str) -> tuple:
+    """«+7 900 …, ivan@corp.ru» -> (телефон, email). Прочее (telegram и т.п.) — в телефон."""
+    email = next((p.strip() for p in re.split(r"[,;\s]+", contact or "") if "@" in p and "." in p), "")
+    phone = (contact or "").replace(email, "").strip(" ,;")
+    return phone, email
+
+
+def join_contact(user: dict) -> str:
+    """Поле contact для совместимости (вопросы, расписание): телефон и email одной строкой."""
+    return ", ".join(p for p in (user.get("phone"), user.get("email")) if p)
 
 
 def _insert(user: dict):
@@ -176,8 +194,9 @@ def _save_user(user: dict):
 
 
 def public_view(user: dict) -> dict:
-    """Запись пользователя без секретов — всё, что можно отдать в API."""
-    return {k: v for k, v in user.items() if k not in ("salt", "hash")}
+    """Запись пользователя без секретов — всё, что можно отдать в API. Временный пароль
+    отдаёт только админский список (api_people.get_users) — тем, кто вправе его видеть."""
+    return {k: v for k, v in user.items() if k not in ("salt", "hash", "temp_password")}
 
 
 def _blank_user(**fields) -> dict:
@@ -208,16 +227,23 @@ def _blank_user(**fields) -> dict:
         "status": "planned",
         "notes": "",
         "created_by": None,
+        "phone": "",
+        "email": "",
+        # Выданный администратором пароль — хранится (шифруется при NEIROMASTER_PII_KEY),
+        # пока сотрудник не задаст свой, чтобы админ мог показать/выгрузить его повторно.
+        "temp_password": "",
     }
     user.update(fields)
     return user
 
 
 # ---------- Чтение ----------
-def list_users() -> list:
+def list_users(with_secrets: bool = False) -> list:
+    """with_secrets — оставить временный пароль (только для админского списка)."""
     rows = db.query("SELECT * FROM users", (), "all")
     users = [_row_to_user(r) for r in rows]
-    return sorted((public_view(u) for u in users),
+    view = (lambda u: {k: v for k, v in u.items() if k not in ("salt", "hash")}) if with_secrets else public_view
+    return sorted((view(u) for u in users),
                   key=lambda u: (u["role"] != ROLE_OWNER, u["role"] != ROLE_ADMIN,
                                  u.get("full_name") or ""))
 
@@ -295,10 +321,20 @@ def same_department(actor: dict, target: dict) -> bool:
 
 def can_see_doc(actor: dict, doc: dict) -> bool:
     """
-    Виден ли администратору документ. Суперадмин видит ВСЁ, что загрузили
-    администраторы; администратор — только свои загрузки. Документы без владельца
+    Виден ли администратору документ. Суперадмин видит всё. Администратор — свои загрузки
+    и ОБЩИЕ документы суперадмина (только чтение): иначе каждый админ грузил и оплачивал
+    обработку одних и тех же общих регламентов заново. Документы других админов и «ничьи»
     (залиты до разделения прав или через CLI) — только суперадмину.
     """
+    if is_owner(actor):
+        return True
+    if doc.get("uploaded_by_role") == ROLE_OWNER:
+        return True
+    return bool(doc.get("uploaded_by")) and doc.get("uploaded_by") == actor.get("id")
+
+
+def can_edit_doc(actor: dict, doc: dict) -> bool:
+    """Удалять/переразбирать/уточнять: суперадмин — любой документ, админ — только свой."""
     if is_owner(actor):
         return True
     return bool(doc.get("uploaded_by")) and doc.get("uploaded_by") == actor.get("id")
@@ -345,19 +381,23 @@ def ensure_can_manage(actor: dict, target: dict):
 
 # ---------- Запись ----------
 def _apply_profile(user: dict, raw: dict) -> dict:
-    """Профильные и адаптационные поля. Роль, логин и пароль сюда не входят."""
-    status = raw.get("status") if raw.get("status") in ADAPTATION_STATUSES else user.get("status", "planned")
+    """Профильные и адаптационные поля. Роль, логин, пароль и статус сюда не входят:
+    статус адаптации считается сам (adaptation_status), пауза — set_status."""
+    phone, email = (raw.get("phone") or "").strip(), (raw.get("email") or "").strip()
+    if not (phone or email) and raw.get("contact"):          # старые клиенты шлют одно поле
+        phone, email = split_contact(raw.get("contact"))
     user.update({
         "full_name": (raw.get("full_name") or user.get("full_name") or "").strip() or "Без имени",
         "position": (raw.get("position") or "").strip(),
         "department": (raw.get("department") or "").strip(),
-        "contact": (raw.get("contact") or "").strip(),
+        "phone": phone,
+        "email": email,
+        "contact": join_contact({"phone": phone, "email": email}),
         "mentor": (raw.get("mentor") or "").strip(),
         "manager": (raw.get("manager") or "").strip(),
         "plan_id": (raw.get("plan_id") or "").strip() or None,
         "plan_profession": (raw.get("plan_profession") or "").strip(),
         "start_date": str(raw.get("start_date") or "")[:10] or None,
-        "status": status,
         "notes": (raw.get("notes") or "").strip(),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     })
@@ -398,6 +438,7 @@ def create_user(raw: dict, actor: Optional[dict] = None, role: str = ROLE_EMPLOY
             user["salt"], user["hash"] = hash_password(password)
             user["password_changed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             user["must_change_credentials"] = must_change_credentials
+            user["temp_password"] = password if must_change_credentials else ""
 
         _insert(user)
     return dict(user)
@@ -438,6 +479,8 @@ def set_password(user_id: str, password: str, must_change: bool = False) -> dict
         user["hash"] = hash_hex
         user["password_changed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         user["must_change_credentials"] = must_change
+        # Выдан администратором (must_change) — помним до первого входа; свой — забываем.
+        user["temp_password"] = password if must_change else ""
         user["updated_at"] = user["password_changed_at"]
         _save_user(user)
     return dict(user)
@@ -458,28 +501,54 @@ def set_status(user_id: str, status: str) -> dict:
     return dict(user)
 
 
-def set_credentials(user_id: str, username: str, password: str) -> dict:
+def set_credentials(user_id: str, username: Optional[str], password: str) -> dict:
     """
-    Одновременная смена логина и пароля — первичная настройка главного администратора
-    после входа по сгенерированным данным.
+    Первичная настройка после входа по выданным данным: свой пароль. Логин по умолчанию
+    остаётся выданным (генерируется из ФИО один раз); username передают только явно.
     """
-    username = normalize_username(username)
     validate_password(password)
     salt_hex, hash_hex = hash_password(password)
     with _lock:
         user = get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден")
+        username = normalize_username(username) if username else user.get("username")
+        if not username:
+            raise ValueError("У пользователя нет логина — обратитесь к администратору")
         if _username_taken(username, exclude_id=user_id):
             raise ValueError(f"Логин «{username}» уже занят")
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         user.update({"username": username, "salt": salt_hex, "hash": hash_hex,
-                     "must_change_credentials": False,
+                     "must_change_credentials": False, "temp_password": "",
                      "password_changed_at": now, "updated_at": now})
         _save_user(user)
         # Первичная подсказка с логином и паролем больше не нужна
         INITIAL_CREDENTIALS_PATH.unlink(missing_ok=True)
     return dict(user)
+
+
+def adaptation_status(user: dict, plan: Optional[dict] = None, today=None) -> str:
+    """Статус адаптации считается сам — руками его не ставят:
+    приостановлен (paused: больничный, ставит сотрудник или админ) -> как есть;
+    нет даты выхода или она впереди -> «Запланирован»; идёт план -> «Проходит адаптацию»;
+    план (этапы от даты выхода) закончился -> «Завершил»."""
+    from datetime import date, timedelta
+    if user.get("status") == "paused":
+        return "paused"
+    try:
+        start = date.fromisoformat(str(user.get("start_date") or "")[:10])
+    except ValueError:
+        return "planned"
+    today = today or date.today()
+    if today < start:
+        return "planned"
+    if plan:
+        import planner
+        days = sum(planner.stage_span_days(s.get("duration") or {})
+                   for s in plan.get("stages") or [] if s.get("anchor") != "before_start")
+        if days and today >= start + timedelta(days=days):
+            return "done"
+    return "active"
 
 
 def set_active(user_id: str, active: bool) -> Optional[dict]:
