@@ -69,6 +69,7 @@ textarea{resize:vertical}
     <div class="row" style="margin-top:16px;">
       <button class="primary btn" id="nt-send" onclick="send()"><i data-lucide="send-horizontal"></i> Отправить</button>
       <button class="btn" onclick="fillDemo()">Заполнить примером (3 шт.)</button>
+      <button class="btn" id="nt-kinds" onclick="sendKinds()" title="Сообщение, напоминание, чек-лист, проверка, опрос, мини-тест, передача — как сообщения плана"><i data-lucide="layers"></i> Все типы сообщений</button>
     </div>
   </div>
 </div>
@@ -149,6 +150,20 @@ function send(){
     box.innerHTML=`<div class="msg ok">Отправлено ${d.sent} для «${esc(d.target)}». Непрочитано у него: ${d.unread}.${sched}${self&&!d.scheduled?' Сейчас всплывёт здесь ↗':''}</div>`;
     if(self&&window.nmPollNow)window.nmPollNow();  // мгновенно показать очередь себе
   }).catch(()=>{btn.disabled=false;box.innerHTML='<div class="msg err">Ошибка сети.</div>';});
+}
+
+// По сообщению каждого типа — проверить, как они выглядят в приложении и кабинете.
+function sendKinds(){
+  const box=document.getElementById('nt-msg');box.innerHTML='';
+  const userId=document.getElementById('nt-user').value;
+  if(!userId){box.innerHTML='<div class="msg err">Выбери пользователя.</div>';return;}
+  const btn=document.getElementById('nt-kinds');btn.disabled=true;
+  api(`/users/${encodeURIComponent(userId)}/notify-test-kinds`,{method:'POST'})
+    .then(r=>r.json().then(d=>({ok:r.ok,d}))).then(({ok,d})=>{
+      btn.disabled=false;
+      box.innerHTML=ok?`<div class="msg ok">Отправлено ${d.sent} сообщений разных типов для «${esc(d.target)}» — смотрите «Чат» в приложении.</div>`
+                     :`<div class="msg err">${esc(d.detail||'Не удалось отправить')}</div>`;
+    }).catch(()=>{btn.disabled=false;box.innerHTML='<div class="msg err">Ошибка сети.</div>';});
 }
 
 // ---- инициализация ----
