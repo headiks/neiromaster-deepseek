@@ -1628,6 +1628,15 @@
         let employeesLoaded = false;
         let editingEmployeeId = null;
         let employeesCache = [];
+        // Должности, под которые уже сгенерирован план адаптации (для пометки ✓ в комбобоксе должности).
+        let profReadySet = new Set();
+        function loadProfReady(defaultPlanId) {
+            if (!defaultPlanId) { profReadySet = new Set(); return; }
+            api(`/plans/${encodeURIComponent(defaultPlanId)}/professions`)
+                .then(r => r.ok ? r.json() : {})
+                .then(d => { profReadySet = new Set(d.generated_names || []); })
+                .catch(() => {});
+        }
 
         // Логин и пароль отправляются только при создании: у существующего пользователя
         // они меняются отдельной ручкой /users/{id}/credentials
@@ -1643,7 +1652,7 @@
         function ensureEmployeesLoaded() {
             if (employeesLoaded) return;
             employeesLoaded = true;
-            api('/plans').then(r => r.json()).then(d => fillEmployeePlanSelect(d.plans || []));
+            api('/plans').then(r => r.json()).then(d => { fillEmployeePlanSelect(d.plans || []); loadProfReady(d.default_plan_id); });
             loadEmployees();
         }
 
@@ -1687,27 +1696,48 @@
                 panel.innerHTML = `<input type="text" class="combo-search" id="combo-search" placeholder="Поиск…"><ul class="combo-list" id="combo-list"></ul>`;
                 document.body.appendChild(panel);
                 document.getElementById('combo-search').addEventListener('input', e => comboRender(e.target.value));
-                document.getElementById('combo-search').addEventListener('keydown', e => { if (e.key === 'Escape') comboClose(); });
+                document.getElementById('combo-search').addEventListener('keydown', e => {
+                    if (e.key === 'Escape') { comboClose(); return; }
+                    if (e.key === 'Enter' && comboTarget && comboTarget.id === 'emp-position') {
+                        const raw = e.target.value.trim();
+                        if (raw) { e.preventDefault(); commitCombo(raw); }
+                    }
+                });
                 document.addEventListener('mousedown', e => {
                     if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== comboTarget) comboClose();
                 });
             }
             return panel;
         }
+        function commitCombo(v) {
+            if (comboTarget) { comboTarget.value = v; comboTarget.dispatchEvent(new Event('input')); }
+            comboClose();
+        }
         function comboRender(query) {
-            const q = (query || '').trim().toLowerCase();
+            const raw = (query || '').trim();
+            const q = raw.toLowerCase();
+            // Для должности: разрешаем ввести свою (нет в списке) и помечаем ✓ те,
+            // под которые уже сгенерирован план адаптации (profReadySet).
+            const isPos = comboTarget && comboTarget.id === 'emp-position';
             const items = comboAll.filter(v => v.toLowerCase().includes(q));
             const list = document.getElementById('combo-list');
             list.innerHTML = '';
-            if (!items.length) { list.innerHTML = '<li class="empty">ничего не найдено</li>'; return; }
+            const exact = items.some(v => v.toLowerCase() === q);
+            if (isPos && raw && !exact) {
+                const li = document.createElement('li');
+                li.className = 'combo-add';
+                li.textContent = `Добавить: «${raw}»`;
+                li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(raw); });
+                list.appendChild(li);
+            }
+            if (!items.length && !(isPos && raw)) { list.innerHTML += '<li class="empty">ничего не найдено</li>'; return; }
             items.forEach(v => {
                 const li = document.createElement('li');
-                li.textContent = v;
-                li.addEventListener('mousedown', e => {
-                    e.preventDefault();
-                    if (comboTarget) { comboTarget.value = v; comboTarget.dispatchEvent(new Event('input')); }
-                    comboClose();
-                });
+                const ready = isPos && profReadySet.has(v);
+                li.textContent = (ready ? '✓ ' : '') + v;
+                if (ready) { li.classList.add('combo-ready'); li.title = 'План адаптации готов'; }
+                else if (isPos) { li.title = 'Плана ещё нет — сгенерируйте на вкладке «Тексты плана»'; }
+                li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(v); });
                 list.appendChild(li);
             });
         }
