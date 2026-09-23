@@ -158,6 +158,25 @@ async def api_mark_message_read(message_id: str, user: dict = Depends(require_se
     return {"read": True}
 
 
+class AnswersRequest(BaseModel):
+    answers: dict = {}
+
+
+@router.post("/api/my/messages/{message_id}/answer", dependencies=logged_in)
+async def api_answer_message(message_id: str, req: AnswersRequest,
+                             user: dict = Depends(require_setup_done)):
+    """Ответы на чек-лист/опрос/тест из инбокса (приложение и кабинет — одно хранилище)."""
+    if not messaging.save_answers(user["id"], message_id, req.answers):
+        raise HTTPException(status_code=404, detail="Сообщение не найдено")
+    return {"saved": True}
+
+
+@router.post("/api/my/messages/test-kinds", dependencies=logged_in)
+async def api_test_all_kinds(user: dict = Depends(require_setup_done)):
+    """Прислать себе по сообщению каждого типа — посмотреть, как они выглядят."""
+    return {"sent": len(messaging.send_all_kinds(user["id"]))}
+
+
 @router.post("/api/my/status", dependencies=logged_in)
 async def api_set_my_status(req: SickRequest, user: dict = Depends(require_setup_done)):
     """Сотрудник сам ставит/снимает больничный. Пауза приостанавливает доставку

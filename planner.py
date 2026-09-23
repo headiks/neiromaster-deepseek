@@ -1230,6 +1230,16 @@ def refresh_generated_plans() -> int:
     return started
 
 
+def _refresh_inboxes(plan_id: str):
+    """Тексты плана поменялись -> ещё не доставленные сообщения сотрудников пересобираются
+    (иначе заведённые до генерации получали бы старые/пустые тексты). Сбой не критичен."""
+    try:
+        import messaging
+        messaging.refresh_plan(plan_id)
+    except Exception as e:
+        print(f"[gen] инбоксы сотрудников не обновлены: {e}")
+
+
 def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool = False):
     """Тело генерации плана — выполняется в worker-процессе (RQ) или потоке-фолбэке.
     Прогресс и отмена идут через общий jobstore (_set_job/get_job). Для каждого подэтапа
@@ -1292,9 +1302,11 @@ def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool = F
             if generated:   # сохраняем, что успели (частичное расписание не теряем)
                 save_schedule(plan["plan_id"], build_schedule(plan, generated, profession=prof), profession=prof)
             if cancelled:
+                _refresh_inboxes(plan["plan_id"])
                 _set_job(job_id, status="cancelled", current=None,
                          finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
                 return
+        _refresh_inboxes(plan["plan_id"])
         _set_job(job_id, status="done", current=None,
                  finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
     except Exception as e:
@@ -1343,6 +1355,7 @@ def regenerate_one(plan: dict, message_id: str, profession: str = "") -> Optiona
         schedule["generated_at"] = datetime.now().isoformat(timespec="seconds")
 
     save_schedule(plan["plan_id"], schedule, profession=profession)
+    _refresh_inboxes(plan["plan_id"])
     return next((m for m in schedule["messages"] if m["message_id"] == message_id), None)
 
 
@@ -1371,5 +1384,6 @@ def edit_message_text(plan_id: str, message_id: str, text: str, profession: str 
             msg["error"] = None
             schedule["generated_at"] = datetime.now().isoformat(timespec="seconds")
             save_schedule(plan_id, schedule, profession=profession)
+            _refresh_inboxes(plan_id)
             return msg
     return None

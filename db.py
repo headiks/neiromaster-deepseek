@@ -188,6 +188,11 @@ SCHEMA_STATEMENTS = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_messages(status, send_at)",
     "CREATE INDEX IF NOT EXISTS idx_sched_emp ON scheduled_messages(employee_id, send_at)",
+    # Тип сообщения (message/checklist/survey/quiz/…), его структура для показа
+    # (msgconvert: пункты чек-листа, вопросы теста/опроса) и ответы сотрудника.
+    "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'message'",
+    "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS payload JSONB",
+    "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS answers JSONB",
     # Push-токены устройств сотрудника (Expo Push): одно устройство = один токен.
     # По ним шлём пуш при доставке сообщения плана. token — PK (при переустановке
     # приложения приходит новый; старый протухнет и будет вычищен по ответу Expo).

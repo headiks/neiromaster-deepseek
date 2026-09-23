@@ -200,8 +200,13 @@ async def get_user(user_id: str, actor: dict = Depends(require_admin)):
 @router.put("/users/{user_id}")
 async def update_user(user_id: str, req: UserRequest, actor: dict = Depends(require_admin)):
     """Правка профиля и назначение плана адаптации с датой выхода."""
-    _target_user(user_id, actor)
+    before = _target_user(user_id, actor)
     user = users.update_profile(user_id, req.model_dump())
+    # Сменились план/дата выхода/должность -> будущие сообщения плана пересобираются сразу
+    # (иначе сотрудник получал бы сообщения старого плана или не получал вовсе).
+    keys = ("plan_id", "start_date", "plan_profession", "position")
+    if any((before.get(k) or "") != (user.get(k) or "") for k in keys):
+        messaging.materialize_employee(user, force=True)
     return users.public_view(user)
 
 
@@ -348,6 +353,15 @@ async def notify_test(user_id: str, req: NotifyTestRequest, actor: dict = Depend
     return {"sent": len(msgs), "scheduled": scheduled,
             "unread": messaging.unread_count(target["id"]),
             "target": target.get("full_name") or target.get("username") or target["id"]}
+
+
+@router.post("/users/{user_id}/notify-test-kinds", dependencies=admin_only)
+async def notify_test_kinds(user_id: str, actor: dict = Depends(require_admin)):
+    """Тест отображения: по одному сообщению каждого типа (сообщение, напоминание,
+    чек-лист, проверка, опрос, мини-тест, передача) — сразу в инбокс и пушем на телефон."""
+    target = _target_user(user_id, actor)
+    ids = messaging.send_all_kinds(target["id"])
+    return {"sent": len(ids), "target": target.get("full_name") or target.get("username") or target["id"]}
 
 
 EMPLOYEE_EXPORTS = {"schedule.json", "schedule.md"}
