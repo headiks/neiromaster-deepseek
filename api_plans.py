@@ -104,6 +104,9 @@ async def update_plan(plan_id: str, req: PlanRequest):
     payload["created_at"] = existing.get("created_at")
     plan = planner.assign_topics(planner.normalize_plan(payload, plan_id=plan_id), prev=existing)
     planner.save_plan(plan)
+    # Время/день/длительность могли измениться -> ещё не отправленные сообщения всех
+    # сотрудников с этим планом пересчитываются под новое расписание (фоном).
+    _bg(messaging.refresh_plan, plan_id)
     return plan
 
 

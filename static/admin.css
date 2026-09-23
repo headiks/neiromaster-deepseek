@@ -416,3 +416,10 @@
         dialog .employee-form { max-height: 60vh; overflow: auto; }
         /* Поля-справочники (выбор из списка): кликабельные, не «выключенные» */
         dialog input[readonly] { cursor: pointer; background: #fff; }
+        /* Тестирование: редактор тестовых сообщений */
+        .tm-card { margin-top: 12px; }
+        .tm-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+        .tm-title { flex: 1; min-width: 200px; }
+        .tm-delay { font-size: 13px; color: #64748b; display: flex; align-items: center; gap: 4px; }
+        .tm-delay input { width: 70px; }
+        .tm-card textarea { width: 100%; box-sizing: border-box; }
