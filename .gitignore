@@ -24,6 +24,7 @@ __pycache__/
 /data/*
 !/data/stage_catalog.json
 !/data/knowledge_seed.json
+!/data/top_questions.txt
 !/data/name_dict/
 !/data/name_dict/*.txt
 

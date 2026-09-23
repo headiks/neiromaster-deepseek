@@ -23,6 +23,7 @@
 import os
 import json
 import math
+import hashlib
 import time
 import uuid
 import threading
@@ -360,10 +361,43 @@ def normalize_plan(raw: dict, plan_id: Optional[str] = None) -> dict:
                 "source": "manual" if raw_sub.get("source") == "manual" else "template",
                 "tags": [t for t in (raw_sub.get("tags") or []) if isinstance(t, str)],
                 "schedule": {"day": day, "time": f"{hh:02d}:{mm:02d}"},
+                # Свой подэтап (без catalog_id): темы каталога, по которым берутся документы.
+                # Подбираются один раз при сохранении (assign_topics), topic_src — от чего.
+                "topic_keys": [k for k in (raw_sub.get("topic_keys") or []) if isinstance(k, str)],
+                "topic_src": str(raw_sub.get("topic_src") or ""),
             })
 
         plan["stages"].append(stage)
 
+    return plan
+
+
+def _sha(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def assign_topics(plan: dict, prev: Optional[dict] = None, router=None) -> dict:
+    """Своим подэтапам (без catalog_id) подбирает темы каталога, по которым генерация берёт
+    документы. Без этого такие подэтапы всегда уходили в «пропущено»: документы размечены
+    только темами каталога. Модель зовётся ОДИН раз на подэтап — пока не поменялись его
+    название/бриф (topic_src), темы переносятся из прежней версии плана."""
+    if router is None:
+        from rag import route_substages as router
+    prev_subs = {s.get("id"): s for st in (prev or {}).get("stages") or [] for s in st.get("substages") or []}
+    for stage in plan.get("stages") or []:
+        for sub in stage.get("substages") or []:
+            if stage.get("catalog_id") and sub.get("catalog_id"):
+                continue
+            src = _sha([sub.get("title"), sub.get("brief")])[:16]
+            old = prev_subs.get(sub.get("id")) or {}
+            if sub.get("topic_src") == src and sub.get("topic_keys"):
+                continue
+            if old.get("topic_src") == src and old.get("topic_keys"):
+                sub["topic_keys"], sub["topic_src"] = list(old["topic_keys"]), src
+                continue
+            text = ". ".join(p for p in (stage.get("title"), sub.get("title"), sub.get("brief")) if p)
+            sub["topic_keys"] = list(router(text, top=2) or [])
+            sub["topic_src"] = src
     return plan
 
 
@@ -859,80 +893,153 @@ def substages_with_docs(filenames=None) -> set:
     return out
 
 
+def plan_coverage(plan: dict, present: set) -> dict:
+    """Покрытие плана документами: подэтап обеспечен, если по его теме (_doc_keys) размечен
+    хоть один документ. missing — чего не хватает, сгруппировано по этапам."""
+    total = covered = 0
+    missing = []
+    for stage in plan.get("stages") or []:
+        gaps = []
+        for sub in stage.get("substages") or []:
+            total += 1
+            if any(k in present for k in _doc_keys(stage, sub)):
+                covered += 1
+            else:
+                gaps.append(sub.get("title") or "")
+        if gaps:
+            missing.append({"stage": stage.get("title") or "", "substages": gaps})
+    return {"plan_id": plan.get("plan_id"), "title": plan.get("title"),
+            "total": total, "covered": covered, "missing": missing}
+
+
 NO_DOC_REASON = "Нет документа, отнесённого к этому подэтапу — загрузите документ и запустите догенерацию"
 
 
-def generate_substage_message(stage: dict, substage: dict, topic_list: list, position: str = "",
-                              docs_present: "set | None" = None, require_document: bool = True) -> dict:
-    """Генерирует текст одного подэтапа. Ошибки не поднимает — возвращает status.
-    position — должность/профессия сотрудника (из аккаунта): чанки берутся из «папки подэтапа»
-    (разложенные по этому подэтапу), приоритет — чанкам этой профессии (буст по должности).
+# Версия промптов генерации. Входит в отпечаток сообщения: поменяли GENERATE_SYSTEM /
+# KIND_GEN_HINT так, что старые тексты надо переписать, — увеличьте, иначе не трогайте.
+GEN_PROMPT_VERSION = "1"
+KEEP_STATUSES = ("generated", "edited")   # готовые тексты: без изменений входов не трогаем
 
-    require_document (по умолчанию) — сначала проверяем по классификации docpipe, есть ли
-    вообще документ, отнесённый к этому подэтапу. Нет -> status='skipped', LLM не зовём:
-    без источника генерировать нечего, подэтап ждёт загрузки документа и догенерации.
-    docs_present — заранее посчитанное множество подэтапов-с-документами (для пакетной
-    генерации, чтобы не дёргать docpipe на каждый подэтап); None -> считаем на месте."""
+
+def _doc_keys(stage: dict, substage: dict) -> list:
+    """Темы каталога «<этап>.<подэтап>», документами которых питается подэтап: у подэтапа из
+    каталога — его собственная, у своего — подобранные при сохранении (assign_topics)."""
+    stage_cat, sub_cat = stage.get("catalog_id"), substage.get("catalog_id")
+    if stage_cat and sub_cat:
+        return [f"{stage_cat}.{sub_cat}"]
+    return [k for k in (substage.get("topic_keys") or []) if k]
+
+
+def _context_for(keys: list, cache: Optional[dict] = None) -> tuple:
+    """Блоки документов тем keys под бюджет символов -> (ctx_parts, sources). cache — общий
+    на пакет {key: blocks}, чтобы 30 должностей не делали 30 одинаковых запросов к БД."""
     import docpipe
-    from rag import big_llm, parse_json_response
-
-    result = {"topics_used": [], "sources": [], "status": "generated", "error": None,
-              "content": {"format": "unified/1", "text": ""}}
-    try:
-        # id подэтапа в классификации docpipe — составной: "<этап>.<подэтап>" (catalog_id).
-        stage_cat, sub_cat = stage.get("catalog_id"), substage.get("catalog_id")
-        key = f"{stage_cat}.{sub_cat}" if stage_cat and sub_cat else None
-        if require_document:
-            present = docs_present if docs_present is not None else substages_with_docs()
-            if not key or key not in present:
-                result["status"] = "skipped"
-                result["error"] = NO_DOC_REASON
-                return result
-
-        # Контекст для генерации — чанки, размеченные ЭТИМ подэтапом (LLM-метки docpipe,
-        # без векторов). Режем под контекст модели по бюджету символов.
-        blocks = docpipe.blocks_for_substage(key) if key else []
-        seen_src, budget, ctx_parts = [], CONTEXT_CHAR_BUDGET, []
+    seen_src, seen_txt, budget, ctx_parts = [], set(), CONTEXT_CHAR_BUDGET, []
+    for key in keys:
+        if cache is not None and key in cache:
+            blocks = cache[key]
+        else:
+            blocks = docpipe.blocks_for_substage(key)
+            if cache is not None:
+                cache[key] = blocks
         for c in blocks:
             piece = c["text"]
+            if piece in seen_txt:
+                continue
             if budget - len(piece) < 0 and ctx_parts:
-                break
+                return ctx_parts, seen_src
+            seen_txt.add(piece)
             budget -= len(piece)
             ctx_parts.append(f"--- Блок (документ: {c['source']}) ---\n{piece}")
             if c["source"] and c["source"] not in seen_src:
                 seen_src.append(c["source"])
-        result["sources"] = [{"source": s, "folders": [], "page": None, "score": 1.0} for s in seen_src]
+    return ctx_parts, seen_src
 
-        if not ctx_parts:
-            # Документ отнесён (гейт пройден), но размеченных фрагментов нет -> «пропущено»,
-            # чтобы догенерация подхватила после переразметки/новых документов.
-            result["status"] = "skipped"
-            result["error"] = "Документ отнесён к подэтапу, но размеченных фрагментов не найдено"
+
+def message_fingerprint(stage: dict, substage: dict, position: str, ctx_parts: list) -> str:
+    """SHA-256 всего, что уходит в модель по подэтапу: версия промпта, этап/подэтап/тип/бриф,
+    должность и сами фрагменты документов. Совпал с сохранённым — текст актуален, модель не
+    зовём. Изменился документ, бриф или должность — меняется отпечаток только этих подэтапов."""
+    return _sha([GEN_PROMPT_VERSION, stage.get("title"), substage.get("title"), substage.get("kind"),
+                 substage.get("brief"), substage.get("tags") or [], (position or "").strip(),
+                 _doc_keys(stage, substage), ctx_parts])
+
+
+def _reuse(prev: dict, fp: str) -> dict:
+    return {"content": prev.get("content", {}), "topics_used": prev.get("topics_used", []),
+            "sources": prev.get("sources", []), "status": prev.get("status"),
+            "error": prev.get("error"), "actions": prev.get("actions", []),
+            "fingerprint": fp, "reused": True}
+
+
+def prepare_substage(stage: dict, substage: dict, position: str = "", docs_present=None,
+                     prev: Optional[dict] = None, require_document: bool = True,
+                     cache: Optional[dict] = None) -> tuple:
+    """Всё, что можно решить БЕЗ модели. Возвращает (payload, prompt):
+    prompt=None — модель не нужна (пропуск без документа или текст уже актуален), payload готов;
+    иначе payload — заготовка (источники, отпечаток), а prompt надо отправить в модель."""
+    result = {"topics_used": [], "sources": [], "status": "generated", "error": None,
+              "content": {"format": "unified/1", "text": ""}}
+    keys = _doc_keys(stage, substage)
+    if require_document:
+        present = docs_present if docs_present is not None else substages_with_docs()
+        if not any(k in present for k in keys):
+            result.update(status="skipped", error=NO_DOC_REASON, fingerprint=None)
+            return result, None
+
+    ctx_parts, sources = _context_for(keys, cache)
+    fp = message_fingerprint(stage, substage, position, ctx_parts)
+    result["fingerprint"] = fp
+    result["sources"] = [{"source": s, "folders": [], "page": None, "score": 1.0} for s in sources]
+    if prev and prev.get("status") in KEEP_STATUSES:
+        # Ручную правку не перезатираем пакетной генерацией. Тексты, сгенерированные до
+        # появления отпечатков (нет fingerprint), считаем актуальными — иначе первый же
+        # запуск после обновления заново оплатил бы весь план.
+        if prev.get("status") == "edited" or prev.get("fingerprint") in (None, fp):
+            return _reuse(prev, fp), None
+
+    if not ctx_parts:
+        result.update(status="skipped",
+                      error="Документ отнесён к подэтапу, но размеченных фрагментов не найдено")
+        return result, None
+
+    kind = substage.get("kind") or "message"
+    pos_line = f"Должность сотрудника: {position}\n" if (position or "").strip() else ""
+    focus_line = _focus_block(stage.get("catalog_id"), substage.get("catalog_id"))
+    prompt = (
+        f"Этап программы адаптации: {stage.get('title')}\n"
+        f"Подэтап: {substage.get('title')}\n"
+        f"{pos_line}"
+        f"Тип сообщения: {kind}. {KIND_GEN_HINT.get(kind, KIND_GEN_HINT['message'])}\n\n"
+        f"Что должен написать бот:\n{substage.get('brief') or substage.get('title')}\n"
+        f"{focus_line}\n"
+        f"Фрагменты внутренних документов компании:\n" + "\n\n".join(ctx_parts)
+    )
+    return result, prompt
+
+
+def generate_substage_message(stage: dict, substage: dict, topic_list: list, position: str = "",
+                              docs_present: "set | None" = None, require_document: bool = True,
+                              prev: Optional[dict] = None, cache: Optional[dict] = None) -> dict:
+    """Текст одного подэтапа. Ошибки не поднимает — возвращает status.
+    Без документа по теме подэтапа — status='skipped', модель не зовём. prev — сохранённое
+    сообщение: если отпечаток входов не изменился, возвращаем его как есть (reused=True)."""
+    try:
+        result, prompt = prepare_substage(stage, substage, position, docs_present, prev,
+                                          require_document, cache)
+        if prompt is None:
             return result
-
-        context = "\n\n".join(ctx_parts)
-        kind = substage.get("kind") or "message"
-        pos_line = f"Должность сотрудника: {position}\n" if (position or "").strip() else ""
-        focus_line = _focus_block(stage_cat, sub_cat)
-        user = (
-            f"Этап программы адаптации: {stage.get('title')}\n"
-            f"Подэтап: {substage.get('title')}\n"
-            f"{pos_line}"
-            f"Тип сообщения: {kind}. {KIND_GEN_HINT.get(kind, KIND_GEN_HINT['message'])}\n\n"
-            f"Что должен написать бот:\n{substage.get('brief') or substage.get('title')}\n"
-            f"{focus_line}\n"
-            f"Фрагменты внутренних документов компании:\n{context}"
-        )
-        raw = big_llm(GENERATE_SYSTEM, user)
+        from rag import big_llm, parse_json_response
+        raw = big_llm(GENERATE_SYSTEM, prompt)
         try:
             data = parse_json_response(raw)
         except Exception:
             data = {"body": (raw or "").strip()}     # фолбэк: непарсибельный ответ -> в body
         result["content"] = _build_unified_content(data, substage)
+        return result
     except Exception as e:
-        result["status"] = "error"
-        result["error"] = str(e)
-    return result
+        return {"topics_used": [], "sources": [], "status": "error", "error": str(e),
+                "content": {"format": "unified/1", "text": ""}}
 
 
 def build_schedule(plan: dict, generated: dict, profession: str = "") -> dict:
@@ -952,6 +1059,7 @@ def build_schedule(plan: dict, generated: dict, profession: str = "") -> dict:
             "sources": payload.get("sources", []),
             "status": payload.get("status", "pending"),
             "error": payload.get("error"),
+            "fingerprint": payload.get("fingerprint"),
             # Зарезервировано под мессенджеры: кнопки/варианты ответа сотрудника
             "actions": payload.get("actions", []),
         })
@@ -1014,18 +1122,8 @@ def cancel_job(job_id: str) -> Optional[dict]:
     return jobstore.cancel_job(_JOB_NS, job_id)
 
 
-def start_generation(plan: dict, positions: Optional[list] = None, include_general: bool = True,
-                     only_missing: bool = False) -> dict:
-    """Запускает генерацию плана в фоне. positions — список уникальных должностей (из штатки):
-    под КАЖДУЮ генерируется своё расписание (чанки её профессии + общие), сотрудники этой
-    должности берут готовое. Без positions — одно общее расписание (profession="").
-    include_general=False — генерировать только перечисленные должности, без общего расписания
-    (для точечной перегенерации одной должности).
-    only_missing=True — ДОГЕНЕРАЦИЯ: уже готовые (generated/edited) подэтады не трогаем,
-    заново прогоняем только пропущенные/ошибочные (после загрузки недостающих документов)."""
-    import folders
-
-    # Уникальные должности + общее ("") как фолбэк для профессий без своего расписания.
+def _norm_profs(positions: Optional[list], include_general: bool) -> list:
+    """Уникальные должности + общее ("") как фолбэк для профессий без своего расписания."""
     profs = []
     for p in (positions or []):
         p = (p or "").strip()
@@ -1034,67 +1132,133 @@ def start_generation(plan: dict, positions: Optional[list] = None, include_gener
     profs = profs or [""]                 # хотя бы общее расписание
     if include_general and profs != [""] and "" not in profs:
         profs = profs + [""]              # плюс общее — для не перечисленных должностей
+    return profs
+
+
+def _substage_of(plan: dict, item: dict) -> tuple:
+    stage = next((s for s in plan.get("stages") or [] if s["id"] == item["stage"]["id"]), {})
+    sub = next((s for s in stage.get("substages") or [] if s["id"] == item["substage"]["id"]),
+               item["substage"])
+    return stage, sub
+
+
+def estimate_generation(plan: dict, profs: list) -> dict:
+    """Сколько запросов к модели реально понадобится — без единого вызова модели: сверка
+    отпечатков входов с сохранёнными текстами. llm=0 -> «всё актуально»."""
+    items = resolve_schedule(plan)
+    docs_present = substages_with_docs()
+    cache, llm, skipped, fresh = {}, 0, 0, 0
+    for prof in profs:
+        sch = _load_exact(plan["plan_id"], prof) or {}
+        existing = {m.get("message_id"): m for m in (sch.get("messages") or [])}
+        for item in items:
+            stage, sub = _substage_of(plan, item)
+            payload, prompt = prepare_substage(stage, sub, prof, docs_present,
+                                               existing.get(item["message_id"]), cache=cache)
+            if prompt is not None:
+                llm += 1
+            elif payload.get("status") == "skipped":
+                skipped += 1
+            else:
+                fresh += 1
+    return {"llm_calls": llm, "up_to_date": fresh, "skipped": skipped,
+            "total": len(items) * len(profs), "professions": len(profs)}
+
+
+def _load_exact(plan_id: str, profession: str) -> Optional[dict]:
+    row = db.query("SELECT data FROM plan_schedules WHERE plan_id = %s AND profession = %s",
+                   (plan_id, profession), fetch="one")
+    return row["data"] if row else None
+
+
+def running_job_for(plan_id: str) -> Optional[dict]:
+    """Идущая генерация этого плана (защита от повторных нажатий и параллельных запусков)."""
+    lock = jobstore.get_job("genplan", plan_id) or {}
+    job = get_job(lock.get("job_id") or "") if lock.get("job_id") else None
+    return job if job and job.get("status") in ("queued", "running") else None
+
+
+def start_generation(plan: dict, positions: Optional[list] = None, include_general: bool = True,
+                     only_missing: bool = False) -> dict:
+    """Запускает генерацию плана в фоне. positions — должности: под КАЖДУЮ своё расписание,
+    плюс общее (profession="") при include_general.
+
+    Генерация всегда ИНКРЕМЕНТАЛЬНАЯ: модель зовётся только для подэтапов, у которых
+    изменились входы (документы, бриф, должность) или текста ещё нет. Ничего не менялось —
+    задача не создаётся, ответ status='up_to_date'. Пока идёт генерация плана, новая не
+    стартует: возвращается текущая (already_running). only_missing оставлен для совместимости
+    — «догенерация» теперь частный случай инкрементальной генерации."""
+    profs = _norm_profs(positions, include_general)
+    running = running_job_for(plan["plan_id"])
+    if running:
+        return {**running, "already_running": True}
+
+    est = estimate_generation(plan, profs)
+    if est["llm_calls"] == 0:
+        return {"status": "up_to_date", "job_id": None, **est}
 
     job_id = str(uuid.uuid4())
-    items = resolve_schedule(plan)
-    _set_job(job_id, plan_id=plan["plan_id"], status="queued", total=len(items) * len(profs), done=0,
+    _set_job(job_id, plan_id=plan["plan_id"], status="queued", total=est["total"], done=0,
              current=None, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
-             errors=0, skipped=0, error=None, professions=len(profs))
+             errors=0, skipped=0, reused=0, llm_calls=0, llm_planned=est["llm_calls"], error=None,
+             professions=len(profs))
+    jobstore.set_job("genplan", plan["plan_id"], job_id=job_id, dirty=False)
     # Тяжёлую генерацию — в очередь: worker-процесс (RQ) при Redis, иначе daemon-поток.
     import jobs
     jobs.enqueue_generation(job_id, plan, profs, only_missing)
     return get_job(job_id)
 
 
-def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool):
+def refresh_generated_plans() -> int:
+    """Документы изменились -> догенерировать/обновить тексты у планов, где они уже есть.
+    Благодаря отпечаткам модель трогает только подэтапы, чьи документы поменялись. Если
+    генерация плана уже идёт — помечаем dirty, она перезапустится по окончании. -> число запусков."""
+    started = 0
+    for p in list_plans():
+        if not p.get("generated"):
+            continue                       # тексты ни разу не генерировали — без спроса не тратим
+        pid = p["plan_id"]
+        if running_job_for(pid):
+            jobstore.set_job("genplan", pid, dirty=True)
+            continue
+        plan = load_plan(pid)
+        if not plan:
+            continue
+        profs = [x["profession"] for x in list_schedule_professions(pid)]
+        job = start_generation(plan, positions=profs, include_general=True)
+        started += 1 if job.get("job_id") else 0
+    return started
+
+
+def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool = False):
     """Тело генерации плана — выполняется в worker-процессе (RQ) или потоке-фолбэке.
-    Прогресс и отмена идут через общий jobstore (_set_job/get_job)."""
+    Прогресс и отмена идут через общий jobstore (_set_job/get_job). Для каждого подэтапа
+    сверяется отпечаток входов с сохранённым текстом — модель зовётся только при изменении."""
+    import folders
     items = resolve_schedule(plan)
-    KEEP = ("generated", "edited")   # догенерация эти статусы не трогает
     _set_job(job_id, status="running")
-    errors = skipped = done = 0
+    errors = skipped = done = reused = calls = 0
     try:
         topic_list = folders.list_folders(include_disabled=False)
         docs_present = substages_with_docs()   # какие подэтапы обеспечены документом
-        stages_by_id = {s["id"]: s for s in plan.get("stages") or []}
+        cache = {}
         for prof in profs:
+            sch = _load_exact(plan["plan_id"], prof) or {}
+            existing = {m.get("message_id"): m for m in (sch.get("messages") or [])}
             generated = {}
-            # Догенерация: подхватываем уже сохранённое расписание, чтобы не потерять готовое.
-            existing = {}
-            if only_missing:
-                sch = load_schedule(plan["plan_id"], prof) or {}
-                existing = {m.get("message_id"): m for m in (sch.get("messages") or [])}
             label = prof or "общее"
             cancelled = False
-            # Готовые (при догенерации) оставляем как есть; остальное — параллельно.
-            to_gen = []
-            for item in items:
-                mid = item["message_id"]
-                prev = existing.get(mid)
-                if only_missing and prev and prev.get("status") in KEEP:
-                    generated[mid] = {
-                        "content": prev.get("content", {}), "topics_used": prev.get("topics_used", []),
-                        "sources": prev.get("sources", []), "status": prev.get("status"),
-                        "error": prev.get("error"), "actions": prev.get("actions", []),
-                    }
-                    done += 1
-                    _set_job(job_id, done=done)
-                else:
-                    to_gen.append(item)
 
             def _gen_one(item):
-                stage = stages_by_id.get(item["stage"]["id"], {})
-                substage = next(
-                    (s for s in stage.get("substages", []) if s["id"] == item["substage"]["id"]),
-                    item["substage"],
-                )
+                stage, substage = _substage_of(plan, item)
                 return item["message_id"], item, generate_substage_message(
-                    stage, substage, topic_list, position=prof, docs_present=docs_present)
+                    stage, substage, topic_list, position=prof, docs_present=docs_present,
+                    prev=existing.get(item["message_id"]), cache=cache)
 
             # Параллельная генерация подэтапов (каждый — вызов DeepSeek, I/O-bound).
             _lock = threading.Lock()
             with ThreadPoolExecutor(max_workers=_GEN_WORKERS) as ex:
-                futs = [ex.submit(_gen_one, it) for it in to_gen]
+                futs = [ex.submit(_gen_one, it) for it in items]
                 for fut in as_completed(futs):
                     if (get_job(job_id) or {}).get("cancel"):
                         cancelled = True
@@ -1102,20 +1266,29 @@ def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool):
                         break
                     try:
                         mid, item, payload = fut.result()
-                    except Exception as e:
+                    except Exception:
                         with _lock:
                             errors += 1; done += 1
                             _set_job(job_id, done=done, errors=errors)
                         continue
                     with _lock:
-                        if payload["status"] == "error":
+                        if payload.get("reused"):
+                            reused += 1
+                        elif payload["status"] == "error":
                             errors += 1
                         elif payload["status"] == "skipped":
                             skipped += 1
+                        else:
+                            calls += 1
                         generated[mid] = payload
                         done += 1
-                        _set_job(job_id, done=done, errors=errors, skipped=skipped,
+                        _set_job(job_id, done=done, errors=errors, skipped=skipped, reused=reused,
+                                 llm_calls=calls,
                                  current=f"[{label}] {item['stage']['title']} → {item['substage']['title']}")
+            if cancelled:
+                # Отмена: готовое не теряем — несгенерированные подэтапы оставляем прежними.
+                for mid, prev in existing.items():
+                    generated.setdefault(mid, {**prev, "reused": True})
             if generated:   # сохраняем, что успели (частичное расписание не теряем)
                 save_schedule(plan["plan_id"], build_schedule(plan, generated, profession=prof), profession=prof)
             if cancelled:
@@ -1127,6 +1300,13 @@ def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool):
     except Exception as e:
         _set_job(job_id, status="error", error=str(e),
                  finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    # Пока шла генерация, пришли новые документы -> один повторный инкрементальный прогон.
+    lock = jobstore.get_job("genplan", plan["plan_id"]) or {}
+    if lock.get("job_id") == job_id and lock.get("dirty"):
+        jobstore.set_job("genplan", plan["plan_id"], dirty=False)
+        fresh = load_plan(plan["plan_id"])
+        if fresh:
+            start_generation(fresh, positions=profs, include_general=False)
 
 
 def regenerate_one(plan: dict, message_id: str, profession: str = "") -> Optional[dict]:

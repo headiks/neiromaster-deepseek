@@ -19,6 +19,7 @@ import time
 from typing import Optional
 
 import planner
+import users
 
 
 def first_name(full_name: str) -> str:
@@ -99,9 +100,11 @@ def build_employee_schedule(employee: dict) -> dict:
             "position": employee.get("position"),
             "department": employee.get("department"),
             "contact": employee.get("contact"),
+            "phone": employee.get("phone"),
+            "email": employee.get("email"),
             "mentor": employee.get("mentor"),
             "manager": employee.get("manager"),
-            "status": employee.get("status"),
+            "status": users.adaptation_status(employee, plan),
         },
         "plan_id": plan_id,
         "plan_title": plan.get("title"),

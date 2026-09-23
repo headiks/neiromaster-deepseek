@@ -100,6 +100,10 @@ SCHEMA_STATEMENTS = (
     """,
     # Для БД, созданных до появления поля «план по профессии» — добавляем колонку идемпотентно.
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_profession TEXT NOT NULL DEFAULT ''",
+    # Раздельные контакты и временный пароль до первого входа (см. users._blank_user).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_password TEXT DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
     "CREATE INDEX IF NOT EXISTS idx_users_role     ON users(role)",
     # Сессии входа. В БД, а не в памяти процесса: переживают перезапуск приложения

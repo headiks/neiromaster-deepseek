@@ -28,7 +28,7 @@ class RegisterRequest(BaseModel):
 
 
 class CredentialsRequest(BaseModel):
-    username: str
+    username: str | None = None     # логин не меняется: выдан один раз из ФИО
     password: str
 
 
@@ -101,13 +101,13 @@ async def api_me(user: dict = Depends(current_user)):
 async def api_setup_credentials(req: CredentialsRequest, response: Response,
                                 user: dict = Depends(current_user)):
     """
-    Первичная настройка: пользователь заменяет выданные логин и пароль своими.
+    Первичная настройка: пользователь заменяет выданный пароль своим (логин остаётся).
     Доступна только тем, у кого стоит флаг must_change_credentials.
     """
     if not user.get("must_change_credentials"):
         raise HTTPException(status_code=400, detail="Учётные данные уже настроены")
     try:
-        users.set_credentials(user["id"], req.username, req.password)
+        users.set_credentials(user["id"], None, req.password)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Логин сменился — старые сессии больше не действуют

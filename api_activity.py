@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import activitylog
 import users
 from fastapi import HTTPException
-from deps import current_user, require_admin, logged_in
+from deps import current_user, require_admin, logged_in, owner_only
 
 router = APIRouter()
 
@@ -43,3 +43,10 @@ async def list_activity(event_type: str | None = None, user_id: str | None = Non
             raise HTTPException(status_code=403, detail="Пользователь не из вашего отдела")
         return {"events": activitylog.recent(limit=limit, event_type=event_type, user_id=user_id)}
     return {"events": activitylog.recent(limit=limit, event_type=event_type, user_ids=allowed)}
+
+
+@router.get("/api/llm-usage", dependencies=owner_only)
+async def llm_usage(days: int = 14):
+    """Расход токенов DeepSeek по дням (вызовы, prompt/completion, попадания в кэш DeepSeek)."""
+    import deepseek
+    return {"days": deepseek.usage_by_day(max(1, min(days, 90)))}

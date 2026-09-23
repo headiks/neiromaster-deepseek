@@ -459,6 +459,18 @@ def handle_question(question, history=None, current_stage_ids=None, position=Non
     effective_question = resolved["standalone_question"]
     context_used = resolved["context_used"]
 
+    # Кэш частых вопросов: тот же по смыслу вопрос (набор значимых слов) при той же базе
+    # документов и должности — готовый ответ без маршрутизации и генерации (qacache).
+    import qacache
+    cached = qacache.get(effective_question, position or "")
+    if cached:
+        log("CACHE", "Ответ из кэша частых вопросов")
+        return {"question": question,
+                "resolved_question": effective_question if context_used else None,
+                "context_used": context_used, "candidates": [], "top_fragments": [],
+                "elapsed_time": time.time() - total_start, "error": None, "cached": True,
+                **cached}
+
     route_info = route_question(effective_question)
     route = route_info["route"]
     log("HANDLE", f"Маршрут: {route}")
@@ -505,6 +517,10 @@ def handle_question(question, history=None, current_stage_ids=None, position=Non
         log("SOURCES", "; ".join(source_names) or "(нет)")
     else:
         log("HANDLE", "Нет размеченных документов под тему вопроса")
+    if answer:
+        qacache.put(effective_question, position or "",
+                    {"answer": answer, "sources": sources, "route": route,
+                     "classification": route_info, "route_substages": picked})
 
     return {
         **base_result,

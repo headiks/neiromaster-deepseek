@@ -61,6 +61,7 @@ def run_reanalyze_all(job_id: str):
 def run_reanalyze_document(filename: str):
     import indexing
     indexing.reanalyze_document(filename)
+    indexing.docs_changed()
 
 
 def run_generation(job_id: str, plan: dict, profs: list, only_missing: bool):

@@ -25,6 +25,7 @@ import secrets
 import tablemap
 import users
 import deepseek
+import pii
 
 # Единая выходная схема — 4 поля, и только они.
 UNIFIED_FIELDS = [
@@ -52,27 +53,12 @@ _TRANSLIT = str.maketrans({
 # Три списка (Имя / Отчество / Фамилия). Если ячейка похожа на ФИО И хотя бы один её
 # полнословный токен есть в словаре — это ЧЕЛОВЕК, без обращения к модели. Ловит людей,
 # которых классификатор мог пропустить или принять за должность.
-_NAME_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "name_dict")
-_NAME_FILES = ("first_names.txt", "middle_names.txt", "last_names.txt")
-_NAME_SET = None
+# Словарь общий с обезличиванием ПДн (pii.name_set).
+_name_set = pii.name_set
 
 # капитализированное кириллическое слово (допускаем дефис: «Мурат-оол»); инициал «И.»/«И.О.»
 _NAME_WORD = re.compile(r"^[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?$")
 _NAME_INIT = re.compile(r"^[А-ЯЁ]\.?(?:[А-ЯЁ]\.?)?$")
-
-
-def _name_set() -> set:
-    global _NAME_SET
-    if _NAME_SET is None:
-        s = set()
-        for fn in _NAME_FILES:
-            try:
-                with open(os.path.join(_NAME_DIR, fn), encoding="utf-8") as f:
-                    s.update(ln.strip().lower() for ln in f if ln.strip())
-            except OSError:
-                pass
-        _NAME_SET = s
-    return _NAME_SET
 
 
 def looks_like_person(text: str) -> bool:
@@ -114,6 +100,12 @@ def _unique_username(base: str, taken: set) -> str:
     while f"{base}{i}" in taken:
         i += 1
     return f"{base}{i}"
+
+
+def new_username(full_name: str) -> str:
+    """Логин нового сотрудника: фамилия + инициалы, уникальный среди существующих."""
+    taken = {u["username"] for u in users.list_users() if u.get("username")}
+    return _unique_username(username_base(full_name), taken)
 
 
 def _temp_password(length: int = 10) -> str:
@@ -309,13 +301,36 @@ def parse_file(source, filename: str = None, classifier=None) -> dict:
 
 
 # ---------- Создание профилей/вакансий ----------
+VACANCY_PREFIX = "(вакансия) "
+
+
+def record_key(rec: dict) -> tuple:
+    """Ключ дубля: человек — по ФИО; вакансия — по должности и отделу."""
+    name = (rec.get("full_name") or "").strip().lower()
+    if name:
+        return ("person", name)
+    return ("vacancy", (rec.get("position") or "").strip().lower(),
+            (rec.get("department") or "").strip().lower())
+
+
+def existing_keys() -> set:
+    keys = set()
+    for u in users.list_users():
+        name = (u.get("full_name") or "").strip()
+        if name.startswith(VACANCY_PREFIX):
+            keys.add(record_key({"position": u.get("position"), "department": u.get("department")}))
+        elif name:
+            keys.add(record_key({"full_name": name}))
+    return keys
+
+
 def import_records(records: list) -> dict:
-    """Строки с ФИО -> профили сотрудников (логин/пароль в ответе, один раз).
-    Строки без ФИО -> профили-вакансии «(вакансия) <должность>» без логина.
-    Возвращает {"profiles": [...], "vacancies": [...], "skipped": [...]}."""
-    existing = users.list_users()
-    taken = {u["username"] for u in existing if u.get("username")}
-    seen = {(u.get("full_name") or "").strip().lower() for u in existing if u.get("full_name")}
+    """Строки с ФИО -> профили сотрудников (логин из ФИО, временный пароль — хранится до
+    первого входа). Строки без ФИО -> профили-вакансии без логина. Уже заведённые (то же ФИО;
+    та же должность в том же отделе) пропускаются — повторная загрузка штатки безопасна.
+    Возвращает {"profiles", "vacancies", "skipped"}; у профилей есть id — для выгрузки Excel."""
+    taken = {u["username"] for u in users.list_users() if u.get("username")}
+    seen = existing_keys()
 
     profiles, vacancies, skipped = [], [], []
     for rec in records:
@@ -323,15 +338,19 @@ def import_records(records: list) -> dict:
         position = (rec.get("position") or "").strip()
         department = (rec.get("department") or "").strip()
         date = (rec.get("start_date") or "").strip()
+        key = record_key(rec)
+        if not name and not position:
+            continue
+        if key in seen:
+            skipped.append({"full_name": name or f"{VACANCY_PREFIX}{position}",
+                            "reason": "уже есть в системе"})
+            continue
 
         if name:
-            if name.lower() in seen:
-                skipped.append({"full_name": name, "reason": "уже есть"})
-                continue
             username = _unique_username(username_base(name), taken)
             password = _temp_password()
             try:
-                users.create_user(
+                user = users.create_user(
                     {"username": username, "password": password, "full_name": name,
                      "position": position, "department": department, "start_date": date or None},
                     role=users.ROLE_EMPLOYEE, must_change_credentials=True)
@@ -339,13 +358,32 @@ def import_records(records: list) -> dict:
                 skipped.append({"full_name": name, "reason": str(e)})
                 continue
             taken.add(username)
-            seen.add(name.lower())
-            profiles.append({"full_name": name, "username": username,
-                             "password": password, "position": position})
-        elif position:
+            profiles.append({"id": user["id"], "full_name": name, "username": username,
+                             "password": password, "position": position, "department": department})
+        else:
             users.create_user(
-                {"full_name": f"(вакансия) {position}", "position": position,
+                {"full_name": f"{VACANCY_PREFIX}{position}", "position": position,
                  "department": department, "notes": "Вакансия из штатного расписания."},
                 role=users.ROLE_EMPLOYEE)
             vacancies.append({"position": position, "department": department})
+        seen.add(key)
     return {"profiles": profiles, "vacancies": vacancies, "skipped": skipped}
+
+
+def credentials_xlsx(rows: list) -> bytes:
+    """Excel для рассылки доступов: ФИО, логин, временный пароль, должность, подразделение."""
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Доступы"
+    ws.append(["ФИО", "Логин", "Временный пароль", "Должность", "Подразделение"])
+    for r in rows:
+        ws.append([r.get("full_name") or "", r.get("username") or "",
+                   r.get("temp_password") or r.get("password") or "",
+                   r.get("position") or "", r.get("department") or ""])
+    for col, width in zip("ABCDE", (36, 20, 18, 32, 32)):
+        ws.column_dimensions[col].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

@@ -56,7 +56,7 @@ async def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
 
 @router.post("/plans")
 async def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
-    plan = planner.normalize_plan(req.model_dump())
+    plan = planner.assign_topics(planner.normalize_plan(req.model_dump()))
     planner.save_plan(plan)
     activitylog.log("action", user=user, path="/plans",
                     detail={"action": "plan_create", "plan_id": plan.get("id"),
@@ -78,6 +78,15 @@ async def create_full_template(title: str | None = None):
 # классификации документа. Отдельный шаг «разложить чанки» не нужен — эндпоинт удалён.
 
 
+@router.get("/plans/coverage", dependencies=admin_only)
+async def plans_coverage():
+    """Хватает ли документов планам: по каждому плану (стандартному и своему) — сколько
+    подэтапов обеспечены документами и для каких их нет («догрузите»)."""
+    present = planner.substages_with_docs()
+    return {"plans": [planner.plan_coverage(planner.load_plan(p["plan_id"]) or {}, present)
+                      for p in planner.list_plans()]}
+
+
 @router.get("/plans/{plan_id}", dependencies=admin_only)
 async def get_plan(plan_id: str):
     plan = planner.load_plan(plan_id)
@@ -93,15 +102,21 @@ async def update_plan(plan_id: str, req: PlanRequest):
         raise HTTPException(status_code=404, detail="План не найден")
     payload = req.model_dump()
     payload["created_at"] = existing.get("created_at")
-    plan = planner.normalize_plan(payload, plan_id=plan_id)
+    plan = planner.assign_topics(planner.normalize_plan(payload, plan_id=plan_id), prev=existing)
     planner.save_plan(plan)
     return plan
 
 
 @router.delete("/plans/{plan_id}", dependencies=admin_only)
 async def remove_plan(plan_id: str):
+    """Удаление плана: его сообщения (plan_schedules) уходят каскадом, у сотрудников
+    назначение снимается, активный общий план — сбрасывается."""
     if not planner.delete_plan(plan_id):
         raise HTTPException(status_code=404, detail="План не найден")
+    db.execute("UPDATE users SET plan_id = NULL WHERE plan_id = %s", (plan_id,))
+    import autoplan
+    if autoplan.get_default_plan_id() == plan_id:
+        autoplan.set_default_plan_id("")
     return {"plan_id": plan_id, "deleted": True}
 
 
@@ -139,13 +154,9 @@ def _plan_positions(plan_id: str) -> list:
     return seen or _staffing_positions()
 
 
-@router.post("/plans/{plan_id}/generate", dependencies=admin_only)
-async def generate_plan(plan_id: str, profession: str | None = None):
-    """
-    Запускает фоновую генерацию контента плана. Прогресс — через GET /jobs/{job_id}.
-    profession задан — перегенерировать только это расписание (одна должность, либо общее
-    при profession=""). Без profession — под КАЖДУЮ должность из штатки плюс общее.
-    """
+def _gen_target(plan_id: str, profession: str | None) -> tuple:
+    """План + (должности, include_general) для генерации. profession задан — одно расписание
+    (должность, либо общее при profession=""); нет — должности адресатов плана плюс общее."""
     plan = planner.load_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="План не найден")
@@ -153,26 +164,32 @@ async def generate_plan(plan_id: str, profession: str | None = None):
         raise HTTPException(status_code=400, detail="В плане нет ни одного подэтапа")
     if profession is not None:
         prof = profession.strip()
-        return planner.start_generation(plan, positions=[prof] if prof else None,
-                                        include_general=not prof)
-    return planner.start_generation(plan, positions=_plan_positions(plan_id))
+        return plan, ([prof] if prof else None), not prof
+    return plan, _plan_positions(plan_id), True
+
+
+@router.get("/plans/{plan_id}/generate-estimate", dependencies=admin_only)
+async def generate_estimate(plan_id: str, profession: str | None = None):
+    """Сколько запросов к DeepSeek потребует «Обновить сообщения» — без вызова модели
+    (сверка SHA-256 отпечатков входов). llm_calls=0 -> всё актуально."""
+    plan, positions, include_general = _gen_target(plan_id, profession)
+    return planner.estimate_generation(plan, planner._norm_profs(positions, include_general))
+
+
+@router.post("/plans/{plan_id}/generate", dependencies=admin_only)
+async def generate_plan(plan_id: str, profession: str | None = None):
+    """Инкрементальная генерация сообщений плана (фоном, прогресс — GET /jobs/{job_id}).
+    Модель зовётся только для подэтапов с изменившимися входами; ничего не менялось ->
+    status='up_to_date' без единого запроса. Идёт генерация этого плана -> вернётся она же."""
+    plan, positions, include_general = _gen_target(plan_id, profession)
+    return planner.start_generation(plan, positions=positions, include_general=include_general)
 
 
 @router.post("/plans/{plan_id}/generate-missing", dependencies=admin_only)
 async def generate_missing(plan_id: str, profession: str | None = None):
-    """Догенерация: заново прогоняет только пропущенные/ошибочные подэтапы (после того как
-    админ загрузил недостающие документы), уже готовые тексты не трогает. profession как в
-    /generate: задан — одно расписание; без него — под каждую должность плюс общее."""
-    plan = planner.load_plan(plan_id)
-    if plan is None:
-        raise HTTPException(status_code=404, detail="План не найден")
-    if not any(s.get("substages") for s in plan.get("stages") or []):
-        raise HTTPException(status_code=400, detail="В плане нет ни одного подэтапа")
-    if profession is not None:
-        prof = profession.strip()
-        return planner.start_generation(plan, positions=[prof] if prof else None,
-                                        include_general=not prof, only_missing=True)
-    return planner.start_generation(plan, positions=_plan_positions(plan_id), only_missing=True)
+    """Совместимость со старым фронтом: то же, что /generate (генерация теперь всегда
+    трогает только недостающее и изменившееся)."""
+    return await generate_plan(plan_id, profession)
 
 
 @router.post("/plans/{plan_id}/refresh-catalog", dependencies=admin_only)

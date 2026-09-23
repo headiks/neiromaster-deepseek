@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 """
 # Быстрый поиск «документы этапа» для экрана.
 CREATE_INDEX = f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_stage ON {TABLE} USING GIN (stage_ids)"
+# remove_by_filename и сверка при загрузке новой версии — по имени файла.
+CREATE_INDEX_NAME = f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_filename ON {TABLE}(filename)"
 
 
 def init():
@@ -115,6 +117,7 @@ def init():
     import db
     db.execute(CREATE_TABLE)
     db.execute(CREATE_INDEX)
+    db.execute(CREATE_INDEX_NAME)
 
 
 def find_by_hash(sha256: str) -> Optional[dict]:

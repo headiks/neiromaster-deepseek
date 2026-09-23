@@ -61,6 +61,11 @@ SCHEMA_STATEMENTS = (
         labeled_at    TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # Горячий путь: blocks_for_substage (генерация сообщений и ответы на вопросы) ищет
+    # секции по «substages @> [{id}]». Без GIN это полный перебор всех меток базы.
+    "CREATE INDEX IF NOT EXISTS idx_section_labels_substages ON section_labels USING GIN (substages jsonb_path_ops)",
+    # find_by_filename / delete_by_filename — поиск документа по имени.
+    "CREATE INDEX IF NOT EXISTS idx_documents_filename ON documents(filename)",
     # Мелкие чанки с per-chunk метками: LLM размечает КАЖДЫЙ чанк своими подэтапами
     # (раньше чанк наследовал метку всей секции). substages — [{id, confidence}].
     """

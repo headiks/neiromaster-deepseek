@@ -73,7 +73,7 @@ async def get_document_substage_map(filename: str, user: dict = Depends(require_
 async def reindex_document(filename: str, user: dict = Depends(require_admin)):
     """Переанализ документа (без повторного docling): обновляет папки/этапы по чанкам
     и синхронизирует запись в реестре метаданных."""
-    ensure_doc_access(user, filename)
+    ensure_doc_access(user, filename, write=True)
     # reanalyze_document сам синхронизирует document_meta (доску «этапы ↔ документы»),
     # поэтому отдельной досинхронизации здесь больше нет — один путь, без дрейфа.
     result = indexing.reanalyze_document(filename)
@@ -83,7 +83,8 @@ async def reindex_document(filename: str, user: dict = Depends(require_admin)):
 
 
 @router.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...), user: dict = Depends(require_admin)):
+async def upload_document(file: UploadFile = File(...), mode: str = "",
+                          user: dict = Depends(require_admin)):
     """
     Загрузка нового регламента. Файл сохраняется в data/documents/ и ставится
     в фоновую очередь на индексацию (docling -> чанкинг -> эмбеддинги -> Qdrant).
@@ -104,16 +105,38 @@ async def upload_document(file: UploadFile = File(...), user: dict = Depends(req
     except Exception:
         existing = None   # реестр недоступен — не блокируем загрузку
     if existing:
+        # Тот же файл уже обработан (кем угодно, в т.ч. другим админом) — повторно не
+        # разбираем и не платим за обработку.
         return JSONResponse(status_code=200, content={
             "duplicate": True, "filename": existing["filename"],
             "uploaded_at": existing.get("uploaded_at"),
             "message": f"Такой файл уже загружен ранее ({existing['filename']}) — повторная обработка не требуется",
         })
 
+    # Новая версия: файл с тем же именем, но другим содержимым. Раньше молча перезаписывался;
+    # теперь спрашиваем: mode=replace — заменить старую версию, mode=separate — сохранить рядом.
+    name = indexing.safe_filename(file.filename)
+    old = next((d for d in indexing.list_documents() if d.get("filename") == name), None)
+    if old and mode not in ("replace", "separate"):
+        return JSONResponse(status_code=409, content={
+            "conflict": "same_name", "filename": name, "uploaded_at": old.get("uploaded_at"),
+            "uploaded_by_name": old.get("uploaded_by_name"),
+            "can_replace": users.can_edit_doc(user, old),
+            "message": f"Документ «{name}» уже есть. Заменить старую версию или сохранить как отдельный?",
+        })
+    if old and mode == "replace":
+        ensure_doc_access(user, name, write=True)
+        indexing.delete_document(name)
+        try:
+            documents.remove_by_filename(name)
+        except Exception:
+            pass
+    upload_name = indexing.free_filename(name) if old and mode == "separate" else file.filename
+
     try:
         # uploader -> владелец документа: задаёт путь <суперадмин>/<админ>/<файл>
         # в S3 и определяет, кому документ будет виден.
-        filepath = indexing.save_uploaded_file(file.filename, content, uploader=user)
+        filepath = indexing.save_uploaded_file(upload_name, content, uploader=user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -192,7 +215,7 @@ async def get_document_labels(filename: str, user: dict = Depends(require_admin)
 @router.delete("/documents/{filename}")
 async def remove_document(filename: str, user: dict = Depends(require_admin)):
     """Удаляет документ: векторы из Qdrant, оригинал из data/documents, кэш docling."""
-    ensure_doc_access(user, filename)
+    ensure_doc_access(user, filename, write=True)
     existed = indexing.delete_document(filename)
     if not existed:
         raise HTTPException(status_code=404, detail="Документ не найден")
@@ -200,6 +223,7 @@ async def remove_document(filename: str, user: dict = Depends(require_admin)):
         documents.remove_by_filename(filename)
     except Exception:
         pass
+    _bg(indexing.docs_changed)   # тексты, опиравшиеся на документ, обновятся (только они)
     return {"filename": filename, "deleted": True}
 
 
@@ -281,7 +305,7 @@ def reanalyze_documents():
 def reanalyze_one(filename: str, user: dict = Depends(require_admin)):
     """Переанализ одного документа — фоново; статус (reanalyzing -> indexed/error)
     виден в списке документов рядом с этим документом."""
-    ensure_doc_access(user, filename)
+    ensure_doc_access(user, filename, write=True)
     import jobs
     jobs.enqueue_reanalyze_document(filename)
     return {"started": True}
@@ -292,7 +316,7 @@ def reprocess_one(filename: str, user: dict = Depends(require_admin)):
     """Полный повторный разбор документа с нуля (docling → чанки → эмбеддинги) — для
     файлов со статусом error/uploaded, которым обычный переанализ не помогает (чанков
     в Qdrant ещё/уже нет). Ставит файл в фоновую очередь индексации."""
-    ensure_doc_access(user, filename)
+    ensure_doc_access(user, filename, write=True)
     fp = indexing.DOCS_DIR / filename
     if not fp.exists():
         raise HTTPException(status_code=404, detail="Файл-оригинал не найден в хранилище")
@@ -305,7 +329,7 @@ async def clarify_document(filename: str, req: ClarifyRequest,
                            user: dict = Depends(require_admin)):
     """Текстовое уточнение пользователя (актуальность/архив/область действия — ТЗ §17).
     Исходный документ не переписывается — уточнение хранится как доп. контекст."""
-    ensure_doc_access(user, filename)
+    ensure_doc_access(user, filename, write=True)
     if not indexing.set_clarification(filename, req.clarification):
         raise HTTPException(status_code=404, detail="Документ не найден")
     return {"filename": filename, "clarification": req.clarification}
