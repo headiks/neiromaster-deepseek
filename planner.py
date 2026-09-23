@@ -980,6 +980,18 @@ def save_schedule(plan_id: str, schedule: dict, profession: str = ""):
     )
 
 
+def delete_schedule(plan_id: str, profession: str) -> bool:
+    """Удаляет расписание под конкретную должность (тексты плана). Общее (profession='')
+    не трогаем — его удалять нечем осмысленным. Возвращает True, если строка удалена."""
+    prof = (profession or "").strip()
+    if not prof:
+        return False
+    existed = db.query("SELECT 1 FROM plan_schedules WHERE plan_id = %s AND profession = %s",
+                       (plan_id, prof), fetch="one") is not None
+    db.execute("DELETE FROM plan_schedules WHERE plan_id = %s AND profession = %s", (plan_id, prof))
+    return existed
+
+
 # ---------- Фоновые задачи генерации ----------
 # Состояние задач — в общем jobstore (Redis при мультипроцессе, иначе in-memory),
 # чтобы прогресс и «Отмена» были видны между web-воркером и worker-процессом.

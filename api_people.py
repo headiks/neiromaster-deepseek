@@ -149,11 +149,17 @@ async def update_user(user_id: str, req: UserRequest, actor: dict = Depends(requ
     return users.public_view(user)
 
 
-@router.delete("/users/{user_id}", dependencies=owner_only)
-async def remove_user(user_id: str, actor: dict = Depends(require_owner)):
-    """Удаление пользователя — только главный администратор."""
+@router.delete("/users/{user_id}", dependencies=admin_only)
+async def remove_user(user_id: str, actor: dict = Depends(require_admin)):
+    """Удаление пользователя: обычный админ — только сотрудников,
+    суперадмин — любого (кроме самого себя; последнего owner сервер не даст)."""
     if user_id == actor["id"]:
         raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
+    target = users.get_user(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if actor.get("role") != "owner" and target.get("role") != "employee":
+        raise HTTPException(status_code=403, detail="Обычный администратор может удалять только сотрудников")
     try:
         deleted = users.delete_user(user_id)
     except ValueError as e:

@@ -1630,12 +1630,25 @@
         let employeesCache = [];
         // Должности, под которые уже сгенерирован план адаптации (для пометки ✓ в комбобоксе должности).
         let profReadySet = new Set();
-        function loadProfReady(defaultPlanId) {
+        let defaultPlanId = null;
+        function loadProfReady(planId) {
+            defaultPlanId = planId || null;
             if (!defaultPlanId) { profReadySet = new Set(); return; }
             api(`/plans/${encodeURIComponent(defaultPlanId)}/professions`)
                 .then(r => r.ok ? r.json() : {})
                 .then(d => { profReadySet = new Set(d.generated_names || []); })
                 .catch(() => {});
+        }
+        function deleteProfPlan(prof) {
+            if (!defaultPlanId) { alert('Общий план не назначен — удалять нечего.'); return; }
+            if (!confirm(`Удалить сгенерированные тексты плана для должности «${prof}»?`)) return;
+            api(`/plans/${encodeURIComponent(defaultPlanId)}/schedule?profession=${encodeURIComponent(prof)}`,
+                { method: 'DELETE' }).then(r => r.json().then(d => ({ ok: r.ok, d })))
+                .then(({ ok, d }) => {
+                    if (!ok) { alert(d.detail || 'Не удалось удалить'); return; }
+                    profReadySet.delete(prof);
+                    comboRender(document.getElementById('combo-search').value);
+                }).catch(() => alert('Ошибка сети'));
         }
 
         // Логин и пароль отправляются только при создании: у существующего пользователя
@@ -1660,7 +1673,7 @@
             const select = document.getElementById('emp-plan_id');
             const current = select.value;
             select.innerHTML = `<option value="">— план не назначен —</option>` + plans.map(p =>
-                `<option value="${escapeHtml(p.plan_id)}">${escapeHtml(p.title)}${p.generated ? ' <i data-lucide="check"></i>' : ' (без ответов)'}</option>`
+                `<option value="${escapeHtml(p.plan_id)}">${p.generated ? '✓ ' : ''}${escapeHtml(p.title)}${p.generated ? ' — тексты готовы' : ' — без ответов'}</option>`
             ).join('');
             select.value = current;
         }
@@ -1734,10 +1747,18 @@
             items.forEach(v => {
                 const li = document.createElement('li');
                 const ready = isPos && profReadySet.has(v);
-                li.textContent = (ready ? '✓ ' : '') + v;
-                if (ready) { li.classList.add('combo-ready'); li.title = 'План адаптации готов'; }
-                else if (isPos) { li.title = 'Плана ещё нет — сгенерируйте на вкладке «Тексты плана»'; }
-                li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(v); });
+                const label = document.createElement('span');
+                label.textContent = (ready ? '✓ ' : '') + v;
+                label.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(v); });
+                li.appendChild(label);
+                if (ready) {
+                    li.classList.add('combo-ready'); li.title = 'План адаптации готов';
+                    const del = document.createElement('span');
+                    del.className = 'combo-del'; del.textContent = '✕'; del.title = 'Удалить тексты плана для должности';
+                    del.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); deleteProfPlan(v); });
+                    li.appendChild(del);
+                } else if (isPos) { li.title = 'Плана ещё нет — сгенерируйте на вкладке «Тексты плана»'; }
+                if (!ready) li.addEventListener('mousedown', e => { e.preventDefault(); commitCombo(v); });
                 list.appendChild(li);
             });
         }
@@ -1818,6 +1839,9 @@
                 } else {
                     buttons.push(`<button class="icon-btn" onclick="setUserRole('${id}', 'admin')"><i data-lucide="arrow-up"></i> Назначить администратором</button>`);
                 }
+            }
+            // Удаление: суперадмин — любого (кроме себя), обычный админ — только сотрудников.
+            if (!isSelf && (isOwner || user.role === 'employee')) {
                 buttons.push(`<button class="icon-btn danger" onclick="deleteEmployee('${id}')"><i data-lucide="x"></i> Удалить</button>`);
             }
             return buttons.join(' ');

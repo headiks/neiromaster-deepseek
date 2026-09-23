@@ -308,7 +308,10 @@
         .combo-search { width: 100%; box-sizing: border-box; border: none; border-bottom: 1px solid #e2e8f0;
             border-radius: 8px 8px 0 0; padding: 8px 10px; font-size: 14px; outline: none; }
         .combo-list { list-style: none; margin: 0; padding: 4px; max-height: 220px; overflow-y: auto; }
-        .combo-list li { padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #334155; }
+        .combo-list li { padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #334155;
+            display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .combo-del { color: #b91c1c; font-size: 12px; padding: 0 4px; opacity: .55; cursor: pointer; }
+        .combo-del:hover { opacity: 1; }
         .combo-list li:hover { background: #eff6ff; }
         .combo-list li.empty { color: #94a3b8; cursor: default; }
         .combo-list li.combo-add { color: #2563eb; font-weight: 600; }

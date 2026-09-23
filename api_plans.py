@@ -237,6 +237,19 @@ async def get_schedule(plan_id: str, profession: str | None = None):
     return schedule
 
 
+@router.delete("/plans/{plan_id}/schedule", dependencies=admin_only)
+async def delete_schedule(plan_id: str, profession: str, user: dict = Depends(require_admin)):
+    """Удаляет сгенерированные тексты плана под конкретную должность."""
+    prof = (profession or "").strip()
+    if not prof:
+        raise HTTPException(status_code=400, detail="Не указана должность")
+    if not planner.delete_schedule(plan_id, prof):
+        raise HTTPException(status_code=404, detail="Текстов под эту должность нет")
+    activitylog.log("action", user=user, path=f"/plans/{plan_id}/schedule",
+                    detail={"action": "schedule_delete", "plan_id": plan_id, "profession": prof})
+    return {"plan_id": plan_id, "profession": prof, "deleted": True}
+
+
 @router.get("/plans/{plan_id}/professions", dependencies=admin_only)
 async def get_plan_professions(plan_id: str):
     """Должности для селектора генерации:
