@@ -29,7 +29,9 @@ EXPECTED_SAMPLE = [
     "/api/login", "/api/me", "/api/s3/list", "/ask", "/documents", "/documents/upload",
     "/documents/board", "/documents/table", "/documents/labeled", "/documents/{filename}",
     "/folders", "/knowledge/stages", "/questions", "/catalog", "/plans", "/users",
-    "/users/{user_id}", "/users/delete-non-admins", "/staffing/import", "/jobs/{job_id}",
+    "/users/{user_id}", "/users/bulk-delete", "/users/credentials.xlsx", "/users/{user_id}/pause",
+    "/staffing/import", "/jobs/{job_id}", "/plans/coverage", "/plans/{plan_id}/generate-estimate",
+    "/api/llm-usage",
 ]
 
 

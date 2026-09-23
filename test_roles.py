@@ -40,7 +40,7 @@ DOCS = [
     {"filename": "ot_log.pdf", "uploaded_by": "a1"},
     {"filename": "marshruty.docx", "uploaded_by": "a1"},
     {"filename": "svarka.pdf", "uploaded_by": "a2"},
-    {"filename": "obshee.md", "uploaded_by": "own"},
+    {"filename": "obshee.md", "uploaded_by": "own", "uploaded_by_role": "owner"},
     {"filename": "legacy.pdf"},                       # залит до разделения прав
 ]
 
@@ -50,9 +50,17 @@ def test_owner_sees_every_document():
     assert len(users.visible_docs(OWNER, DOCS)) == len(DOCS)
 
 
-def test_admin_sees_only_own_uploads():
-    assert [d["filename"] for d in users.visible_docs(ADMIN_LOG, DOCS)] == ["ot_log.pdf", "marshruty.docx"]
-    assert [d["filename"] for d in users.visible_docs(ADMIN_SVAR, DOCS)] == ["svarka.pdf"]
+def test_admin_sees_own_uploads_and_shared_owner_docs():
+    # общие документы суперадмина видны всем админам — не грузить (и не оплачивать) повторно
+    assert [d["filename"] for d in users.visible_docs(ADMIN_LOG, DOCS)] == ["ot_log.pdf", "marshruty.docx", "obshee.md"]
+    assert [d["filename"] for d in users.visible_docs(ADMIN_SVAR, DOCS)] == ["svarka.pdf", "obshee.md"]
+
+
+def test_admin_cannot_edit_shared_or_foreign_docs():
+    assert users.can_edit_doc(ADMIN_LOG, DOCS[0])
+    assert not users.can_edit_doc(ADMIN_LOG, DOCS[3])      # общий документ суперадмина — только чтение
+    assert not users.can_edit_doc(ADMIN_LOG, DOCS[2])      # документ другого админа
+    assert users.can_edit_doc(OWNER, DOCS[2])
 
 
 def test_admin_does_not_see_ownerless_docs():
