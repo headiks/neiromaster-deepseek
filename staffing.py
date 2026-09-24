@@ -71,7 +71,7 @@ def looks_like_person(text: str) -> bool:
     if not words or any(not (_NAME_WORD.match(t) or _NAME_INIT.match(t)) for t in toks):
         return False
     known = _name_set()
-    return any(w.lower() in known for w in words)
+    return any(pii._norm(w) in known for w in words)
 
 
 # ---------- Логины/пароли ----------
@@ -108,9 +108,13 @@ def new_username(full_name: str) -> str:
     return _unique_username(username_base(full_name), taken)
 
 
-def _temp_password(length: int = 10) -> str:
+def temp_password(length: int = 10) -> str:
+    """Временный пароль без похожих символов (l/1, O/0): его диктуют и переписывают руками."""
     alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+_temp_password = temp_password   # прежнее имя — для совместимости
 
 
 # ---------- Классификация ячеек малой моделью (батчами) ----------
@@ -132,6 +136,7 @@ other — всё прочее: описание обязанностей (цел
 «Обособленное подразделение Рудник», «Механо-монтажный участок» -> org
 «Иванов Иван Иванович» -> person
 «Итого», «24», «15.05.2026», «2290000а-14612» -> other
+Персональные данные скрыты метками: «[ФИО_1]» — это ФИО человека -> person.
 
 Верни ТОЛЬКО JSON-массив строк той же длины и в том же порядке, например:
 ["person","org","position","other"]. Без пояснений."""
@@ -324,7 +329,7 @@ def existing_keys() -> set:
     return keys
 
 
-def import_records(records: list) -> dict:
+def import_records(records: list, actor: dict | None = None) -> dict:
     """Строки с ФИО -> профили сотрудников (логин из ФИО, временный пароль — хранится до
     первого входа). Строки без ФИО -> профили-вакансии без логина. Уже заведённые (то же ФИО;
     та же должность в том же отделе) пропускаются — повторная загрузка штатки безопасна.
@@ -348,12 +353,12 @@ def import_records(records: list) -> dict:
 
         if name:
             username = _unique_username(username_base(name), taken)
-            password = _temp_password()
+            password = temp_password()
             try:
                 user = users.create_user(
                     {"username": username, "password": password, "full_name": name,
                      "position": position, "department": department, "start_date": date or None},
-                    role=users.ROLE_EMPLOYEE, issued_password=True)
+                    actor=actor, role=users.ROLE_EMPLOYEE, issued_password=True)
             except ValueError as e:
                 skipped.append({"full_name": name, "reason": str(e)})
                 continue
@@ -364,10 +369,18 @@ def import_records(records: list) -> dict:
             users.create_user(
                 {"full_name": f"{VACANCY_PREFIX}{position}", "position": position,
                  "department": department, "notes": "Вакансия из штатного расписания."},
-                role=users.ROLE_EMPLOYEE)
+                actor=actor, role=users.ROLE_EMPLOYEE)
             vacancies.append({"position": position, "department": department})
         seen.add(key)
     return {"profiles": profiles, "vacancies": vacancies, "skipped": skipped}
+
+
+def safe_cell(value) -> str:
+    """Текст для ячейки Excel без исполнения: строку, начинающуюся с = + - @ (или табуляции),
+    Excel считает формулой (=HYPERLINK(...), =cmd|...). ФИО и должности приходят из
+    загруженной штатки — экранируем апострофом, как делает сам Excel."""
+    text = str(value or "")
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
 def credentials_xlsx(rows: list) -> bytes:
@@ -379,9 +392,11 @@ def credentials_xlsx(rows: list) -> bytes:
     ws.title = "Доступы"
     ws.append(["ФИО", "Логин", "Пароль", "Должность", "Подразделение"])
     for r in rows:
-        ws.append([r.get("full_name") or "", r.get("username") or "",
-                   r.get("temp_password") or r.get("password") or "",
-                   r.get("position") or "", r.get("department") or ""])
+        values = [r.get("full_name"), r.get("username"), r.get("temp_password") or r.get("password"),
+                  r.get("position"), r.get("department")]
+        ws.append([safe_cell(v) for v in values])
+        for cell in ws[ws.max_row]:
+            cell.data_type = "s"             # строка, а не формула — даже если openpyxl решил иначе
     for col, width in zip("ABCDE", (36, 20, 18, 32, 32)):
         ws.column_dimensions[col].width = width
     buf = io.BytesIO()

@@ -71,3 +71,38 @@ def cancel_job(ns: str, job_id: str) -> Optional[dict]:
     if job.get("status") in ("queued", "running", "processing"):
         return set_job(ns, job_id, cancel=True)
     return job
+
+
+# ---------- Короткие замки (одна операция на ключ) ----------
+_claims: dict = {}
+
+
+def claim(ns: str, key: str, ttl: int = 300) -> bool:
+    """Атомарно занять ключ на ttl секунд. False — уже занят (другой процесс/запрос).
+    Redis — SET NX (общий для всех воркеров), без Redis — словарь процесса."""
+    import time
+    k = f"nmclaim:{ns}:{key}"
+    r = get_redis()
+    if r is not None:
+        try:
+            return bool(r.set(k, "1", nx=True, ex=ttl))
+        except Exception:
+            pass
+    now = time.time()
+    with _mem_lock:
+        if _claims.get(k, 0) > now:
+            return False
+        _claims[k] = now + ttl
+        return True
+
+
+def release(ns: str, key: str):
+    k = f"nmclaim:{ns}:{key}"
+    r = get_redis()
+    if r is not None:
+        try:
+            r.delete(k)
+        except Exception:
+            pass
+    with _mem_lock:
+        _claims.pop(k, None)

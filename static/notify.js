@@ -60,10 +60,9 @@
     return el;
   }
 
+  var ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   function esc(s) {
-    var d = document.createElement("div");
-    d.textContent = s == null ? "" : String(s);
-    return d.innerHTML;
+    return s == null ? "" : String(s).replace(/[&<>"']/g, function (c) { return ESC[c]; });
   }
 
   function showToast(msg, onClose) {

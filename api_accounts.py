@@ -1,45 +1,59 @@
 """Вход, регистрация, свой профиль и свой личный кабинет."""
 
+import json
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import auth
 import users
 import questions
+import security
 import employees as adaptation
 import messaging
 import activitylog
-from deps import _set_session_cookie, current_user, require_setup_done, logged_in
+from deps import _set_session_cookie, _session_token, current_user, require_setup_done, logged_in
 
 router = APIRouter()
 
+# Самостоятельная регистрация (аккаунт ждёт подтверждения администратора). В закрытом
+# контуре, где все доступы выдаёт администратор, её выключают: NEIROMASTER_ALLOW_REGISTRATION=0.
+ALLOW_REGISTRATION = os.environ.get("NEIROMASTER_ALLOW_REGISTRATION", "1").lower() not in ("0", "false", "no")
+
+LOGIN_RATE_PER_MIN = int(os.environ.get("NEIROMASTER_LOGIN_RATE", "120"))
+
+# Пароль длиннее — не пароль, а попытка нагрузить scrypt.
+_PASSWORD = Field(max_length=256)
+_ANSWERS_MAX_BYTES = 32 * 1024
+
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=128)
+    password: str = _PASSWORD
 
 
 class RegisterRequest(BaseModel):
-    username: str
-    password: str
-    full_name: str
-    position: str | None = None
-    contact: str | None = None
+    username: str = Field(max_length=64)
+    password: str = _PASSWORD
+    full_name: str = Field(max_length=300)
+    position: str | None = Field(default=None, max_length=300)
+    contact: str | None = Field(default=None, max_length=300)
 
 
 class CredentialsRequest(BaseModel):
     username: str | None = None     # логин не меняется: выдан один раз из ФИО
-    password: str
+    password: str = _PASSWORD
 
 
 class PasswordChangeRequest(BaseModel):
-    old_password: str
-    new_password: str
+    old_password: str = _PASSWORD
+    new_password: str = _PASSWORD
 
 
 class TestNotification(BaseModel):
-    title: str | None = None
-    body: str | None = None
+    title: str | None = Field(default=None, max_length=300)
+    body: str | None = Field(default=None, max_length=4000)
 
 
 class SickRequest(BaseModel):
@@ -49,7 +63,11 @@ class SickRequest(BaseModel):
 # ---------- Вход, регистрация, свой профиль ----------
 @router.post("/api/login")
 async def api_login(req: LoginRequest, request: Request, response: Response):
-    client = request.client.host if request.client else ""
+    client = security.client_ip(request)
+    # Попыток входа с одного адреса в минуту (перебор по многим логинам сразу); перебор
+    # одного логина отдельно ограничивает лок-аут в auth.login. Щедро: в компании за NAT
+    # вся смена ходит с одного адреса.
+    security.limit(request, "login", LOGIN_RATE_PER_MIN, 60)
     try:
         token, user = auth.login(req.username, req.password, client=client)
     except ValueError as e:
@@ -68,8 +86,11 @@ async def api_login(req: LoginRequest, request: Request, response: Response):
 
 
 @router.post("/api/register")
-async def api_register(req: RegisterRequest):
-    """Самостоятельная регистрация сотрудника."""
+async def api_register(req: RegisterRequest, request: Request):
+    """Самостоятельная регистрация сотрудника (ждёт подтверждения администратора)."""
+    if not ALLOW_REGISTRATION:
+        raise HTTPException(status_code=403, detail="Регистрация отключена — доступ выдаёт администратор")
+    security.limit(request, "register", 5, 3600)
     try:
         user = users.register_employee(req.username, req.password, req.full_name,
                                        position=req.position or "", contact=req.contact or "")
@@ -83,9 +104,16 @@ async def api_register(req: RegisterRequest):
     }
 
 
+@router.get("/api/config")
+async def api_config():
+    """Публичные настройки для страниц входа (без секретов)."""
+    return {"registration": ALLOW_REGISTRATION}
+
+
 @router.post("/api/logout")
 async def api_logout(request: Request, response: Response):
-    token = request.cookies.get(auth.COOKIE_NAME)
+    # Браузер — кука, приложение — Bearer: разлогиниваем тот токен, которым пришли.
+    token = _session_token(request)
     activitylog.log("logout", user=auth.get_session_user(token), request=request)
     auth.logout(token)
     response.delete_cookie(auth.COOKIE_NAME, path="/")
@@ -161,13 +189,15 @@ async def api_mark_message_read(message_id: str, user: dict = Depends(require_se
 
 
 class AnswersRequest(BaseModel):
-    answers: dict = {}
+    answers: dict = Field(default_factory=dict)
 
 
 @router.post("/api/my/messages/{message_id}/answer", dependencies=logged_in)
 async def api_answer_message(message_id: str, req: AnswersRequest,
                              user: dict = Depends(require_setup_done)):
     """Ответы на чек-лист/опрос/тест из инбокса (приложение и кабинет — одно хранилище)."""
+    if len(json.dumps(req.answers, ensure_ascii=False).encode("utf-8")) > _ANSWERS_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Слишком большой ответ")
     if not messaging.save_answers(user["id"], message_id, req.answers):
         raise HTTPException(status_code=404, detail="Сообщение не найдено")
     return {"saved": True}
@@ -194,8 +224,8 @@ async def api_test_notification(req: TestNotification, user: dict = Depends(requ
 
 
 class PushTokenRequest(BaseModel):
-    token: str
-    platform: str | None = None
+    token: str = Field(max_length=4096)
+    platform: str | None = Field(default=None, max_length=32)
 
 
 @router.post("/api/my/push-token", dependencies=logged_in)
@@ -212,5 +242,5 @@ async def api_register_push_token(req: PushTokenRequest, user: dict = Depends(re
 async def api_remove_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
     """Отвязать push-токен (выход из аккаунта / отключение уведомлений на устройстве)."""
     import push
-    push.remove_token((req.token or "").strip())
+    push.remove_token((req.token or "").strip(), user_id=user["id"])
     return {"ok": True}

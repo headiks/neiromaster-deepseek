@@ -2,18 +2,20 @@
 Точка входа приложения: сборка FastAPI из роутеров и разовые действия при старте.
 
 Маршруты живут в api_*.py (страницы, аккаунты, чат, документы, знания, планы, люди),
-общие проверки доступа — в deps.py. Здесь остаётся только то, что касается
-приложения целиком: инициализация схемы БД и векторов, миграции со старых форматов,
-подключение роутеров.
+общие проверки доступа — в deps.py, защитный слой (заголовки, Origin, лимиты) — в
+security.py. Здесь остаётся только то, что касается приложения целиком: схема БД,
+миграции со старых форматов, подключение роутеров.
 
 ВАЖНО: порядок include_router повторяет прежний порядок объявления маршрутов —
 FastAPI выбирает первый подходящий шаблон, и переставлять роутеры нельзя.
 """
 
 import json
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -25,8 +27,11 @@ import stages
 import planner
 import indexing
 import documents
+import docregistry
+import questions
 import messaging
 import activitylog
+import security
 from deps import BASE_DIR, STATIC_DIR
 
 import api_pages
@@ -43,50 +48,50 @@ ROUTERS = (api_pages, api_accounts, api_chat, api_documents,
            api_knowledge, api_plans, api_people, api_activity, api_queue)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Схема БД (PostgreSQL) — до первого обращения к аккаунтам
-    db.init_schema()
-    # Стартовая структура знаний (этапы + смысловые папки) из data/knowledge_seed.json —
-    # только если таблицы пусты. Получена из исходного Excel; дальше ей управляет человек.
+def _step(name: str, fn):
+    """Шаг старта, который не должен ронять приложение: ошибка — в лог, работа дальше."""
+    try:
+        return fn()
+    except Exception as e:
+        print(f"Предупреждение: {name}: {e}")
+        return None
+
+
+def _seed_knowledge():
+    """Стартовая структура знаний (этапы + смысловые папки) — только если таблицы пусты."""
     seed_path = BASE_DIR / "data" / "knowledge_seed.json"
     if not seed_path.exists():
         print(f"ВНИМАНИЕ: нет файла сида {seed_path} — стартовые папки не заведены.")
-    else:
-        try:
-            seed = json.loads(seed_path.read_text(encoding="utf-8"))
-            s = stages.seed_if_empty(seed.get("stages", []))
-            f = folders.seed_if_empty(seed.get("folders", []))
-            print(f"Стартовая структура знаний: засеяно этапов {s}, папок {f} "
-                  f"(в БД сейчас: папок {len(folders.list_folders())}).")
-        except Exception as e:
-            # Не роняем старт из-за сида — логируем, папки можно засеять `python seed_knowledge.py`.
-            print(f"ОШИБКА посева стартовой структуры: {e}")
-    # Векторов и эмбеддингов больше нет: классификация и поиск — через DeepSeek/docpipe.
-    # Qdrant не поднимаем, bge-m3 не грузим.
+        return
+    seed = json.loads(seed_path.read_text(encoding="utf-8"))
+    s = stages.seed_if_empty(seed.get("stages", []))
+    f = folders.seed_if_empty(seed.get("folders", []))
+    if s or f:
+        print(f"Стартовая структура знаний: засеяно этапов {s}, папок {f}.")
 
-    # Пайплайн разметки docpipe: таблицы PG + версия плана из каталога адаптации.
-    try:
-        import docpipe
-        docpipe.init_schema()
-        docpipe.sync_plan_from_catalog()
-    except Exception as e:
-        print(f"Предупреждение: пайплайн разметки docpipe не инициализирован: {e}")
 
-    # Разовые миграции со старых файловых хранилищ в БД
-    try:
-        moved_plans = planner.migrate_plans_from_files()
-        if moved_plans:
-            print(f"Перенесено планов адаптации из файлов в БД: {moved_plans}")
-    except Exception as e:
-        print(f"Предупреждение: миграция планов в БД не выполнена: {e}")
-    moved_json = users.migrate_legacy_json_users()
-    if moved_json:
-        print(f"Перенесено аккаунтов из users.json в БД: {moved_json}")
-    moved = users.migrate_legacy_employees()
-    if moved:
-        print(f"Перенесено записей сотрудников из employees.json в БД: {moved}")
+def _init_docpipe():
+    import docpipe
+    docpipe.init_schema()
+    docpipe.sync_plan_from_catalog()
 
+
+def _migrate_legacy():
+    """Разовые переносы со старых файловых хранилищ в БД (идемпотентно)."""
+    moved = {
+        "планов": planner.migrate_plans_from_files(),
+        "аккаунтов из users.json": users.migrate_legacy_json_users(),
+        "сотрудников из employees.json": users.migrate_legacy_employees(),
+        "документов из registry.json": docregistry.migrate_from_file(),
+        "вопросов из pending_questions.json": questions.migrate_from_file(),
+        "дат выхода к формату ГГГГ-ММ-ДД": users.migrate_start_dates(),
+    }
+    for what, n in moved.items():
+        if n:
+            print(f"Миграция: перенесено/исправлено {what}: {n}")
+
+
+def _announce_owner():
     initial = users.ensure_owner()
     if initial:
         print("=" * 70)
@@ -94,85 +99,77 @@ async def lifespan(app: FastAPI):
         print(f"  Логин:  {initial['username']}")
         print(f"  Пароль: {initial['password']}")
         print(f"  Дубль записан в {users.INITIAL_CREDENTIALS_PATH}")
-        print("  При первом входе система попросит задать свои логин и пароль.")
+        print("  При первом входе система попросит задать свой пароль.")
         print("=" * 70)
 
-    # Единый реестр метаданных документов (PostgreSQL): дедуп по хэшу + экран
-    # «этапы ↔ документы». Таблица создаётся, если её ещё нет.
-    try:
-        documents.init()
-    except Exception as e:
-        print(f"Предупреждение: реестр документов не инициализирован: {e}")
 
-    # Самоочистка «призрачных» источников: docpipe-документы, которых уже нет в реестре
-    # базы знаний (удалены до появления каскадного удаления, при рассинхроне имени или
-    # ручной чисткой файлов), продолжали бы цитироваться в генерации/Q&A. Сносим их при
-    # старте, сверяясь с реестром (защита от вайпа при пустом реестре — внутри prune_orphans).
-    try:
-        import docpipe
-        import docregistry
-        # keep = имена из ОБОИХ источников правды реестра (файловый registry.json + таблица
-        # document_meta), чтобы не снести документ, известный одному, но не другому.
-        keep = {e.get("filename") for e in docregistry.list_documents()}
-        try:
-            keep |= {d.get("filename") for d in documents.list_meta()}
-        except Exception:
-            pass
-        removed = docpipe.prune_orphans(keep)
-        if removed:
-            print(f"docpipe: удалено осиротевших документов (нет в реестре): {removed}")
-    except Exception as e:
-        print(f"Предупреждение: очистка осиротевших docpipe-меток не выполнена: {e}")
+def _prune_orphans():
+    """Самоочистка «призрачных» источников: docpipe-документы, которых уже нет в реестре,
+    продолжали бы цитироваться в генерации и ответах. Защита от вайпа при пустом реестре —
+    внутри prune_orphans."""
+    import docpipe
+    keep = {e.get("filename") for e in docregistry.list_documents()}
+    keep |= {d.get("filename") for d in documents.list_meta()}
+    removed = docpipe.prune_orphans(keep)
+    if removed:
+        print(f"docpipe: удалено осиротевших документов (нет в реестре): {removed}")
 
-    # Возврат зависших задач в очередь. При Redis это делает ОДИН worker-процесс
-    # (worker.py, под общим замком) — иначе каждый web-воркер поставил бы дубли.
-    # Без Redis (один процесс) возобновляем здесь, как раньше.
+
+def _requeue_without_redis():
+    """Возврат зависших задач в очередь. При Redis это делает ОДИН worker-процесс
+    (worker.py, под общим замком) — иначе каждый web-воркер поставил бы дубли."""
     from redis_conn import redis_available
-    if not redis_available():
-        try:
-            indexing.requeue_stranded()
-        except Exception as e:
-            print(f"Предупреждение: не удалось вернуть зависшие документы в очередь: {e}")
-        try:
-            import docpipe
-            docpipe.requeue_stranded()
-        except Exception as e:
-            print(f"Предупреждение: не удалось возобновить разметку docpipe: {e}")
+    if redis_available():
+        return
+    import docpipe
+    _step("возврат зависших документов в очередь", indexing.requeue_stranded)
+    _step("возобновление разметки docpipe", docpipe.requeue_stranded)
 
-    # Автоназначение активного общего плана сотрудникам без плана (напр. импортированным
-    # из штатки до выбора плана). Ручные назначения не трогаются; без даты выхода — неактивно.
-    try:
-        import autoplan
-        assigned = autoplan.assign_unassigned()
-        if assigned:
-            print(f"autoplan: назначен активный общий план {assigned} сотрудникам без плана")
-    except Exception as e:
-        print(f"Предупреждение: автоназначение плана не выполнено: {e}")
 
-    # Фоновый планировщик доставки сообщений плана по расписанию (инбокс сотрудника).
-    # Отключается NEIROMASTER_SCHEDULER=0 (напр. когда доставку гоняют внешним cron).
+def _autoassign_plan():
+    """Активный общий план — сотрудникам без плана (ручные назначения не трогаются)."""
+    import autoplan
+    assigned = autoplan.assign_unassigned()
+    if assigned:
+        print(f"autoplan: назначен активный общий план {assigned} сотрудникам без плана")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_schema()                         # до первого обращения к аккаунтам
+    docregistry.init()
+    questions.init()
+    _step("реестр документов", documents.init)
+    _step("посев структуры знаний", _seed_knowledge)
+    _step("пайплайн разметки docpipe", _init_docpipe)
+    _step("миграция старых данных", _migrate_legacy)
+    _announce_owner()
+    _step("очистка осиротевших меток docpipe", _prune_orphans)
+    _requeue_without_redis()
+    _step("автоназначение плана", _autoassign_plan)
+    # Фоновый планировщик доставки сообщений плана. NEIROMASTER_SCHEDULER=0 — выключить
+    # (когда доставку гоняют внешним cron: python dispatch_messages.py).
     messaging.start_scheduler()
     yield
 
 
 # docs_url/redoc_url/openapi_url=None: служебные страницы FastAPI (Swagger и схема)
 # открыты анониму и раскрывают полный список ручек — на проде не нужны.
-app = FastAPI(title="RAG Assistant API", lifespan=lifespan,
+app = FastAPI(title="НейроМастер", lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 
 # CORS — для веб-сборки мобильного приложения (react-native-web), которая ходит к API
 # с другого origin. Нативные iOS/Android не подчиняются CORS. Приложение авторизуется
-# по Bearer-токену (не cookie), поэтому allow_credentials не нужен; список origin —
-# из NEIROMASTER_CORS_ORIGINS (через запятую), плюс локальные порты Expo для разработки.
-import os as _os
-from fastapi.middleware.cors import CORSMiddleware
-_cors = [o.strip() for o in _os.environ.get("NEIROMASTER_CORS_ORIGINS", "").split(",") if o.strip()]
+# по Bearer-токену (не cookie), поэтому allow_credentials не нужен (кука браузера на
+# чужой origin не уходит); список origin — из NEIROMASTER_CORS_ORIGINS (через запятую),
+# плюс локальные порты Expo для разработки.
+_cors = [o.strip() for o in os.environ.get("NEIROMASTER_CORS_ORIGINS", "").split(",") if o.strip()]
 _cors += ["http://localhost:8081", "http://localhost:19006", "http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
     allow_credentials=False,
 )
 
@@ -196,9 +193,24 @@ async def log_page_views(request, call_next):
     return response
 
 
+# Заголовки безопасности и проверка Origin — самым внешним слоем (добавлен последним).
+security.install(app, cookie_name=auth.COOKIE_NAME, secure=auth.COOKIE_SECURE)
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """Живость для балансировщика и мониторинга: БД отвечает, Redis — если настроен."""
+    from redis_conn import get_redis
+    db.query("SELECT 1 AS ok", (), "one")
+    r = get_redis()
+    return {"ok": True, "db": True, "redis": bool(r is not None and r.ping())}
+
+
 for _module in ROUTERS:
     app.include_router(_module.router)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Разработка: python app.py. На проде — gunicorn (см. install.sh), за HTTPS-прокси.
+    uvicorn.run(app, host=os.environ.get("NEIROMASTER_HOST", "127.0.0.1"),
+                port=int(os.environ.get("NEIROMASTER_PORT", "8000")))

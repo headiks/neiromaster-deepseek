@@ -3,7 +3,7 @@
 import json
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import Response
 
 import db
@@ -19,12 +19,16 @@ router = APIRouter()
 
 # ---------- Конструктор плана адаптации ----------
 class PlanRequest(BaseModel):
-    title: str | None = None
-    role: str | None = None
-    description: str | None = None
-    start_date: str | None = None
-    timezone: str | None = None
-    stages: list = []
+    title: str | None = Field(default=None, max_length=300)
+    role: str | None = Field(default=None, max_length=300)
+    description: str | None = Field(default=None, max_length=4000)
+    start_date: str | None = Field(default=None, max_length=32)
+    timezone: str | None = Field(default=None, max_length=64)
+    group_daily: bool = False        # сообщения одного дня — одной сессией
+    stages: list = Field(default_factory=list, max_length=50)
+    # updated_at плана, который правил администратор: не совпал — план уже изменил кто-то
+    # другой, сохранение вернёт 409 (оптимистичная блокировка).
+    expected_updated_at: str | None = Field(default=None, max_length=64)
 
 
 @router.get("/catalog", dependencies=admin_only)
@@ -56,7 +60,7 @@ async def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
 
 @router.post("/plans")
 async def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
-    plan = planner.assign_topics(planner.normalize_plan(req.model_dump()))
+    plan = planner.assign_topics(planner.normalize_plan(req.model_dump(exclude={"expected_updated_at"})))
     planner.save_plan(plan)
     activitylog.log("action", user=user, path="/plans",
                     detail={"action": "plan_create", "plan_id": plan.get("id"),
@@ -64,12 +68,14 @@ async def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
     return plan
 
 
-@router.post("/plans/template", dependencies=admin_only)
-async def create_full_template(title: str | None = None):
-    """Создаёт полный универсальный шаблон плана из всего каталога (все этапы и подэтапы),
+@router.post("/plans/template")
+async def create_full_template(title: str | None = None, user: dict = Depends(require_admin)):
+    """Стандартный план из всего каталога (все этапы и подэтапы, разнесены по дням этапа),
     единый для всех профессий. Дальше редактируется как обычный план."""
-    plan = planner.build_full_template(title or "Универсальный план адаптации")
+    plan = planner.build_full_template((title or "")[:300])
     planner.save_plan(plan)
+    activitylog.log("action", user=user, path="/plans/template",
+                    detail={"action": "plan_template", "plan_id": plan["plan_id"]})
     return plan
 
 
@@ -95,23 +101,31 @@ async def get_plan(plan_id: str):
     return {"plan": plan, "schedule_preview": planner.resolve_schedule(plan)}
 
 
-@router.put("/plans/{plan_id}", dependencies=admin_only)
-async def update_plan(plan_id: str, req: PlanRequest):
+@router.put("/plans/{plan_id}")
+async def update_plan(plan_id: str, req: PlanRequest, user: dict = Depends(require_admin)):
     existing = planner.load_plan(plan_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="План не найден")
-    payload = req.model_dump()
+    try:
+        planner.check_not_modified(existing, req.expected_updated_at)
+    except planner.PlanConflict as e:
+        raise HTTPException(status_code=409, detail={
+            "message": "План уже изменил другой администратор. Обновите план, чтобы не затереть его правки.",
+            "updated_at": e.current.get("updated_at")})
+    payload = req.model_dump(exclude={"expected_updated_at"})
     payload["created_at"] = existing.get("created_at")
     plan = planner.assign_topics(planner.normalize_plan(payload, plan_id=plan_id), prev=existing)
     planner.save_plan(plan)
     # Время/день/длительность могли измениться -> ещё не отправленные сообщения всех
     # сотрудников с этим планом пересчитываются под новое расписание (фоном).
     _bg(messaging.refresh_plan, plan_id)
+    activitylog.log("action", user=user, path=f"/plans/{plan_id}",
+                    detail={"action": "plan_update", "plan_id": plan_id})
     return plan
 
 
-@router.delete("/plans/{plan_id}", dependencies=admin_only)
-async def remove_plan(plan_id: str):
+@router.delete("/plans/{plan_id}")
+async def remove_plan(plan_id: str, user: dict = Depends(require_admin)):
     """Удаление плана: его сообщения (plan_schedules) уходят каскадом, у сотрудников
     назначение снимается, активный общий план — сбрасывается."""
     if not planner.delete_plan(plan_id):
@@ -120,13 +134,15 @@ async def remove_plan(plan_id: str):
     import autoplan
     if autoplan.get_default_plan_id() == plan_id:
         autoplan.set_default_plan_id("")
+    activitylog.log("action", user=user, path=f"/plans/{plan_id}",
+                    detail={"action": "plan_delete", "plan_id": plan_id})
     return {"plan_id": plan_id, "deleted": True}
 
 
 @router.post("/plans/{plan_id}/duplicate", dependencies=admin_only)
 async def duplicate_plan(plan_id: str, title: str | None = None):
     """Копия плана под смежную должность — дальше редактируется как обычно."""
-    plan = planner.duplicate_plan(plan_id, title)
+    plan = planner.duplicate_plan(plan_id, (title or "")[:300] or None)
     if plan is None:
         raise HTTPException(status_code=404, detail="План не найден")
     return plan
@@ -249,10 +265,13 @@ async def cancel_generation(job_id: str):
 
 
 @router.get("/plans/{plan_id}/schedule", dependencies=admin_only)
-async def get_schedule(plan_id: str, profession: str | None = None):
-    """Расписание плана. profession — показать вариант под конкретную должность (иначе общий)."""
+async def get_schedule(plan_id: str, profession: str | None = None, missing_ok: bool = False):
+    """Расписание плана. profession — показать вариант под конкретную должность (иначе общий).
+    missing_ok — сообщений ещё нет: 200 с null вместо 404 (админке это штатный случай)."""
     schedule = planner.load_schedule(plan_id, profession or "")
     if schedule is None:
+        if missing_ok:
+            return None
         raise HTTPException(status_code=404, detail="Расписание ещё не сгенерировано")
     return schedule
 
@@ -298,8 +317,8 @@ def regenerate_message(plan_id: str, message_id: str, profession: str | None = N
 
 
 class MessageEdit(BaseModel):
-    text: str
-    profession: str | None = None
+    text: str = Field(max_length=20000)
+    profession: str | None = Field(default=None, max_length=300)
 
 
 @router.put("/plans/{plan_id}/messages/{message_id}", dependencies=admin_only)
@@ -340,5 +359,6 @@ async def export_plan(plan_id: str, name: str, profession: str | None = None):
                    else planner.render_schedule_md(schedule))
 
     media_type, _ = EXPORT_FILES[name]
+    safe_id = "".join(c for c in plan_id if c.isascii() and (c.isalnum() or c in "-_"))[:64] or "plan"
     return Response(content=content, media_type=media_type,
-                    headers={"Content-Disposition": f'attachment; filename="{plan_id}_{name}"'})
+                    headers={"Content-Disposition": f'attachment; filename="{safe_id}_{name}"'})

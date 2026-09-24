@@ -1,7 +1,9 @@
 """База знаний: загрузка и разбор документов, смысловые папки, хранилище оригиналов."""
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 import config
@@ -15,6 +17,17 @@ from config import MAX_UPLOAD_BYTES
 from deps import _bg, require_admin, admin_only, owner_only, can_see_doc, visible_documents, ensure_doc_access
 
 router = APIRouter()
+
+
+def _require_known(filename: str) -> dict:
+    """Документ из реестра или 404. Имя из URL идёт в пути к файлам — принимаем только то,
+    что система сама сохранила (без «..» и прочих обходов каталога)."""
+    if filename in (".", "..") or Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    doc = next((d for d in indexing.list_documents() if d.get("filename") == filename), None)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    return doc
 
 
 # ---------- Управление документами ----------
@@ -46,19 +59,24 @@ async def get_documents_board(plan_id: str | None = None, user: dict = Depends(r
 
 @router.get("/documents/table")
 async def get_documents_table(user: dict = Depends(require_admin)):
-    """Табличные данные по обработанным файлам. Папки/описание — из реестра метаданных,
-    привязка к подэтапам — по LLM-разметке docpipe (не по косинусу), как и на доске."""
+    """Табличные данные по документам: строки — из реестра (то, что видит этот
+    администратор), привязка к подэтапам — по LLM-разметке docpipe, как и на доске."""
     import docpipe
-    allowed = {d["filename"] for d in visible_documents(user)}
-    _, assigned = docpipe.document_assignments(filenames=allowed)
+    visible = visible_documents(user)
+    _, assigned = docpipe.document_assignments(filenames={d["filename"] for d in visible})
     subs_by_doc = {d["filename"]: d["substages"] for d in assigned}
     rows = []
-    for d in documents.list_meta():
-        if not can_see_doc(user, d):
-            continue
-        row = dict(d)
-        row["substages"] = subs_by_doc.get(d["filename"], [])   # LLM-привязка вместо косинусной
-        rows.append(row)
+    for d in visible:
+        subs = subs_by_doc.get(d["filename"], [])
+        rows.append({
+            "filename": d["filename"], "sha256": d.get("sha256") or "",
+            "mime": Path(d["filename"]).suffix.lstrip(".").lower(),
+            "size_bytes": d.get("size_bytes"), "status": d.get("status"),
+            "uploaded_at": d.get("uploaded_at"), "uploaded_by": d.get("uploaded_by_name") or "",
+            "summary": d.get("summary") or "", "keywords": [], "embedding_dim": None,
+            "folders": d.get("folders") or [], "substages": subs,
+            "stage_ids": sorted({s["substage_id"].split(".")[0] for s in subs if s.get("substage_id")}),
+        })
     return {"documents": rows}
 
 
@@ -77,26 +95,29 @@ async def get_document_substage_map(filename: str, user: dict = Depends(require_
 
 @router.post("/documents/{filename}/reindex")
 async def reindex_document(filename: str, user: dict = Depends(require_admin)):
-    """Переанализ документа (без повторного docling): обновляет папки/этапы по чанкам
-    и синхронизирует запись в реестре метаданных."""
+    """Переразметка документа (docling-кэш переиспользуется) — синхронно. Сообщения планов,
+    опиравшиеся на документ, обновятся фоном (только затронутые подэтапы)."""
+    _require_known(filename)
     ensure_doc_access(user, filename, write=True)
-    # reanalyze_document сам синхронизирует document_meta (доску «этапы ↔ документы»),
-    # поэтому отдельной досинхронизации здесь больше нет — один путь, без дрейфа.
     result = indexing.reanalyze_document(filename)
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
+    _bg(indexing.docs_changed)
     return result
 
 
 @router.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...), mode: str = "",
+async def upload_document(file: UploadFile = File(...), mode: str = "", confidential: bool = False,
                           user: dict = Depends(require_admin)):
     """
-    Загрузка нового регламента. Файл сохраняется в data/documents/ и ставится
-    в фоновую очередь на индексацию (docling -> чанкинг -> эмбеддинги -> Qdrant).
+    Загрузка нового регламента. Файл сохраняется в data/documents/ (+ S3) и ставится
+    в фоновую очередь: docling-разбор -> разметка секций DeepSeek по этапам/подэтапам.
     Ответ приходит сразу (202) с идентификатором задачи; прогресс —
     через GET /documents/jobs/{job_id}. Тяжёлый разбор PDF не держит запрос.
+    mode — что делать, если документ с таким именем уже есть: replace / separate.
     """
+    if mode not in ("", "replace", "separate"):
+        raise HTTPException(status_code=400, detail="mode: replace или separate")
     # Читаем не больше лимита +1 байт: иначе гигабайтный файл целиком буферизуется в
     # RAM ещё до проверки размера (потенциальный OOM). Лишний байт нужен, чтобы отличить
     # «ровно лимит» от «больше лимита».
@@ -105,11 +126,8 @@ async def upload_document(file: UploadFile = File(...), mode: str = "",
         raise HTTPException(status_code=413,
                             detail=f"Файл превышает лимит {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ")
 
-    # Дедупликация по содержимому (sha256): тот же файл не грузим и не индексируем заново.
-    try:
-        existing = documents.find_by_hash(documents.hash_bytes(content))
-    except Exception:
-        existing = None   # реестр недоступен — не блокируем загрузку
+    # Дедупликация по содержимому (SHA-256): тот же файл не грузим и не индексируем заново.
+    existing = indexing.find_duplicate(content)
     if existing:
         # Тот же файл уже обработан (кем угодно, в т.ч. другим админом) — повторно не
         # разбираем и не платим за обработку.
@@ -142,16 +160,23 @@ async def upload_document(file: UploadFile = File(...), mode: str = "",
     try:
         # uploader -> владелец документа: задаёт путь <суперадмин>/<админ>/<файл>
         # в S3 и определяет, кому документ будет виден.
-        filepath = indexing.save_uploaded_file(upload_name, content, uploader=user)
+        filepath = indexing.save_uploaded_file(upload_name, content, uploader=user,
+                                               confidential=confidential)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if confidential:
+        activitylog.log("action", user=user, path="/documents/upload",
+                        detail={"action": "document_upload_confidential", "filename": filepath.name})
+        return JSONResponse(status_code=201, content={
+            "filename": filepath.name, "status": "confidential",
+            "message": "Документ сохранён и в ИИ не отправляется"})
 
     # Индексация = docling-разбор + классификация/разметка docpipe (этапы/подэтапы,
     # метки в Postgres). Векторов/эмбеддингов нет. Разметку делает сам index_document
     # (через docpipe.ingest), отдельная постановка в очередь docpipe больше не нужна.
     job = indexing.enqueue_document(filepath)
     activitylog.log("action", user=user, path="/documents/upload",
-                    detail={"action": "document_upload", "filename": file.filename})
+                    detail={"action": "document_upload", "filename": filepath.name})
     return JSONResponse(status_code=202, content=job)
 
 
@@ -220,7 +245,7 @@ async def get_document_labels(filename: str, user: dict = Depends(require_admin)
 
 @router.delete("/documents/{filename}")
 async def remove_document(filename: str, user: dict = Depends(require_admin)):
-    """Удаляет документ: векторы из Qdrant, оригинал из data/documents, кэш docling."""
+    """Удаляет документ: разметку docpipe (PostgreSQL), оригинал (диск + S3), кэш docling."""
     ensure_doc_access(user, filename, write=True)
     existed = indexing.delete_document(filename)
     if not existed:
@@ -230,6 +255,8 @@ async def remove_document(filename: str, user: dict = Depends(require_admin)):
     except Exception:
         pass
     _bg(indexing.docs_changed)   # тексты, опиравшиеся на документ, обновятся (только они)
+    activitylog.log("action", user=user, path=f"/documents/{filename}",
+                    detail={"action": "document_delete", "filename": filename})
     return {"filename": filename, "deleted": True}
 
 
@@ -291,7 +318,7 @@ def delete_folder(folder_id: str):
 
 # ---------- Повторный анализ и уточнения по документам (ТЗ §8, §16, §26) ----------
 class ClarifyRequest(BaseModel):
-    clarification: str
+    clarification: str = Field(max_length=4000)
 
 
 @router.post("/documents/reanalyze", dependencies=owner_only)
@@ -311,6 +338,7 @@ def reanalyze_documents():
 def reanalyze_one(filename: str, user: dict = Depends(require_admin)):
     """Переанализ одного документа — фоново; статус (reanalyzing -> indexed/error)
     виден в списке документов рядом с этим документом."""
+    _require_known(filename)
     ensure_doc_access(user, filename, write=True)
     import jobs
     jobs.enqueue_reanalyze_document(filename)
@@ -319,15 +347,38 @@ def reanalyze_one(filename: str, user: dict = Depends(require_admin)):
 
 @router.post("/documents/{filename}/reprocess")
 def reprocess_one(filename: str, user: dict = Depends(require_admin)):
-    """Полный повторный разбор документа с нуля (docling → чанки → эмбеддинги) — для
-    файлов со статусом error/uploaded, которым обычный переанализ не помогает (чанков
-    в Qdrant ещё/уже нет). Ставит файл в фоновую очередь индексации."""
+    """Полный повторный разбор документа с нуля (docling -> разметка docpipe) — для файлов
+    со статусом error/uploaded, которым обычный переанализ не помогает. Ставит файл в
+    фоновую очередь индексации."""
+    _require_known(filename)
     ensure_doc_access(user, filename, write=True)
+    if indexing.is_confidential(filename):
+        raise HTTPException(status_code=400, detail="Документ помечен «не отправлять в ИИ»")
     fp = indexing.DOCS_DIR / filename
     if not fp.exists():
         raise HTTPException(status_code=404, detail="Файл-оригинал не найден в хранилище")
     job = indexing.enqueue_document(fp)
     return {"status": "queued", "job": job}
+
+
+class ConfidentialRequest(BaseModel):
+    confidential: bool
+
+
+@router.post("/documents/{filename}/confidential")
+def set_document_confidential(filename: str, req: ConfidentialRequest, user: dict = Depends(require_admin)):
+    """Чувствительный документ (положение об оплате труда и т.п.): «не отправлять в ИИ».
+    Включение удаляет разметку — фрагменты документа больше не уходят в модель и не попадают
+    в сообщения и ответы; сообщения, которые на него опирались, обновятся без него.
+    Выключение отправляет документ на обычную обработку."""
+    _require_known(filename)
+    ensure_doc_access(user, filename, write=True)
+    entry = indexing.set_confidential(filename, req.confidential)
+    if req.confidential:
+        _bg(indexing.docs_changed)
+    activitylog.log("action", user=user, path=f"/documents/{filename}/confidential",
+                    detail={"action": "document_confidential", "filename": filename, "on": req.confidential})
+    return entry
 
 
 @router.post("/documents/{filename}/clarify")

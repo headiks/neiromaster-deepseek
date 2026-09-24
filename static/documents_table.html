@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta charset="utf-8">
 <title>Реестр документов — НейроМастер</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -117,7 +118,7 @@ var COLS=[
 ];
 var DATA=[],view=[],sortK='uploaded_at',sortDir=-1,statusFilter='',search='';
 
-function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function fmtSize(v){if(!v)return '—';if(v<1024)return v+' Б';if(v<1048576)return (v/1024).toFixed(1)+' КБ';return (v/1048576).toFixed(1)+' МБ';}
 function statusPill(v){var s=esc(v||'—');return '<span class="pill '+esc(v||'')+'">'+s+'</span>';}
 function tags(v){if(!v||!v.length)return '<span class="dash">—</span>';return '<div class="tags">'+v.slice(0,4).map(function(x){return '<span class="tag">'+esc(x)+'</span>';}).join('')+(v.length>4?'<span class="tag">+'+(v.length-4)+'</span>':'')+'</div>';}

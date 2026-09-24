@@ -7,11 +7,11 @@ HTML-страницы приложения. Логики нет — только
 """
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 import auth
 import users
-from deps import _read_static, page_for_admin
+from deps import STATIC_DIR, _read_static, page_for_admin
 
 router = APIRouter()
 
@@ -114,3 +114,10 @@ async def message_test_page(request: Request):
     """Настраиваемые тестовые сообщения пользователю (все типы). Ссылок на страницу нет —
     открывается только вводом адреса."""
     return page_for_admin(request, "message_test.html")
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Браузеры просят /favicon.ico сами — отдаём логотип, а не 404 в консоли."""
+    return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=86400"})

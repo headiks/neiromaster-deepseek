@@ -21,6 +21,7 @@
 """
 
 import os
+import re
 import json
 import math
 import hashlib
@@ -56,9 +57,6 @@ _GEN_WORKERS = int(os.environ.get("NEIROMASTER_GEN_WORKERS", "6"))
 
 UNIT_DAYS = {"hours": 0, "days": 1, "weeks": 7, "months": 30}
 KIND_IDS = {"message", "checklist", "survey", "quiz", "reminder", "system_check", "handover"}
-
-_plans_lock = threading.Lock()
-
 
 # ---------- Каталог этапов ----------
 def load_catalog() -> dict:
@@ -124,28 +122,39 @@ def _focus_block(stage_cat, sub_cat) -> str:
     return "\n".join(parts) + "\n"
 
 
-def build_full_template(title: str = "Универсальный план адаптации") -> dict:
-    """Полный универсальный шаблон плана из ВСЕГО каталога: все этапы и все подэтапы с их
-    описаниями, длительностями и временем. Профессионально-независимый — дальше человек
-    редактирует под задачу. Возвращает нормализованный план (без сохранения)."""
+def spread_days(count: int, span: int) -> list:
+    """Дни (1..span) для count подэтапов, равномерно по этапу. Раньше все подэтапы шаблона
+    ставились на первый день этапа: до выхода сотруднику приходило 12 сообщений за день."""
+    if span <= 1 or count <= 0:
+        return [1] * max(count, 0)
+    return [1 + (i * span) // count for i in range(count)]
+
+
+def build_full_template(title: str = "") -> dict:
+    """Стандартный план (≈3 месяца) из ВСЕГО каталога: все этапы и подэтапы с описаниями,
+    длительностями и временем, подэтапы разнесены по дням этапа. Профессионально-независимый —
+    специфику даёт база знаний при генерации. Возвращает нормализованный план (без сохранения)."""
     cat = load_catalog()
     raw = {
-        "title": title,
+        "title": (title or "").strip() or "Стандартный план адаптации",
         "role": "",
-        "description": "Полный универсальный шаблон адаптации: все этапы и подэтапы каталога. "
+        "description": "Стандартный план адаптации: все этапы и подэтапы каталога. "
                        "Единый для всех профессий — специфику даёт база знаний при генерации. Редактируйте под задачу.",
         "stages": [],
     }
     for st in cat.get("stages") or []:
+        duration = dict(st.get("default_duration") or {"value": 1, "unit": "days"})
+        templates = st.get("substage_templates") or []
+        days = spread_days(len(templates), stage_span_days(duration))
         raw_stage = {
             "catalog_id": st["id"],
             "title": st.get("title", ""),
             "description": st.get("description", ""),
             "anchor": st.get("anchor", "from_start"),
-            "duration": st.get("default_duration") or {"value": 1, "unit": "days"},
+            "duration": duration,
             "substages": [],
         }
-        for tpl in st.get("substage_templates") or []:
+        for tpl, day in zip(templates, days):
             raw_stage["substages"].append({
                 "catalog_id": tpl["id"],
                 "title": tpl.get("title", ""),
@@ -153,7 +162,7 @@ def build_full_template(title: str = "Универсальный план ада
                 "brief": tpl.get("brief", ""),
                 "tags": tpl.get("tags") or [],
                 "source": "template",
-                "schedule": {"day": 1, "time": tpl.get("default_time", "09:00")},
+                "schedule": {"day": day, "time": tpl.get("default_time", "09:00")},
             })
         raw["stages"].append(raw_stage)
     return normalize_plan(raw)
@@ -268,9 +277,29 @@ def resolve_schedule(plan: dict) -> list:
                 },
             })
 
+    if plan.get("group_daily"):
+        _group_by_day(items, start)
     items.sort(key=lambda i: (i["schedule"]["offset_days"], i["schedule"]["time"],
                              i["stage"]["order"], i["substage"]["order"]))
     return items
+
+
+def _group_by_day(items: list, start: Optional[date]):
+    """«Одна сессия в день»: все сообщения дня приходят вместе, во время первого из них,
+    одним уведомлением — вместо россыпи через каждые 1–2 часа. Порядок внутри дня прежний."""
+    first = {}
+    for it in items:
+        sch = it["schedule"]
+        day = sch["offset_days"]
+        first[day] = min(first.get(day, sch["time"]), sch["time"])
+    for it in items:
+        sch = it["schedule"]
+        sch["time"] = first[sch["offset_days"]]
+        if start:
+            hh, mm = _parse_time(sch["time"])
+            sch["send_at"] = datetime.combine(start + timedelta(days=sch["offset_days"]),
+                                              datetime.min.time()).replace(hour=hh, minute=mm) \
+                .isoformat(timespec="minutes")
 
 
 def _parse_time(value: str) -> tuple:
@@ -291,42 +320,71 @@ def _slug(value: str, fallback: str) -> str:
     return slug[:40] or fallback
 
 
+# Идентификаторы этапов/подэтапов приходят от клиента и дальше попадают в URL и разметку
+# админки — только буквы, цифры, «_» и «-» (иначе через id плана можно внедрить скрипт).
+_ID_RE = re.compile(r"[^\w-]+")
+# Потолок длительности этапа по единицам: защита от «этапа на миллиард дней» (переполнение дат).
+MAX_DURATION = {"hours": 24 * 30, "days": 730, "weeks": 104, "months": 24}
+MAX_STAGES = 50
+MAX_SUBSTAGES = 200
+TEXT_MAX = 4000
+
+
+def _safe_id(value) -> Optional[str]:
+    """Допустимый id возвращается как есть (байт в байт — иначе сгенерированные тексты потеряли
+    бы привязку к подэтапу), недопустимые символы заменяются на «_»."""
+    text = _ID_RE.sub("_", str(value or ""))[:120]
+    return text if any(c.isalnum() for c in text) else None
+
+
+def _catalog_ref(value) -> Optional[str]:
+    return _safe_id(value) if value else None
+
+
+def _clip(value, limit: int = 300) -> str:
+    return str(value or "").strip()[:limit]
+
+
 def normalize_plan(raw: dict, plan_id: Optional[str] = None) -> dict:
     """Приводит присланный фронтендом план к каноническому виду и чинит очевидное."""
     now = datetime.now().isoformat(timespec="seconds")
     plan = {
         "schema_version": SCHEMA_VERSION,
-        "plan_id": plan_id or raw.get("plan_id") or str(uuid.uuid4()),
-        "title": (raw.get("title") or "План адаптации").strip(),
-        "role": (raw.get("role") or "").strip(),
-        "description": (raw.get("description") or "").strip(),
+        "plan_id": plan_id or _safe_id(raw.get("plan_id")) or str(uuid.uuid4()),
+        "title": _clip(raw.get("title")) or "План адаптации",
+        "role": _clip(raw.get("role")),
+        "description": _clip(raw.get("description"), TEXT_MAX),
         "start_date": str(raw.get("start_date") or "")[:10] or None,
-        "timezone": raw.get("timezone") or DEFAULT_TIMEZONE,
+        "timezone": raw.get("timezone") if _valid_tz(raw.get("timezone")) else DEFAULT_TIMEZONE,
+        # Все сообщения одного дня — одной «сессией» (в одно время, одним уведомлением).
+        "group_daily": bool(raw.get("group_daily")),
         "created_at": raw.get("created_at") or now,
         "updated_at": now,
         "stages": [],
     }
 
     used_stage_ids = set()
-    for s_index, raw_stage in enumerate(raw.get("stages") or [], start=1):
-        stage_id = raw_stage.get("id") or f"st{s_index}_{_slug(raw_stage.get('catalog_id') or raw_stage.get('title'), f'stage{s_index}')}"
+    for s_index, raw_stage in enumerate((raw.get("stages") or [])[:MAX_STAGES], start=1):
+        if not isinstance(raw_stage, dict):
+            continue
+        stage_id = _safe_id(raw_stage.get("id")) or f"st{s_index}_{_slug(raw_stage.get('catalog_id') or raw_stage.get('title'), f'stage{s_index}')}"
         while stage_id in used_stage_ids:
             stage_id = f"{stage_id}_{s_index}"
         used_stage_ids.add(stage_id)
 
-        duration = raw_stage.get("duration") or {}
+        duration = raw_stage.get("duration") if isinstance(raw_stage.get("duration"), dict) else {}
         unit = duration.get("unit") if duration.get("unit") in UNIT_DAYS else "days"
         try:
-            value = max(1, int(duration.get("value") or 1))
+            value = max(1, min(MAX_DURATION[unit], int(duration.get("value") or 1)))
         except (TypeError, ValueError):
             value = 1
 
         stage = {
             "id": stage_id,
-            "catalog_id": raw_stage.get("catalog_id"),
+            "catalog_id": _catalog_ref(raw_stage.get("catalog_id")),
             "order": s_index,
-            "title": (raw_stage.get("title") or "").strip() or f"Этап {s_index}",
-            "description": (raw_stage.get("description") or "").strip(),
+            "title": _clip(raw_stage.get("title")) or f"Этап {s_index}",
+            "description": _clip(raw_stage.get("description"), TEXT_MAX),
             "anchor": "before_start" if raw_stage.get("anchor") == "before_start" else "from_start",
             "duration": {"value": value, "unit": unit},
             "substages": [],
@@ -336,8 +394,9 @@ def normalize_plan(raw: dict, plan_id: Optional[str] = None) -> dict:
         day_choice = stage_day_choice(stage["duration"])
 
         used_sub_ids = set()
-        for sub_index, raw_sub in enumerate(raw_stage.get("substages") or [], start=1):
-            sub_id = raw_sub.get("id") or f"s{sub_index}_{_slug(raw_sub.get('catalog_id') or raw_sub.get('title'), f'sub{sub_index}')}"
+        raw_subs = [x for x in (raw_stage.get("substages") or [])[:MAX_SUBSTAGES] if isinstance(x, dict)]
+        for sub_index, raw_sub in enumerate(raw_subs, start=1):
+            sub_id = _safe_id(raw_sub.get("id")) or f"s{sub_index}_{_slug(raw_sub.get('catalog_id') or raw_sub.get('title'), f'sub{sub_index}')}"
             while sub_id in used_sub_ids:
                 sub_id = f"{sub_id}_{sub_index}"
             used_sub_ids.add(sub_id)
@@ -353,23 +412,49 @@ def normalize_plan(raw: dict, plan_id: Optional[str] = None) -> dict:
             kind = raw_sub.get("kind") if raw_sub.get("kind") in KIND_IDS else "message"
             stage["substages"].append({
                 "id": sub_id,
-                "catalog_id": raw_sub.get("catalog_id"),
+                "catalog_id": _catalog_ref(raw_sub.get("catalog_id")),
                 "order": sub_index,
-                "title": (raw_sub.get("title") or "").strip() or f"Подэтап {sub_index}",
+                "title": _clip(raw_sub.get("title")) or f"Подэтап {sub_index}",
                 "kind": kind,
-                "brief": (raw_sub.get("brief") or "").strip(),
+                "brief": _clip(raw_sub.get("brief"), TEXT_MAX),
                 "source": "manual" if raw_sub.get("source") == "manual" else "template",
-                "tags": [t for t in (raw_sub.get("tags") or []) if isinstance(t, str)],
+                "tags": [t[:100] for t in (raw_sub.get("tags") or []) if isinstance(t, str)][:30],
                 "schedule": {"day": day, "time": f"{hh:02d}:{mm:02d}"},
                 # Свой подэтап (без catalog_id): темы каталога, по которым берутся документы.
                 # Подбираются один раз при сохранении (assign_topics), topic_src — от чего.
-                "topic_keys": [k for k in (raw_sub.get("topic_keys") or []) if isinstance(k, str)],
-                "topic_src": str(raw_sub.get("topic_src") or ""),
+                "topic_keys": [k[:200] for k in (raw_sub.get("topic_keys") or []) if isinstance(k, str)][:10],
+                "topic_src": str(raw_sub.get("topic_src") or "")[:64],
             })
 
         plan["stages"].append(stage)
 
     return plan
+
+
+def _valid_tz(name) -> bool:
+    if not name or not isinstance(name, str) or len(name) > 64:
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(name)
+        return True
+    except Exception:
+        return False
+
+
+class PlanConflict(Exception):
+    """План успели изменить с момента, как его открыл этот администратор."""
+
+    def __init__(self, current: dict):
+        super().__init__("План изменён другим администратором")
+        self.current = current
+
+
+def check_not_modified(existing: dict, expected_updated_at: Optional[str]):
+    """Оптимистичная блокировка: несколько админов правят один план — сохранение поверх чужой
+    правки не проходит молча (раньше выигрывала последняя запись и чужие изменения терялись)."""
+    if expected_updated_at and existing.get("updated_at") and existing["updated_at"] != expected_updated_at:
+        raise PlanConflict(existing)
 
 
 def _sha(obj) -> str:
@@ -1211,21 +1296,28 @@ def start_generation(plan: dict, positions: Optional[list] = None, include_gener
     running = running_job_for(plan["plan_id"])
     if running:
         return {**running, "already_running": True}
+    # Два нажатия подряд (или два админа) — оба видели «ничего не идёт», пока считалась
+    # оценка. Замок на время запуска: второй получает busy, а не вторую платную генерацию.
+    if not jobstore.claim("genstart", plan["plan_id"], ttl=300):
+        running = running_job_for(plan["plan_id"])
+        return {**running, "already_running": True} if running else {"status": "busy", "job_id": None}
+    try:
+        est = estimate_generation(plan, profs)
+        if est["llm_calls"] == 0:
+            return {"status": "up_to_date", "job_id": None, **est}
 
-    est = estimate_generation(plan, profs)
-    if est["llm_calls"] == 0:
-        return {"status": "up_to_date", "job_id": None, **est}
-
-    job_id = str(uuid.uuid4())
-    _set_job(job_id, plan_id=plan["plan_id"], status="queued", total=est["total"], done=0,
-             current=None, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
-             errors=0, skipped=0, reused=0, llm_calls=0, llm_planned=est["llm_calls"], error=None,
-             professions=len(profs))
-    jobstore.set_job("genplan", plan["plan_id"], job_id=job_id, dirty=False)
-    # Тяжёлую генерацию — в очередь: worker-процесс (RQ) при Redis, иначе daemon-поток.
-    import jobs
-    jobs.enqueue_generation(job_id, plan, profs, only_missing)
-    return get_job(job_id)
+        job_id = str(uuid.uuid4())
+        _set_job(job_id, plan_id=plan["plan_id"], status="queued", total=est["total"], done=0,
+                 current=None, started_at=time.strftime("%Y-%m-%dT%H:%M:%S"), finished_at=None,
+                 errors=0, skipped=0, reused=0, llm_calls=0, llm_planned=est["llm_calls"], error=None,
+                 professions=len(profs))
+        jobstore.set_job("genplan", plan["plan_id"], job_id=job_id, dirty=False)
+        # Тяжёлую генерацию — в очередь: worker-процесс (RQ) при Redis, иначе daemon-поток.
+        import jobs
+        jobs.enqueue_generation(job_id, plan, profs, only_missing)
+        return get_job(job_id)
+    finally:
+        jobstore.release("genstart", plan["plan_id"])
 
 
 def refresh_generated_plans() -> int:
@@ -1314,10 +1406,10 @@ def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool = F
                         _set_job(job_id, done=done, errors=errors, skipped=skipped, reused=reused,
                                  llm_calls=calls,
                                  current=f"[{label}] {item['stage']['title']} → {item['substage']['title']}")
-            if cancelled:
-                # Отмена: готовое не теряем — несгенерированные подэтапы оставляем прежними.
-                for mid, prev in existing.items():
-                    generated.setdefault(mid, {**prev, "reused": True})
+            # Отмена или сбой подэтапа: готовое не теряем — не пересчитанные подэтапы
+            # оставляем прежними (раньше при сбое одного вызова его текст стирался).
+            for mid, prev in existing.items():
+                generated.setdefault(mid, {**prev, "reused": True})
             if generated:   # сохраняем, что успели (частичное расписание не теряем)
                 save_schedule(plan["plan_id"], build_schedule(plan, generated, profession=prof), profession=prof)
             if cancelled:

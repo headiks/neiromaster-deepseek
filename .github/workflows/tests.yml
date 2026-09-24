@@ -1,0 +1,35 @@
+# Тесты на каждый push и PR: юнит + интеграционные на настоящих PostgreSQL и Redis.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: neiromaster
+          POSTGRES_PASSWORD: neiromaster
+          POSTGRES_DB: neiromaster_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U neiromaster" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      NEIROMASTER_TEST_DSN: postgresql://neiromaster:neiromaster@localhost:5432/neiromaster_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python run_tests.py

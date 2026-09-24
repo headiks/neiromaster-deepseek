@@ -2,18 +2,21 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Админка НейроМастер</title>
     <link rel="stylesheet" href="/static/admin.css">
     <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/tour.css">
 </head>
-<body class="admin-page">
+<body class="admin-page" data-tour="admin">
     <div class="page-head">
         <h1><svg class="nm-mark" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="18" height="18"/><circle cx="8" cy="9" r="1.5"/><circle cx="16" cy="9" r="1.5"/><circle cx="12" cy="16" r="1.5"/><path d="M9.7 9H14.3M8.84 10.48 11.16 14.52M15.16 10.48 12.84 14.52"/></svg> Админка</h1>
         <div class="head-actions">
             <span id="whoami"></span>
-            <a class="ghost-btn" href="/" style="text-decoration:none;"><i data-lucide="user"></i> Страница сотрудника</a>
-            <button class="ghost-btn" onclick="openPasswordDialog()"><i data-lucide="key-round"></i> Сменить пароль</button>
+            <button class="ghost-btn tour-btn" id="btn-tour" onclick="NMTour.start()" title="Сайт сам покажет, как с ним работать"><i data-lucide="graduation-cap"></i> Как пользоваться</button>
+            <a class="ghost-btn" id="btn-employee-page" href="/" style="text-decoration:none;"><i data-lucide="user"></i> Страница сотрудника</a>
+            <button class="ghost-btn" id="btn-password" onclick="openPasswordDialog()"><i data-lucide="key-round"></i> Сменить пароль</button>
             <button class="ghost-btn" onclick="logout()"><i data-lucide="log-out"></i> Выйти</button>
         </div>
     </div>
@@ -57,6 +60,11 @@
             <small>PDF, DOCX, DOC, PPTX, HTML, MD, TXT · до 50 МБ · ИИ сам разнесёт документ по этапам адаптации</small>
             <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.pptx,.html,.htm,.md,.txt" />
         </div>
+        <label class="check-row" id="upload-confidential-row">
+            <input type="checkbox" id="upload-confidential">
+            Конфиденциальный документ — не отправлять в ИИ
+            <span class="help" title="Для чувствительных документов (положение об оплате труда и т.п.): файл хранится в базе, но ИИ его не читает — ни для сообщений, ни для ответов. Персональные данные в остальных документах маскируются автоматически перед отправкой в ИИ.">?</span>
+        </label>
         <div class="upload-progress" id="upload-progress"></div>
         <div class="next-step" id="next-step-docs"></div>
 
@@ -112,6 +120,7 @@
                 <label>План</label>
                 <select id="plan-select" onchange="onPlanSelect()"><option value="">＋ Создать свой план</option></select>
             </div>
+            <button class="ghost-btn" id="plan-copy-btn" style="align-self:end;display:none;" onclick="duplicatePlan()" title="Копия плана под смежную должность — структура та же, сообщения сгенерируются заново"><i data-lucide="copy"></i> Сделать копию</button>
             <button class="ghost-btn danger-text" id="plan-delete-btn" style="align-self:end;display:none;" onclick="deletePlan()"><i data-lucide="trash-2"></i> Удалить план</button>
         </div>
 
@@ -122,15 +131,21 @@
                     <input type="text" id="plan-title" placeholder="Например: Адаптация водителя" oninput="planField('title', this.value)">
                 </div>
             </div>
+            <label class="check-row" id="plan-group-daily-row">
+                <input type="checkbox" id="plan-group-daily" onchange="planField('group_daily', this.checked)">
+                Сообщения одного дня — одной сессией
+                <span class="help" title="Все сообщения, запланированные на один день, придут вместе — во время первого из них и одним уведомлением, а не по одному каждые час-два.">?</span>
+            </label>
             <div class="stage-hint">
                 План — это шаблон: сроки считаются от даты выхода, у каждого сотрудника она своя
                 (задаётся в карточке сотрудника), и расписание пересчитывается под неё само.
+                Не знаете, с чего начать — выберите в списке «Стандартный план» и поправьте его.
             </div>
         </div>
 
         <div id="stages-container"></div>
 
-        <div class="add-row add-stage-row">
+        <div class="add-row add-stage-row" id="add-stage-row">
             <div class="field" style="flex:1;">
                 <label>Выберите этап или создайте свой</label>
                 <select id="stage-catalog-select"></select>
@@ -139,7 +154,7 @@
         </div>
 
         <div class="toolbar" style="margin-top:24px;">
-            <button class="primary-btn" onclick="savePlan()"><i data-lucide="save"></i> Сохранить план</button>
+            <button class="primary-btn" id="btn-save-plan" onclick="savePlan()"><i data-lucide="save"></i> Сохранить план</button>
             <span id="plan-status" style="color:#475569;font-size:14px;"></span>
         </div>
         <div class="stage-hint" style="margin-top:12px;">
@@ -152,8 +167,8 @@
         <div class="section-head-row">
             <h2 class="section-title"><i data-lucide="users"></i> Пользователи системы</h2>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <button class="primary-btn" onclick="toggleStaffing()"><i data-lucide="file-spreadsheet"></i> Загрузить штатное расписание</button>
-                <button class="ghost-btn" onclick="openEmployeeDialog()"><i data-lucide="user-plus"></i> Добавить сотрудника вручную</button>
+                <button class="primary-btn" id="btn-staffing" onclick="toggleStaffing()"><i data-lucide="file-spreadsheet"></i> Загрузить штатное расписание</button>
+                <button class="ghost-btn" id="btn-add-employee" onclick="openEmployeeDialog()"><i data-lucide="user-plus"></i> Добавить сотрудника вручную</button>
             </div>
         </div>
         <div class="next-step" id="next-step-employees"></div>
@@ -176,12 +191,12 @@
         </div>
 
         <div id="pending-block"></div>
-        <div class="toolbar users-toolbar">
+        <div class="toolbar users-toolbar" id="users-toolbar">
             <div class="field">
                 <label>Подразделение</label>
                 <select id="dept-filter" onchange="renderEmployees(employeesCache)"><option value="">Все подразделения</option></select>
             </div>
-            <a class="ghost-btn" href="/users/credentials.xlsx" style="align-self:end;text-decoration:none;" title="Логины и пароли сотрудников"><i data-lucide="download"></i> Логины и пароли (Excel)</a>
+            <a class="ghost-btn" id="btn-credentials-xlsx" href="/users/credentials.xlsx" style="align-self:end;text-decoration:none;" title="Логины и пароли сотрудников"><i data-lucide="download"></i> Логины и пароли (Excel)</a>
             <button class="del-btn" id="bulk-delete-btn" style="align-self:end;display:none;" onclick="bulkDelete()"><i data-lucide="user-x"></i> Удалить отмеченных</button>
         </div>
         <div id="employee-list"><div class="empty-hint">Загрузка списка пользователей...</div></div>
@@ -294,10 +309,11 @@
     </dialog>
 
     <script src="/static/admin.js"></script>
+    <script src="/static/tour.js"></script>
 
     <!-- Векторные иконки Lucide. refreshIcons() зовётся после AJAX-рендеров списков,
          чтобы иконки в динамически вставленном HTML тоже отрисовывались. -->
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="/static/vendor/lucide.min.js"></script>
     <script>
         let _iconObserver = null;
         function refreshIcons() {

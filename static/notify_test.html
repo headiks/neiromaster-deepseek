@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta charset="utf-8">
 <title>Тест уведомлений — НейроМастер</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -77,7 +78,7 @@ textarea{resize:vertical}
 <script>
 let ME = null;
 
-function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function api(u,o){return fetch(u,o).then(r=>{if(r.status===401){location.href='/login';throw new Error('401');}return r;});}
 // Должна существовать ДО первого addMessage() в инициализации (иконки lucide грузятся
 // отдельным скриптом ниже; тут просто безопасно перерисовываем, если библиотека уже есть).
@@ -168,7 +169,7 @@ Promise.all([
 });
 </script>
 
-<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="/static/vendor/lucide.min.js"></script>
 <script>window.addEventListener('load',refreshIcons);</script>
 </body>
 </html>

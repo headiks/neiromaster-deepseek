@@ -47,9 +47,14 @@ def register_token(user_id: str, token: str, platform: str = "") -> bool:
     return True
 
 
-def remove_token(token: str) -> None:
+def remove_token(token: str, user_id: str | None = None) -> None:
+    """Отвязать токен. user_id — только свой: чужое устройство так не отключить."""
     token = (token or "").strip()
-    if token:
+    if not token:
+        return
+    if user_id:
+        db.execute("DELETE FROM push_tokens WHERE token = %s AND user_id = %s", (token, user_id))
+    else:
         db.execute("DELETE FROM push_tokens WHERE token = %s", (token,))
 
 

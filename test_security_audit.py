@@ -61,8 +61,14 @@ def test_plan_id_traversal_to_root():
             f"plan_dir({evil!r}) схлопнулся в корень {planner.PLANS_DIR} — "
             f"delete_plan({evil!r}) снесёт все планы"
         )
-    # И удаление по такому id ничего не должно снести
-    assert planner.delete_plan("...") is False
+    # И удаление по такому id ничего не должно снести (БД не нужна: запрос подменяем —
+    # важно, что до SQL доходит ровно этот id и ничего не удаляется).
+    orig = planner.db.query
+    planner.db.query = lambda *a, **k: None
+    try:
+        assert planner.delete_plan("...") is False
+    finally:
+        planner.db.query = orig
 
 
 # ==========================================================================

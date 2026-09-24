@@ -118,16 +118,15 @@ def ensure_all() -> int:
     """Досоздаёт строки плана для сотрудников с планом и датой выхода, у которых строк
     ЭТОГО плана ещё нет. Считаем только строки плана (plan_id): раньше любая строка —
     тестовое уведомление или ответ на вопрос — навсегда блокировала рассылку плана."""
-    present = {(r["employee_id"], r["plan_id"]) for r in
-               db.query("SELECT DISTINCT employee_id, plan_id FROM scheduled_messages "
-                        "WHERE plan_id IS NOT NULL")}
+    # Отбор в SQL: планировщик ходит сюда каждую минуту, а полный список пользователей
+    # (с расшифровкой ПДн) на тысячах сотрудников — лишняя работа на каждом тике.
+    rows = db.query(
+        "SELECT * FROM users u WHERE u.role = %s AND COALESCE(u.plan_id, '') <> '' "
+        "AND COALESCE(u.start_date, '') <> '' AND NOT EXISTS (SELECT 1 FROM scheduled_messages s "
+        "WHERE s.employee_id = u.id AND s.plan_id = u.plan_id)", (users.ROLE_EMPLOYEE,)) or []
     made = 0
-    for u in users.list_users():
-        if u.get("role") != users.ROLE_EMPLOYEE:
-            continue
-        if not u.get("plan_id") or not u.get("start_date") or (u["id"], u["plan_id"]) in present:
-            continue
-        made += materialize_employee(u)
+    for row in rows:
+        made += materialize_employee(users.from_row(row))
     return made
 
 
@@ -135,12 +134,11 @@ def refresh_plan(plan_id: str) -> int:
     """Тексты плана изменились (генерация, правка) -> пересобрать ещё не доставленные
     сообщения у всех сотрудников с этим планом. Без этого сотрудники, заведённые до
     генерации, получали бы пустые сообщения. -> число сотрудников."""
-    n = 0
-    for u in users.list_users():
-        if u.get("role") == users.ROLE_EMPLOYEE and u.get("plan_id") == plan_id and u.get("start_date"):
-            materialize_employee(u, force=True)
-            n += 1
-    return n
+    rows = db.query("SELECT * FROM users WHERE role = %s AND plan_id = %s AND COALESCE(start_date, '') <> ''",
+                    (users.ROLE_EMPLOYEE, plan_id)) or []
+    for row in rows:
+        materialize_employee(users.from_row(row), force=True)
+    return len(rows)
 
 
 # ---------- Доставка ----------
@@ -163,13 +161,34 @@ def dispatch_due() -> int:
     if rows:
         try:
             import push
-            push.notify([{"user_id": r["employee_id"], "title": r["title"] or "НейроМастер",
-                          "body": push_body(r.get("kind"), r["body"]),
-                          "data": {"message_row_id": r["id"], "kind": r.get("kind") or "message"}}
-                         for r in rows])
+            push.notify(group_pushes(rows))
         except Exception as e:
             print(f"[scheduler] push не отправлен: {e}")
     return len(rows)
+
+
+def group_pushes(rows: list) -> list:
+    """Одно уведомление на сотрудника за проход: несколько сообщений, наступивших разом
+    (например, «сессия» дня), приходят одним пушем «N новых сообщений», а не россыпью."""
+    by_user: dict = {}
+    for r in rows:
+        by_user.setdefault(r["employee_id"], []).append(r)
+    out = []
+    for uid, items in by_user.items():
+        if len(items) == 1:
+            r = items[0]
+            out.append({"user_id": uid, "title": r["title"] or "НейроМастер",
+                        "body": push_body(r.get("kind"), r["body"]),
+                        "data": {"message_row_id": r["id"], "kind": r.get("kind") or "message"}})
+            continue
+        titles = [r["title"] for r in items if r.get("title")]
+        n = len(items)
+        word = "новое сообщение" if n % 10 == 1 and n % 100 != 11 else (
+            "новых сообщения" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else "новых сообщений")
+        out.append({"user_id": uid, "title": f"НейроМастер: {n} {word}",
+                    "body": "\n".join(f"• {t}" for t in titles[:5]) + ("\n…" if len(titles) > 5 else ""),
+                    "data": {"message_row_id": items[0]["id"], "kind": "batch", "count": str(n)}})
+    return out
 
 
 def _schemas():

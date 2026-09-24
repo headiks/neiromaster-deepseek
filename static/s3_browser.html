@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>S3-хранилище — НейроМастер</title>
 <style>
@@ -43,7 +44,8 @@
   <div id="out"></div>
 
 <script>
-function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+function jsa(s){return esc(JSON.stringify(s==null?'':String(s)));}
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function api(u){return fetch(u).then(r=>{if(r.status===401){location.href='/login';throw new Error('401');}return r.json();});}
 function fmtSize(n){ if(n==null)return '—'; const u=['Б','КБ','МБ','ГБ','ТБ']; let i=0,v=n; while(v>=1024&&i<u.length-1){v/=1024;i++;} return (i?v.toFixed(1):v)+' '+u[i]; }
 function fmtDate(s){ if(!s)return '—'; const d=new Date(s); return isNaN(d)?esc(s):d.toLocaleString('ru-RU',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
@@ -57,13 +59,13 @@ function crumbs(prefix){
   const parts=prefix.split('/').filter(Boolean);
   let acc='';
   const root=state.home?'моя папка':'bucket';
-  let html=`<a onclick="go('${esc(state.home)}')">${root}</a>`;
+  let html=`<a onclick="go(${jsa(state.home)})">${root}</a>`;
   for(const p of parts){
     acc+=p+'/';
     const a=acc;
     const locked = state.home && a.length < state.home.length;   // сегмент выше своей папки
     html+=`<span class="sep">/</span>`
-        + (locked ? `<span>${esc(p)}</span>` : `<a onclick="go('${esc(a)}')">${esc(p)}</a>`);
+        + (locked ? `<span>${esc(p)}</span>` : `<a onclick="go(${jsa(a)})">${esc(p)}</a>`);
   }
   return html;
 }
@@ -93,7 +95,7 @@ function render(d){
   const folders=d.folders||[], files=d.files||[];
   let rows='';
   if(!state.recursive){
-    rows += folders.map(f=>`<tr class="folder" onclick="go('${esc(f.prefix)}')">
+    rows += folders.map(f=>`<tr class="folder" onclick="go(${jsa(f.prefix)})">
       <td><span class="ic">📁</span><span class="name">${esc(f.name)}/</span></td>
       <td class="size muted">папка</td><td class="muted">—</td></tr>`).join('');
   }

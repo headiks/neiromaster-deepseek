@@ -3,25 +3,27 @@
 
 Сюда попадает вопрос сотрудника, когда:
   - маршрут «escalate» (ЧС/травма/конфликт — нужен человек), либо
-  - маршрут «rag», но ответа нет: в базе не нашлось фрагментов или не пройден
-    порог уверенности (confidence gate).
+  - маршрут «rag», но ответа нет: в базе не нашлось размеченных фрагментов.
 
 Детектирует эти случаи rag.handle_question (route + risk_flag), а маршрутизацию
-человеку выполняет /ask в app.py: вопрос без ответа не теряется, а встаёт в очередь
+человеку выполняет /ask (api_chat.py): вопрос без ответа не теряется, а встаёт в очередь
 администратору. Тот отвечает (обсудив со специалистом при необходимости), и ответ
 сохраняется — сотрудник видит его в личном кабинете.
 
-Хранилище: data/pending_questions.json (тот же файловый формат, что и users.json).
+Хранилище — таблица questions в PostgreSQL (индексы под очередь и «мои вопросы»).
+Текст вопроса, ответ и контакты сотрудника шифруются так же, как ПДн пользователей
+(users._encrypt_field, при заданном NEIROMASTER_PII_KEY). Прежний
+data/pending_questions.json переносится в БД один раз при старте (migrate_from_file).
 """
 
-import os
 import json
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from config import FileGuard
+import db
+import users
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -33,32 +35,53 @@ REASON_NO_ANSWER = "no_answer"  # в регламентах ответа не н
 STATUS_OPEN = "open"
 STATUS_RESOLVED = "resolved"
 
-# Межпроцессная блокировка очереди вопросов: read-modify-write pending_questions.json
-# безопасен и при нескольких uvicorn-воркерах (см. config.FileGuard). Прежний
-# threading.Lock защищал только потоки одного процесса.
-_lock = FileGuard(QUESTIONS_PATH.with_suffix(".lock"))
+ANSWER_MAX = 8000
+
+CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS questions (
+    id                TEXT PRIMARY KEY,
+    created_at        TEXT NOT NULL,
+    user_id           TEXT,
+    user_name         TEXT NOT NULL DEFAULT '',
+    position          TEXT NOT NULL DEFAULT '',
+    department        TEXT NOT NULL DEFAULT '',
+    contact           TEXT NOT NULL DEFAULT '',
+    mentor            TEXT NOT NULL DEFAULT '',
+    question          TEXT NOT NULL,
+    resolved_question TEXT,
+    reason            TEXT NOT NULL,
+    risk_type         TEXT,
+    status            TEXT NOT NULL DEFAULT 'open',
+    answer            TEXT,
+    answered_by       TEXT,
+    answered_at       TEXT
+)
+"""
+CREATE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_questions_user ON questions(user_id, created_at)",
+)
+_COLUMNS = ("id", "created_at", "user_id", "user_name", "position", "department", "contact",
+            "mentor", "question", "resolved_question", "reason", "risk_type", "status",
+            "answer", "answered_by", "answered_at")
+_ENCRYPTED = ("user_name", "contact", "mentor", "question", "resolved_question", "answer")
 
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _load() -> dict:
-    if not QUESTIONS_PATH.exists():
-        return {}
-    try:
-        with open(QUESTIONS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+def _row(r) -> dict:
+    entry = {c: r[c] for c in _COLUMNS}
+    for c in _ENCRYPTED:
+        entry[c] = users._decrypt_field(entry[c])
+    return entry
 
 
-def _save(items: dict):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = QUESTIONS_PATH.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-    tmp.replace(QUESTIONS_PATH)
+def _insert(entry: dict):
+    values = [users._encrypt_field(entry.get(c)) if c in _ENCRYPTED else entry.get(c) for c in _COLUMNS]
+    db.execute(f"INSERT INTO questions ({', '.join(_COLUMNS)}) VALUES ({', '.join('%s' for _ in _COLUMNS)}) "
+               "ON CONFLICT (id) DO NOTHING", values)
 
 
 def record(user: dict, question: str, resolved_question: Optional[str],
@@ -83,87 +106,76 @@ def record(user: dict, question: str, resolved_question: Optional[str],
         "answered_by": None,
         "answered_at": None,
     }
-    with _lock:
-        items = _load()
-        items[entry["id"]] = entry
-        _save(items)
+    _insert(entry)
     return dict(entry)
 
 
-def _sort(entries: list) -> list:
-    # Открытые вперёд, эскалации — в самый верх, дальше свежие раньше старых.
-    return sorted(
-        entries,
-        key=lambda e: (
-            e["status"] != STATUS_OPEN,
-            e["reason"] != REASON_ESCALATE,
-            e["created_at"],
-        ),
-        reverse=False,
-    )
-
-
-def list_all(status: Optional[str] = None) -> list:
-    with _lock:
-        items = list(_load().values())
+def list_all(status: Optional[str] = None, limit: int = 1000) -> list:
+    """Очередь для админа: открытые вперёд, ЧС в самый верх, дальше старые раньше новых."""
+    where, params = "", []
     if status:
-        items = [e for e in items if e["status"] == status]
-    return _sort(items)
+        where, params = "WHERE status = %s", [status]
+    rows = db.query(
+        f"SELECT * FROM questions {where} ORDER BY (status <> 'open'), (reason <> 'escalate'), "
+        "created_at LIMIT %s", tuple(params + [max(1, min(int(limit), 5000))])) or []
+    return [_row(r) for r in rows]
 
 
 def list_for_user(user_id: str) -> list:
-    with _lock:
-        items = [e for e in _load().values() if e.get("user_id") == user_id]
-    # Для сотрудника: сначала отвечённые (есть что прочитать), потом ожидающие; свежие выше.
-    return sorted(items, key=lambda e: e["created_at"], reverse=True)
+    """Вопросы сотрудника в порядке диалога: старые сверху, новые снизу."""
+    rows = db.query("SELECT * FROM questions WHERE user_id = %s ORDER BY created_at LIMIT 500",
+                    (user_id,)) or []
+    return [_row(r) for r in rows]
+
+
+def get(qid: str) -> Optional[dict]:
+    r = db.query("SELECT * FROM questions WHERE id = %s", (qid,), "one")
+    return _row(r) if r else None
 
 
 def resolve(qid: str, answer: str, admin_name: str) -> Optional[dict]:
-    answer = (answer or "").strip()
+    answer = (answer or "").strip()[:ANSWER_MAX]
     if not answer:
         raise ValueError("Ответ не может быть пустым")
-    with _lock:
-        items = _load()
-        entry = items.get(qid)
-        if not entry:
-            return None
-        entry["answer"] = answer
-        entry["answered_by"] = admin_name or "Администратор"
-        entry["answered_at"] = _now()
-        entry["status"] = STATUS_RESOLVED
-        _save(items)
-    return dict(entry)
+    row = db.query(
+        "UPDATE questions SET answer = %s, answered_by = %s, answered_at = %s, status = %s "
+        "WHERE id = %s RETURNING *",
+        (users._encrypt_field(answer), admin_name or "Администратор", _now(), STATUS_RESOLVED, qid), "one")
+    return _row(row) if row else None
 
 
 def count_open() -> int:
-    with _lock:
-        return sum(1 for e in _load().values() if e["status"] == STATUS_OPEN)
+    r = db.query("SELECT count(*) AS n FROM questions WHERE status = %s", (STATUS_OPEN,), "one")
+    return r["n"] if r else 0
 
 
-if __name__ == "__main__":
-    # Мини-проверка: запись -> в очереди -> ответ -> ушла из открытых.
-    QUESTIONS_PATH = DATA_DIR / "pending_questions.selftest.json"
-    QUESTIONS_PATH.unlink(missing_ok=True)
-    u = {"id": "u1", "full_name": "Иван Тест", "contact": "@ivan"}
+def init():
+    db.execute(CREATE_TABLE)
+    for stmt in CREATE_INDEXES:
+        db.execute(stmt)
 
-    e1 = record(u, "Меня ударили", None, REASON_ESCALATE, "конфликт")
-    e2 = record(u, "Сколько дней отпуска?", None, REASON_NO_ANSWER)
-    assert count_open() == 2
-    # Эскалация должна идти первой в списке открытых
-    assert list_all(STATUS_OPEN)[0]["reason"] == REASON_ESCALATE
-    assert len(list_for_user("u1")) == 2
 
-    resolved = resolve(e2["id"], "  Отпуск 28 дней  ", "Админ")
-    assert resolved["status"] == STATUS_RESOLVED
-    assert resolved["answer"] == "Отпуск 28 дней"  # обрезка пробелов
-    assert count_open() == 1
-
+def migrate_from_file(path: Optional[Path] = None) -> int:
+    """Разовый перенос data/pending_questions.json в таблицу; файл -> .migrated."""
+    path = path or QUESTIONS_PATH
+    if not path.exists():
+        return 0
     try:
-        resolve(e1["id"], "   ", "Админ")
-        assert False, "пустой ответ должен падать"
-    except ValueError:
-        pass
-    assert resolve("нет-такого", "x", "Админ") is None
-
-    QUESTIONS_PATH.unlink(missing_ok=True)
-    print("questions.py self-check OK")
+        items = json.loads(path.read_text(encoding="utf-8")) or {}
+    except (json.JSONDecodeError, OSError):
+        return 0
+    moved = 0
+    for entry in items.values():
+        if isinstance(entry, dict) and entry.get("id") and entry.get("question"):
+            before = get(entry["id"])
+            if before is None:
+                _insert({**{c: None for c in _COLUMNS},
+                         **{k: v for k, v in entry.items() if k in _COLUMNS},
+                         "created_at": entry.get("created_at") or _now(),
+                         "reason": entry.get("reason") or REASON_NO_ANSWER,
+                         "status": entry.get("status") or STATUS_OPEN,
+                         **{c: entry.get(c) or "" for c in ("user_name", "position", "department",
+                                                             "contact", "mentor")}})
+                moved += 1
+    path.replace(path.with_suffix(".json.migrated"))
+    return moved

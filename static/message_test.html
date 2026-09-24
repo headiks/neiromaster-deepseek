@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Тестовые сообщения — НейроМастер</title>
     <!-- Служебная страница: ссылок на неё нет, открывается только по адресу /message-test. -->
@@ -38,9 +39,7 @@
     <script>
         function escapeHtml(str) {
             if (str === null || str === undefined) return '';
-            const div = document.createElement('div');
-            div.textContent = String(str);
-            return div.innerHTML;
+            return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
         function api(url, options) {
             return fetch(url, options).then(res => {
@@ -178,7 +177,7 @@
             ensureTestingLoaded();
         });
     </script>
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="/static/vendor/lucide.min.js"></script>
     <script>window.addEventListener('load', refreshIcons);</script>
 </body>
 </html>

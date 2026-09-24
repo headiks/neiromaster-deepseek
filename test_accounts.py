@@ -11,6 +11,8 @@
 """
 import os
 import tempfile
+
+os.environ.setdefault("REDIS_URL", "")   # лок-аут — в памяти процесса, тест не зависит от Redis
 from pathlib import Path
 
 import psycopg
@@ -90,14 +92,19 @@ def run():
         except ValueError as e:
             assert "много" in str(e).lower()
 
-        # 8. Роли: обычный admin правит сотрудников, но не других админов; owner — всех
+        # 8. Роли: обычный admin правит сотрудников СВОЕГО подразделения, но не других
+        # админов и не чужой отдел; owner — всех
         admin = users.create_user({"username": "hrdept", "password": "hr-pass-123",
-                                    "full_name": "HR"}, role=users.ROLE_ADMIN)
-        assert users.can_manage(admin, users.get_user(emp["id"]))       # admin -> сотрудник: да
+                                    "full_name": "HR", "department": "Цех"}, role=users.ROLE_ADMIN)
+        assert not users.can_manage(admin, users.get_user(emp["id"]))   # сотрудник без отдела: нет
+        users.update_profile(emp["id"], {**users.get_user(emp["id"]), "department": "Цех"})
+        assert users.can_manage(admin, users.get_user(emp["id"]))       # свой отдел: да
         assert not users.can_manage(admin, users.get_owner())           # admin -> owner: нет
         assert users.can_manage(owner, admin)                           # owner -> admin: да
 
-        # 9. Смена собственного пароля рвёт старые сессии
+        # 9. Смена собственного пароля рвёт старые сессии (лок-аут из шага 7 снимаем, как
+        # это делает выдача нового пароля администратором)
+        auth.clear_failures("ivanov")
         auth.change_own_password(users.get_user(emp["id"]), "employee-pass", "new-pass-999")
         assert auth.get_session_user(token) is None
         auth.login("ivanov", "new-pass-999")  # новый пароль работает

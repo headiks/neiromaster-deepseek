@@ -24,20 +24,16 @@ def test_not_generated_message_is_not_sent_empty():
 
 
 def test_test_notification_does_not_block_plan(monkeypatch):
-    # у сотрудника есть только строка теста (plan_id NULL) -> план всё равно материализуется
-    monkeypatch.setattr(messaging.db, "query", lambda sql, *a, **k: [], raising=False)
+    # Отбор — в SQL (см. test_api_integration.test_ensure_all_ignores_test_notifications на
+    # реальной БД): строки без plan_id (тесты, ответы на вопросы) не считаются строками плана.
+    seen = {}
+    monkeypatch.setattr(messaging.db, "query",
+                        lambda sql, *a, **k: seen.setdefault("sql", sql) and [{"id": "e1"}], raising=False)
     made = []
+    monkeypatch.setattr(messaging.users, "from_row", lambda r: r, raising=False)
     monkeypatch.setattr(messaging, "materialize_employee", lambda u, force=False: made.append(u["id"]) or 1)
-    monkeypatch.setattr(messaging.users, "list_users", lambda: [
-        {"id": "e1", "role": "employee", "plan_id": "p1", "start_date": "2026-09-10"},
-        {"id": "e2", "role": "employee", "plan_id": None, "start_date": "2026-09-10"}])
     assert messaging.ensure_all() == 1 and made == ["e1"]
-    # запрос «кто уже материализован» учитывает только строки плана
-    seen = []
-    monkeypatch.setattr(messaging.db, "query", lambda sql, *a, **k: seen.append(sql) or [])
-    messaging.ensure_all()
-    assert "plan_id IS NOT NULL" in seen[0]
-
+    assert "s.plan_id = u.plan_id" in seen["sql"]
 
 def test_push_body_hints_interactive_kinds():
     assert messaging.push_body("quiz", "Вопросы").startswith("Мини-тест")

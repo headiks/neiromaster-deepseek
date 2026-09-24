@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>НейроМастер</title>
     <!-- Кабинет сотрудника = мобильное приложение (mobile/): те же вкладки Чат / История /
@@ -108,14 +109,18 @@
         .switch input:checked + span { background: var(--primary); }
         .switch input:checked + span::after { transform: translateX(20px); }
         .msg { font-size: 14px; margin-top: 8px; }
+        .tour-btn { cursor: pointer; background: none; font-family: inherit; }
+        @media (max-width: 480px) { .tour-btn .lbl { display: none; } #tab-title { display: none; } }
     </style>
+    <link rel="stylesheet" href="/static/tour.css">
 </head>
-<body>
+<body data-tour="cabinet">
 <div class="shell">
     <div class="head">
         <div class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="18" height="18"/><circle cx="8" cy="9" r="1.5"/><circle cx="16" cy="9" r="1.5"/><circle cx="12" cy="16" r="1.5"/><path d="M9.7 9H14.3M8.84 10.48 11.16 14.52M15.16 10.48 12.84 14.52"/></svg> НейроМастер</div>
         <div class="head-right">
             <span id="tab-title">Сегодняшний чат</span>
+            <button class="admin-link tour-btn" id="btn-tour" onclick="NMTour.start()" title="Покажем, как пользоваться">? <span class="lbl">Как пользоваться</span></button>
             <a class="admin-link" id="admin-link" href="/admin" style="display:none;">Админка</a>
         </div>
     </div>
@@ -147,13 +152,13 @@
 
         <section class="pane" id="pane-settings"><div class="scroll settings">
             <h3 class="h">Оформление</h3>
-            <div class="card"><div class="row">
+            <div class="card" id="card-theme"><div class="row">
                 <div class="t"><div class="t-title">Тёмная тема</div><div class="t-sub">Светлое / тёмное оформление</div></div>
                 <label class="switch"><input type="checkbox" id="theme-switch" onchange="setTheme(this.checked)"><span></span></label>
             </div></div>
 
             <h3 class="h">План адаптации</h3>
-            <div class="card"><div class="row">
+            <div class="card" id="card-sick"><div class="row">
                 <div class="t"><div class="t-title">Я на больничном</div>
                     <div class="t-sub">Пока включено, сообщения плана не приходят, а наставник получит уведомление.
                         Выключите после выхода — накопившееся придёт.</div></div>
@@ -164,13 +169,16 @@
             <div class="card" id="profile"></div>
 
             <div class="t-sub" style="margin-top:10px;">Забыли пароль или нужно его сменить — обратитесь к администратору.</div>
-            <button class="btn full logout" onclick="logout()">Выйти</button>
+            <button class="btn full logout" id="btn-logout" onclick="logout()">Выйти</button>
         </div></section>
     </main>
 </div>
 
 <script>
-    function esc(v) { const d = document.createElement('div'); d.textContent = v == null ? '' : String(v); return d.innerHTML; }
+    const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    function esc(v) { return v == null ? '' : String(v).replace(/[&<>"']/g, c => ESC[c]); }
+    /** Аргумент inline-обработчика: onclick="f(${jsArg(x)})" — JS-литерал + экранирование атрибута. */
+    function jsArg(v) { return esc(JSON.stringify(v == null ? '' : String(v))); }
     function api(url, opts) {
         return fetch(url, opts).then(r => { if (r.status === 401) { location.href = '/login'; throw new Error('Сессия истекла'); } return r; });
     }
@@ -199,6 +207,7 @@
     // ---------- Сообщения (инбокс) ----------
     let messages = [];
     let todayCount = -1;
+    let historyFirst = true;          // первый показ истории — сразу к свежим (вниз)
     const pad = n => String(n).padStart(2, '0');
     const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     function when(m) { const d = new Date(String(m.delivered_at || m.send_at || '').replace(' ', 'T')); return isNaN(d) ? null : d; }
@@ -251,14 +260,17 @@
         const keep = todayBox.scrollTop;
         todayBox.innerHTML = own.length ? own.map(card).join('') : '<div class="empty">Сегодня новых сообщений плана нет.</div>';
         todayBox.scrollTop = (grew || atBottom) ? todayBox.scrollHeight : keep;
+        // История — тоже как в мессенджере: старые дни сверху, свежие снизу.
         const past = messages.filter(m => { const w = when(m); return w && ymd(w) < today; });
-        const days = [...new Set(past.map(m => ymd(when(m))))].sort().reverse();
+        const days = [...new Set(past.map(m => ymd(when(m))))].sort();
         const historyBox = document.getElementById('history-list');
+        const histAtBottom = historyFirst || historyBox.scrollHeight - historyBox.scrollTop - historyBox.clientHeight < 40;
         const keepH = historyBox.scrollTop;
         historyBox.innerHTML = days.length ? days.map(d =>
             `<div class="day"><span>${dayLabel(d)}</span></div>` + past.filter(m => ymd(when(m)) === d).map(card).join('')
         ).join('') : '<div class="empty">История пуста — прошлых сообщений ещё нет.</div>';
-        historyBox.scrollTop = keepH;
+        historyBox.scrollTop = histAtBottom ? historyBox.scrollHeight : keepH;
+        if (days.length && historyBox.clientHeight) historyFirst = false;
         // Показанное в чате считаем прочитанным (как в приложении).
         if (document.getElementById('pane-today').classList.contains('active')) {
             own.filter(m => m.status === 'delivered').forEach(m => {
@@ -272,12 +284,12 @@
     // Тип сообщения сотруднику не показываем — только содержимое.
     function card(m) {
         const p = m.payload || {}, a = m.answers || {};
-        const id = esc(m.id);
+        const id = m.id;
         let body;
         if (p.type === 'checklist' && Array.isArray(p.items)) {
             const done = p.items.filter(it => a[it.id]).length;
             body = (p.intro ? `<div class="b-body">${esc(p.intro)}</div>` : '')
-                + p.items.map(it => `<div class="check ${a[it.id] ? 'on' : ''}" onclick="answer('${id}', '${esc(it.id)}', null)">
+                + p.items.map(it => `<div class="check ${a[it.id] ? 'on' : ''}" onclick="answer(${jsArg(id)}, ${jsArg(it.id)}, null)">
                     <span class="box">${a[it.id] ? '✓' : ''}</span><span class="lbl">${esc(it.text)}</span></div>`).join('')
                 + `<div class="b-meta">Выполнено: ${done} из ${p.items.length}</div>`;
         } else if ((p.type === 'survey' || p.type === 'quiz') && Array.isArray(p.questions)) {
@@ -291,7 +303,7 @@
                         + (q.options || []).map(o => {
                             const picked = chosen === o.id, good = quiz && chosen && o.correct, bad = quiz && picked && !o.correct;
                             return `<button class="opt ${picked ? 'on' : ''} ${good ? 'good' : ''} ${bad ? 'bad' : ''}" ${quiz && chosen ? 'disabled' : ''}
-                                onclick="answer('${id}', '${esc(q.id)}', '${esc(o.id)}')">${good ? '✓ ' : bad ? '✗ ' : ''}${esc(o.text)}</button>`;
+                                onclick="answer(${jsArg(id)}, ${jsArg(q.id)}, ${jsArg(o.id)})">${good ? '✓ ' : bad ? '✗ ' : ''}${esc(o.text)}</button>`;
                         }).join('')
                         + (quiz && chosen && q.explanation ? `<div class="expl">${esc(q.explanation)}</div>` : '') + '</div>';
                 }).join('')
@@ -367,12 +379,14 @@
     function loadQuestions() {
         const box = document.getElementById('questions-list');
         api('/api/my/questions').then(r => r.json()).then(d => {
-            const items = d.questions || [];
+            // Как в переписке: старые вопросы сверху, новые снизу (сервер отдаёт по времени).
+            const items = (d.questions || []).slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
             box.innerHTML = items.length ? items.map(q => `<div class="qcard">
                 <div class="status ${q.status === 'resolved' ? 'done' : 'wait'}">${q.status === 'resolved' ? '✓ отвечено' : 'ждёт ответа специалиста'}</div>
                 <div style="margin-top:4px;font-weight:600;">${esc(q.question)}</div>
                 ${q.status === 'resolved' ? `<div class="answer">${esc(q.answer)}</div>` : ''}</div>`).join('')
                 : '<div class="empty">Вопросов специалисту пока нет.</div>';
+            box.scrollTop = box.scrollHeight;
         }).catch(() => { box.innerHTML = '<div class="err">Не удалось загрузить вопросы</div>'; });
     }
 
@@ -392,8 +406,9 @@
     }
     function logout() { fetch('/api/logout', { method: 'POST' }).finally(() => { location.href = '/login'; }); }
 </script>
-<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script src="/static/vendor/lucide.min.js"></script>
 <script>window.addEventListener('load', () => window.lucide && lucide.createIcons({ attrs: { 'stroke-width': 1.6, width: 20, height: 20 } }));</script>
+<script src="/static/tour.js"></script>
 <script src="/static/activity.js" defer></script>
 </body>
 </html>

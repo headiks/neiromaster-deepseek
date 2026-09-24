@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta charset="utf-8">
 <title>Журнал действий — НейроМастер</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -102,7 +103,8 @@ const EVENTS = { '': 'Все', login: 'Вход', logout: 'Выход', login_fa
 let state = { user_id: '', event_type: '' };
 let USERS = [];
 
-function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+function jsa(s){return esc(JSON.stringify(s==null?'':String(s)));}
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function api(u){return fetch(u).then(r=>{if(r.status===401){location.href='/login';throw new Error('401');}return r;});}
 function fmtTs(s){ if(!s) return '—'; const d=new Date(s); return isNaN(d)?esc(s):d.toLocaleString('ru-RU',{year:'2-digit',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
 function roleTitle(r){ return {owner:'Суперадмин',admin:'Администратор',employee:'Сотрудник'}[r]||r||''; }
@@ -110,7 +112,7 @@ function roleTitle(r){ return {owner:'Суперадмин',admin:'Админи�
 function renderFilters(){
   document.getElementById('filters').innerHTML =
     Object.entries(EVENTS).map(([k,label])=>
-      `<button class="chip ${state.event_type===k?'on':''}" onclick="setType('${k}')">${esc(label)}</button>`).join('')
+      `<button class="chip ${state.event_type===k?'on':''}" onclick="setType(${jsa(k)})">${esc(label)}</button>`).join('')
     + `<span class="count" id="count"></span>`;
 }
 function setType(t){ state.event_type=t; renderFilters(); load(); }
@@ -119,7 +121,7 @@ function renderUsers(){
   const box=document.getElementById('users');
   const all=`<button class="u ${state.user_id===''?'on':''}" onclick="pickUser('')"><div class="n">Все пользователи</div><div class="m">события всех, кого вы видите</div></button>`;
   box.innerHTML = all + USERS.map(u=>`
-    <button class="u ${state.user_id===u.id?'on':''}" onclick="pickUser('${esc(u.id)}')">
+    <button class="u ${state.user_id===u.id?'on':''}" onclick="pickUser(${jsa(u.id)})">
       <div class="n">${esc(u.full_name||u.username||'—')}</div>
       <div class="m">${esc(u.username?('@'+u.username):'без логина')}${u.department?(' · '+esc(u.department)):''}</div>
       <div class="role">${esc(roleTitle(u.role))}</div>
