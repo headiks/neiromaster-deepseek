@@ -20,11 +20,10 @@
 
     <div class="tabs">
         <button class="tab active" data-tab="employees"><span class="tab-step">1</span><i data-lucide="users"></i> Пользователи системы</button>
-        <button class="tab" data-tab="docs"><span class="tab-step">2</span><i data-lucide="database"></i> Документы</button>
-        <button class="tab" data-tab="builder"><span class="tab-step">3</span><i data-lucide="calendar-cog"></i> Планы</button>
+        <button class="tab" data-tab="builder"><span class="tab-step">2</span><i data-lucide="calendar-cog"></i> Планы</button>
+        <button class="tab" data-tab="docs"><span class="tab-step">3</span><i data-lucide="database"></i> Документы</button>
         <button class="tab" data-tab="plantexts"><span class="tab-step">4</span><i data-lucide="message-square-text"></i> Сообщения</button>
         <button class="tab" data-tab="questions"><i data-lucide="help-circle"></i> Вопросы <span id="questions-badge" class="q-badge" style="display:none;"></span></button>
-        <button class="tab" data-tab="testing"><i data-lucide="flask-conical"></i> Тестирование</button>
     </div>
 
     <div class="tab-pane" id="pane-plantexts">
@@ -63,6 +62,18 @@
 
         <div class="card doc-summary" id="doc-summary"><div class="empty-hint">Считаем покрытие планов документами…</div></div>
 
+        <details class="details-block" id="stage-details" ontoggle="if (this.open) loadStageBoard()">
+            <summary>Недостающие документы по этапам и подэтапам</summary>
+            <div class="section-head-row" style="margin-top:6px;">
+                <div class="field"><label>План адаптации</label>
+                    <select id="board-plan" onchange="loadStageBoard()" style="min-width:280px;"><option value="">Все этапы (каталог)</option></select></div>
+                <button class="ghost-btn" onclick="loadStageBoard()"><i data-lucide="refresh-cw"></i> Обновить</button>
+            </div>
+            <div class="stage-hint">Этапы и подэтапы выбранного плана и закреплённые за ними документы (разметка ИИ).
+                «— нет документов —» — по этой теме нужно догрузить документ, иначе сообщение не сгенерируется.</div>
+            <div class="stage-board" id="stage-board"><div class="empty-hint">Загрузка структуры...</div></div>
+        </details>
+
         <div class="section-head-row" style="margin-top:22px;">
             <h2 class="section-title"><i data-lucide="file-text"></i> Документы</h2>
         </div>
@@ -73,32 +84,6 @@
         </div>
         <div class="doc-list" id="doc-list"><div class="empty-hint">Загрузка списка документов...</div></div>
 
-        <details class="details-block" id="stage-details" ontoggle="if (this.open) loadStageBoard()">
-            <summary>Посмотреть детали: как документы разнесены по этапам и подэтапам</summary>
-            <div class="stage-hint">Привязка — по разметке ИИ (каталог этапов). Нужна для проверки, в обычной работе достаточно сводки выше.</div>
-            <div class="stage-board" id="stage-board"><div class="empty-hint">Загрузка структуры...</div></div>
-        </details>
-    </div>
-
-    <!-- ==================== ТЕСТИРОВАНИЕ: тестовые сообщения ==================== -->
-    <div class="tab-pane" id="pane-testing">
-        <div class="section-head-row">
-            <h2 class="section-title"><i data-lucide="flask-conical"></i> Тестовые сообщения</h2>
-            <a class="ghost-btn" href="/globaltest" style="text-decoration:none;"><i data-lucide="wrench"></i> Прочая диагностика</a>
-        </div>
-        <div class="stage-hint">Отправьте пользователю сообщения любого типа — они придут в приложение (пушем) и
-            в кабинет на сайте точно так же, как сообщения плана адаптации. Содержимое, тип и задержку можно менять.</div>
-        <div class="toolbar" style="align-items:flex-end;gap:10px;flex-wrap:wrap;margin-top:12px;">
-            <div class="field"><label>Кому</label><select id="tm-user" style="min-width:280px;"></select></div>
-            <button class="ghost-btn" onclick="tmLoadSamples()"><i data-lucide="layers"></i> Примеры всех типов</button>
-            <div class="field"><label>Добавить сообщение</label>
-                <select id="tm-add-kind" onchange="tmAdd(this.value); this.value='';"><option value="">— тип —</option></select></div>
-        </div>
-        <div id="tm-list"></div>
-        <div class="toolbar" style="margin-top:14px;">
-            <button class="primary-btn" id="tm-send" onclick="tmSend()"><i data-lucide="send-horizontal"></i> Отправить</button>
-            <span id="tm-status" style="color:#475569;font-size:14px;"></span>
-        </div>
     </div>
 
     <!-- ==================== ВОПРОСЫ БЕЗ ОТВЕТА ==================== -->

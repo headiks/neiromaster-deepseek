@@ -214,6 +214,10 @@
         .stg.unassigned .stg-head { background:#fef9ec; }
         .stg.unassigned .stg-n { background:transparent; color:#9a6a10; }
         .bempty { color:#94a3b8; font-size:12px; font-style:italic; align-self:center; }
+        .sub-r.missing { background:#fff7ed; }
+        .sub-r.missing .bempty { color:#b45309; font-style:normal; font-weight:600; }
+        .stg-gaps { margin-left:auto; font-size:12px; font-weight:700; color:#b45309; background:#ffedd5; padding:2px 8px; border-radius:6px; white-space:nowrap; }
+        .stg-gaps + .stg-count { margin-left:6px; }
         .bdoc { cursor:pointer; transition:border-color .15s; }
         .bdoc:hover { border-color:#7c3aed; }
         /* Модалка «куски по подэтапам» */
@@ -409,8 +413,7 @@
         .cov-num { color: #b45309; }
         .cov-num.ok, .cov-ok { color: #15803d; }
         .cov-ok, .cov-gaps { font-size: 13px; margin-top: 6px; }
-        .cov-gaps summary { cursor: pointer; color: #b45309; }
-        .cov-gaps ul { margin: 6px 0 0 18px; padding: 0; color: #475569; }
+        .cov-gaps a { color: #b45309; }
         .details-block { margin-top: 26px; }
         .details-block > summary { cursor: pointer; font-weight: 600; color: #475569; padding: 8px 0; }
         dialog .employee-form { max-height: 60vh; overflow: auto; }
