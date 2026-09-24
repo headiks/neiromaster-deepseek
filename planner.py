@@ -912,7 +912,26 @@ def plan_coverage(plan: dict, present: set) -> dict:
             "total": total, "covered": covered, "missing": missing}
 
 
-NO_DOC_REASON = "Нет документа, отнесённого к этому подэтапу — загрузите документ и запустите догенерацию"
+def plan_board(plan: dict, docs: list) -> tuple:
+    """Доска «этапы ↔ документы» в разрезе конкретного плана (свой план тоже): этапы и подэтапы
+    плана, документы подэтапа — размеченные по его темам (_doc_keys). Вход и выход — в формате
+    documents.build_board (docs — из docpipe.document_assignments по каталогу)."""
+    stages, owners = [], {}                      # тема каталога -> [(этап плана, подэтап плана)]
+    for st in plan.get("stages") or []:
+        stages.append({"id": st["id"], "title": st.get("title") or "", "description": st.get("description") or "",
+                       "substages": [{"id": s["id"], "title": s.get("title") or ""} for s in st.get("substages") or []]})
+        for sub in st.get("substages") or []:
+            for k in _doc_keys(st, sub):
+                owners.setdefault(k, []).append((st["id"], sub["id"]))
+    out = []
+    for d in docs:
+        subs = [{"stage_id": sid, "substage_id": pid, "score": a.get("score")}
+                for a in d.get("substages") or [] for sid, pid in owners.get(a.get("substage_id"), [])]
+        out.append({**d, "substages": subs, "stage_ids": sorted({a["stage_id"] for a in subs})})
+    return stages, out
+
+
+NO_DOC_REASON ="Нет документа, отнесённого к этому подэтапу — загрузите документ и запустите догенерацию"
 
 
 # Версия промптов генерации. Входит в отпечаток сообщения: поменяли GENERATE_SYSTEM /

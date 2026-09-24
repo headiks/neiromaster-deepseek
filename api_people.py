@@ -363,7 +363,7 @@ class TestTypedMessages(BaseModel):
 
 @router.get("/test-messages/samples", dependencies=admin_only)
 async def test_message_samples():
-    """Примеры тестовых сообщений всех типов — заготовка для редактора во вкладке «Тестирование»."""
+    """Примеры тестовых сообщений всех типов — заготовка для редактора на странице /message-test."""
     return {"messages": messaging.test_samples()}
 
 

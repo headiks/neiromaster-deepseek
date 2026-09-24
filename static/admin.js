@@ -69,7 +69,6 @@
                 if (tab.dataset.tab === 'plantexts') ensurePlanTextsLoaded();
                 if (tab.dataset.tab === 'employees') ensureEmployeesLoaded();
                 if (tab.dataset.tab === 'questions') loadQuestions();
-                if (tab.dataset.tab === 'testing') ensureTestingLoaded();
                 renderNextStep();
                 if (tab.dataset.tab === 'docs') { loadCoverage(); if (document.getElementById('stage-details').open) loadStageBoard(); }
             });
@@ -325,22 +324,24 @@
             let html = '';
             (b.stages || []).forEach((s, i) => {
                 let rows = '';
+                const gaps = (s.substages || []).filter(sub => !(sub.documents || []).length).length;
                 (s.substages || []).forEach(sub => {
-                    rows += `<div class="sub-r"><div><div class="sub-t">${escapeHtml(sub.title || '')}</div><div class="sub-c">${(sub.documents || []).length} док.</div></div>`
+                    rows += `<div class="sub-r${(sub.documents || []).length ? '' : ' missing'}"><div><div class="sub-t">${escapeHtml(sub.title || '')}</div><div class="sub-c">${(sub.documents || []).length} док.</div></div>`
                           + `<div class="sub-docs">${(sub.documents || []).length ? sub.documents.map(bDocCard).join('') : '<div class="bempty">— нет документов —</div>'}</div></div>`;
                 });
                 if ((s.documents || []).length) {
-                    rows += `<div class="sub-r"><div><div class="sub-t">В этапе (без подэтапа)</div></div><div class="sub-docs">${s.documents.map(bDocCard).join('')}</div></div>`;
+                    rows += `<div class="sub-r${(sub.documents || []).length ? '' : ' missing'}"><div><div class="sub-t">В этапе (без подэтапа)</div></div><div class="sub-docs">${s.documents.map(bDocCard).join('')}</div></div>`;
                 }
                 html += `<section class="stg"><header class="stg-head"><div class="stg-n">${i + 1}</div>`
                       + `<div><div class="stg-tt">${escapeHtml(s.title || '')}</div><div class="stg-dd">${escapeHtml(s.description || '')}</div></div>`
+                      + (gaps ? `<span class="stg-gaps">не хватает: ${gaps}</span>` : '')
                       + `<span class="stg-count">${bCountDocs(s)} док.</span></header>${rows || '<div class="sub-r"><div class="bempty">нет подэтапов</div></div>'}</section>`;
             });
             if ((b.unassigned || []).length) {
                 html += `<section class="stg unassigned"><header class="stg-head"><div class="stg-n">?</div>`
-                      + `<div><div class="stg-tt">Без уверенной привязки</div><div class="stg-dd">Загружены, но не отнесены к этапу — проверьте вручную</div></div>`
+                      + `<div><div class="stg-tt">${b.plan ? 'Не относятся к этому плану' : 'Без уверенной привязки'}</div><div class="stg-dd">${b.plan ? 'Документы по темам, которых нет в выбранном плане' : 'Загружены, но не отнесены к этапу — проверьте вручную'}</div></div>`
                       + `<span class="stg-count">${b.unassigned.length} док.</span></header>`
-                      + `<div class="sub-r"><div><div class="sub-t">Требует решения</div></div><div class="sub-docs">${b.unassigned.map(bDocCard).join('')}</div></div></section>`;
+                      + `<div class="sub-r"><div><div class="sub-t">${b.plan ? 'Документы' : 'Требует решения'}</div></div><div class="sub-docs">${b.unassigned.map(bDocCard).join('')}</div></div></section>`;
             }
             el.innerHTML = html || '<div class="empty-hint">Пока нет ни этапов, ни документов.</div>';
             refreshIcons();
@@ -474,6 +475,11 @@
             const box = document.getElementById('doc-summary');
             api('/plans/coverage').then(r => r.ok ? r.json() : { plans: [] }).then(d => {
                 coverageCache = d.plans || [];
+                const sel = document.getElementById('board-plan');
+                const cur = sel.value;
+                sel.innerHTML = '<option value="">Все этапы (каталог)</option>'
+                    + coverageCache.map(p => `<option value="${escapeHtml(p.plan_id)}">${escapeHtml(p.title || p.plan_id)}</option>`).join('');
+                sel.value = coverageCache.some(p => p.plan_id === cur) ? cur : '';
                 const ready = docsCache.filter(x => x.status === 'indexed').length;
                 const head = `<div class="doc-summary-head"><b>Загружено в систему: ${docsCache.length} ${plural(docsCache.length, 'документ', 'документа', 'документов')}</b>`
                     + (ready !== docsCache.length ? ` · готовы к работе: ${ready}` : '') + '</div>';
@@ -483,18 +489,22 @@
                 }
                 box.innerHTML = head + coverageCache.map(p => {
                     const pct = p.total ? Math.round(100 * p.covered / p.total) : 0;
-                    const gaps = (p.missing || []).map(m =>
-                        `<li><b>${escapeHtml(m.stage)}:</b> ${m.substages.map(escapeHtml).join(', ')}</li>`).join('');
                     return `<div class="cov-plan">
                         <div class="cov-head"><span>${escapeHtml(p.title || '')}</span>
                             <span class="cov-num ${pct === 100 ? 'ok' : ''}">${p.covered} из ${p.total} подэтапов обеспечены документами</span></div>
                         <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
-                        ${gaps ? `<details class="cov-gaps"><summary>Нет материалов для ${p.total - p.covered} ${plural(p.total - p.covered, 'подэтапа', 'подэтапов', 'подэтапов')} — догрузите документы по этим темам</summary><ul>${gaps}</ul></details>`
+                        ${p.total - p.covered ? `<div class="cov-gaps"><a href="#" onclick="showPlanGaps('${escapeHtml(p.plan_id)}'); return false;">Нет материалов для ${p.total - p.covered} ${plural(p.total - p.covered, 'подэтапа', 'подэтапов', 'подэтапов')} — показать по этапам</a></div>`
                                : '<div class="cov-ok">Документов достаточно для всего плана.</div>'}
                     </div>`;
                 }).join('');
                 refreshIcons();
             }).catch(() => { box.innerHTML = '<div class="empty-hint">Не удалось посчитать покрытие.</div>'; });
+        }
+        function showPlanGaps(planId) {
+            const det = document.getElementById('stage-details');
+            document.getElementById('board-plan').value = planId;
+            if (det.open) loadStageBoard(); else det.open = true;     // ontoggle сам загрузит доску
+            det.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
         function plural(n, one, few, many) {
             const m10 = n % 10, m100 = n % 100;
@@ -506,9 +516,10 @@
         function loadStageBoard() {
             const el = document.getElementById('stage-board');
             if (!el) return;
-            api('/documents/board').then(r => r.ok ? r.json() : null).then(b => {
+            const plan = (document.getElementById('board-plan') || {}).value || '';
+            api('/documents/board' + (plan ? '?plan_id=' + encodeURIComponent(plan) : '')).then(r => r.ok ? r.json() : null).then(b => {
                 if (!b) { el.innerHTML = '<div class="empty-hint">Нет данных.</div>'; return; }
-                renderStageBoard(b);
+                renderStageBoard({ ...b, plan });
             }).catch(() => { el.innerHTML = '<div class="empty-hint">Не удалось загрузить структуру.</div>'; });
         }
 
@@ -1957,7 +1968,7 @@
         refreshQuestionsBadge();
         ensureEmployeesLoaded();
 
-        // ==================== Подсказка «что дальше» (путь: пользователи → документы → планы → сообщения) ====================
+        // ==================== Подсказка «что дальше» (путь: пользователи → планы → документы → сообщения) ====================
         // Одна подсказка на все вкладки: первый незавершённый шаг с кнопкой перехода. Нужна тому,
         // кто видит систему впервые, — без инструкции понятно, что делать следующим.
         function goTab(id) { const t = document.querySelector(`.tab[data-tab="${id}"]`); if (t) t.click(); }
@@ -1968,8 +1979,8 @@
                 const docsReady = docsCache.filter(x => x.status === 'indexed').length;
                 let step = null;
                 if (!people.length) step = ['employees', 'Шаг 1 из 4. Добавьте сотрудников: загрузите штатное расписание или добавьте человека вручную.'];
-                else if (!docsCache.length) step = ['docs', 'Шаг 2 из 4. Загрузите документы компании (регламенты, инструкции) — по ним ИИ напишет сообщения и будет отвечать на вопросы.'];
-                else if (!plans.length) step = ['builder', 'Шаг 3 из 4. Создайте план адаптации: этапы и подэтапы с датами отправки.'];
+                else if (!plans.length) step = ['builder', 'Шаг 2 из 4. Создайте план адаптации: этапы и подэтапы с датами отправки.'];
+                else if (!docsCache.length) step = ['docs', 'Шаг 3 из 4. Загрузите документы компании (регламенты, инструкции) — по ним ИИ напишет сообщения и будет отвечать на вопросы.'];
                 else if (docsReady && !plans.some(p => p.generated)) step = ['plantexts', 'Шаг 4 из 4. Сгенерируйте сообщения плана — кнопка «Обновить сообщения плана».'];
                 else if (people.some(u => !u.plan_id || !u.start_date)) step = ['employees', 'Осталось: назначьте сотрудникам план и дату выхода (кнопка «Изменить» у сотрудника) — с даты выхода начнут приходить сообщения.'];
                 document.querySelectorAll('.next-step').forEach(el => {
@@ -1981,123 +1992,4 @@
                 });
                 refreshIcons();
             }).catch(() => {});
-        }
-
-        // ==================== Тестирование: настраиваемые тестовые сообщения ====================
-        // Каждое сообщение — {kind, title, intro, body, checklist[], questions[], delay}; сервер
-        // собирает его тем же конвертером, что и сообщения плана (msgconvert).
-        const TM_KINDS = { message: 'Сообщение', reminder: 'Напоминание', checklist: 'Чек-лист',
-                           system_check: 'Проверка', survey: 'Опрос', quiz: 'Мини-тест', handover: 'Передача наставнику' };
-        const TM_FORMAT = { message: 'text', reminder: 'text', handover: 'text', checklist: 'list', system_check: 'list',
-                            survey: 'questions', quiz: 'questions' };
-        let tmMsgs = [];
-        let tmLoaded = false;
-
-        function ensureTestingLoaded() {
-            if (!tmLoaded) {
-                tmLoaded = true;
-                document.getElementById('tm-add-kind').innerHTML = '<option value="">— тип —</option>'
-                    + Object.entries(TM_KINDS).map(([k, t]) => `<option value="${k}">${t}</option>`).join('');
-                tmLoadSamples();
-            }
-            const sel = document.getElementById('tm-user');
-            const cur = sel.value;
-            const people = employeesCache.filter(u => u.username);
-            sel.innerHTML = people.map(u => `<option value="${escapeHtml(u.id)}">${escapeHtml(u.full_name)} (@${escapeHtml(u.username)})</option>`).join('')
-                || '<option value="">— нет пользователей с логином —</option>';
-            if (cur) sel.value = cur;
-        }
-
-        function tmLoadSamples() {
-            apiJson('/test-messages/samples').then(({ ok, data }) => {
-                if (!ok) return;
-                tmMsgs = data.messages || [];
-                tmRender();
-            });
-        }
-        function tmAdd(kind) {
-            if (!kind) return;
-            tmMsgs.push({ kind, title: TM_KINDS[kind], intro: '', body: '', checklist: [], questions: [], delay: 0 });
-            tmRender();
-        }
-
-        // Вопросы опроса/теста — текстом: блоки через пустую строку; первая строка — вопрос,
-        // «- вариант», «- * верный вариант» (для мини-теста), «> пояснение».
-        function tmQuestionsToText(qs) {
-            return (qs || []).map(q => [q.text].concat((q.options || []).map(o => `- ${o.correct ? '* ' : ''}${o.text}`))
-                .concat(q.explanation ? [`> ${q.explanation}`] : []).join('\n')).join('\n\n');
-        }
-        function tmTextToQuestions(text) {
-            return String(text || '').split(/\n\s*\n/).map(block => {
-                const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
-                if (!lines.length) return null;
-                const q = { text: lines[0], options: [], explanation: '' };
-                lines.slice(1).forEach(l => {
-                    if (l.startsWith('>')) q.explanation = l.slice(1).trim();
-                    else if (l.startsWith('-')) {
-                        let t = l.slice(1).trim();
-                        const correct = t.startsWith('*');
-                        if (correct) t = t.slice(1).trim();
-                        if (t) q.options.push({ text: t, correct });
-                    }
-                });
-                return q;
-            }).filter(Boolean);
-        }
-
-        function tmField(i, key, value) {
-            const m = tmMsgs[i];
-            if (key === 'checklist') m.checklist = value.split('\n').map(s => s.trim()).filter(Boolean);
-            else if (key === 'questions') m.questions = tmTextToQuestions(value);
-            else if (key === 'delay') m.delay = Math.max(0, parseInt(value, 10) || 0);
-            else if (key === 'kind') { m.kind = value; tmRender(); }
-            else m[key] = value;
-        }
-
-        function tmRender() {
-            const box = document.getElementById('tm-list');
-            if (!tmMsgs.length) { box.innerHTML = '<div class="empty-hint">Сообщений нет — загрузите примеры или добавьте своё.</div>'; return; }
-            box.innerHTML = tmMsgs.map((m, i) => {
-                const fmt = TM_FORMAT[m.kind] || 'text';
-                const kindSel = Object.entries(TM_KINDS).map(([k, t]) => `<option value="${k}" ${k === m.kind ? 'selected' : ''}>${t}</option>`).join('');
-                let fields = '';
-                if (fmt === 'text') {
-                    fields = `<div class="field"><label>Текст</label><textarea rows="4" oninput="tmField(${i}, 'body', this.value)">${escapeHtml(m.body || '')}</textarea></div>`;
-                } else {
-                    fields = `<div class="field"><label>Вступление</label><input type="text" value="${escapeHtml(m.intro || '')}" oninput="tmField(${i}, 'intro', this.value)"></div>`;
-                    const qHelp = 'Вопросы разделяйте пустой строкой. Первая строка — вопрос, затем варианты «- вариант».'
-                        + (m.kind === 'quiz' ? ' Верный вариант: «- * вариант». Пояснение после ответа: «> текст».' : '');
-                    fields += fmt === 'list'
-                        ? `<div class="field"><label>Пункты (по одному в строке)</label><textarea rows="4" oninput="tmField(${i}, 'checklist', this.value)">${escapeHtml((m.checklist || []).join('\n'))}</textarea></div>`
-                        : `<div class="field"><label>Вопросы <span class="help" title="${escapeHtml(qHelp)}">?</span></label>
-                            <textarea rows="7" oninput="tmField(${i}, 'questions', this.value)">${escapeHtml(tmQuestionsToText(m.questions))}</textarea></div>`;
-                }
-                return `<div class="card tm-card">
-                    <div class="tm-head">
-                        <select onchange="tmField(${i}, 'kind', this.value)">${kindSel}</select>
-                        <input type="text" class="tm-title" value="${escapeHtml(m.title || '')}" placeholder="Заголовок" oninput="tmField(${i}, 'title', this.value)">
-                        <label class="tm-delay">через <input type="number" min="0" step="10" value="${m.delay || 0}" oninput="tmField(${i}, 'delay', this.value)"> сек</label>
-                        <button class="icon-btn danger" title="Убрать" onclick="tmMsgs.splice(${i}, 1); tmRender();"><i data-lucide="x"></i></button>
-                    </div>${fields}</div>`;
-            }).join('');
-            refreshIcons();
-        }
-
-        function tmSend() {
-            const userId = document.getElementById('tm-user').value;
-            const status = document.getElementById('tm-status');
-            if (!userId) { status.textContent = 'Выберите пользователя.'; return; }
-            if (!tmMsgs.length) { status.textContent = 'Добавьте хотя бы одно сообщение.'; return; }
-            const btn = document.getElementById('tm-send');
-            btn.disabled = true;
-            status.textContent = 'Отправка…';
-            apiJson(`/users/${encodeURIComponent(userId)}/test-messages`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: tmMsgs }),
-            }).then(({ ok, data }) => {
-                btn.disabled = false;
-                const later = tmMsgs.filter(m => m.delay > 0).length;
-                status.textContent = ok
-                    ? `Отправлено ${data.sent} для «${data.target}»${later ? ` (из них ${later} — с задержкой, выпустит планировщик)` : ''}. Смотрите «Чат» в приложении.`
-                    : (data.detail || 'Не удалось отправить');
-            }).catch(err => { btn.disabled = false; status.textContent = err.message; });
         }

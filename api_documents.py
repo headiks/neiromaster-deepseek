@@ -27,14 +27,20 @@ async def get_documents(user: dict = Depends(require_admin)):
 
 
 @router.get("/documents/board")
-async def get_documents_board(user: dict = Depends(require_admin)):
-    """Данные экрана «этапы ↔ документы» по ПЛАНУ адаптации. Привязка документов к
-    подэтапам — по LLM-разметке docpipe (не по косинусу): документ под подэтапом, если
-    его блок ПРЯМО этому подэтапу соответствует, score = уверенность модели.
+async def get_documents_board(plan_id: str | None = None, user: dict = Depends(require_admin)):
+    """Данные экрана «этапы ↔ документы»: по каталогу этапов или (plan_id) по этапам и
+    подэтапам конкретного плана — видно, каким подэтапам плана не хватает документов.
+    Привязка — по LLM-разметке docpipe (не по косинусу), score = уверенность модели.
     Администратор видит на доске только свои документы."""
     import docpipe
     allowed = {d["filename"] for d in visible_documents(user)}
     plan_stages, docs = docpipe.document_assignments(filenames=allowed)
+    if plan_id:
+        import planner
+        plan = planner.load_plan(plan_id)
+        if plan is None:
+            raise HTTPException(status_code=404, detail="План не найден")
+        plan_stages, docs = planner.plan_board(plan, docs)
     return documents.build_board(plan_stages, docs)
 
 

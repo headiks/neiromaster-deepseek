@@ -107,3 +107,10 @@ async def globaltest_page(request: Request):
     """Хаб тестирования и диагностики: все служебные инструменты в одном месте
     (реестр/доска документов, разбор, S3, база планов, тест уведомлений, очереди, журнал)."""
     return page_for_admin(request, "globaltest.html")
+
+
+@router.get("/message-test", response_class=HTMLResponse)
+async def message_test_page(request: Request):
+    """Настраиваемые тестовые сообщения пользователю (все типы). Ссылок на страницу нет —
+    открывается только вводом адреса."""
+    return page_for_admin(request, "message_test.html")
