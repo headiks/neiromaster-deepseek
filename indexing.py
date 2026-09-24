@@ -62,18 +62,14 @@ def _get_converter():
                 _converter = DocumentConverter()
     return _converter
 
-# Межпроцессная блокировка реестра: read-modify-write registry.json безопасен и при
-# нескольких uvicorn-воркерах (см. config.FileGuard). Раньше был обычный threading.Lock,
-# который между процессами не действует — параллельные записи теряли обновления.
 def _log(step, msg):
     print(f"[INDEX:{step}] {msg}")
 
 
 # ---------- Реестр документов ----------
-# Само хранилище вынесено в docregistry.py (файловый store под блокировкой). Здесь —
-# только реэкспорт публичных имён (indexing.list_documents и т.п. зовут снаружи).
+# Само хранилище — docregistry.py (таблица doc_registry в PostgreSQL). Здесь — только
+# реэкспорт публичных имён (indexing.list_documents и т.п. зовут снаружи).
 _update_registry = docregistry.update
-_load_registry = docregistry.load
 list_documents = docregistry.list_documents
 set_clarification = docregistry.set_clarification
 folder_doc_counts = docregistry.folder_doc_counts
@@ -82,8 +78,14 @@ folder_doc_counts = docregistry.folder_doc_counts
 # ---------- Вспомогательные функции ----------
 def safe_filename(filename: str) -> str:
     """Убираем путь и опасные символы — защита от path traversal при загрузке."""
-    name = Path(filename).name
-    name = re.sub(r"[^\w\-. а-яА-ЯёЁ]", "_", name)
+    name = Path(filename or "").name
+    # Скобки допустимы: «Регламент (2).pdf» — так называется отдельно сохранённая версия.
+    name = re.sub(r"[^\w\-.() а-яА-ЯёЁ]", "_", name).strip()
+    if not name.strip(".") or name.startswith("."):
+        name = ""
+    if len(name) > 200:                   # длинное имя режем, сохраняя расширение
+        ext = Path(name).suffix[:10]
+        name = name[:200 - len(ext)] + ext
     return name or f"document_{uuid.uuid4().hex[:8]}"
 
 
@@ -174,7 +176,7 @@ def convert_document(filepath: Path) -> DoclingDocument:
     # если локальной копии нет — тянем оригинал из S3 по ключу из реестра
     # (структура <суперадмин>/<админ>/<файл>; у старых записей ключа нет — плоский)
     from docling_core.types.doc.document import DoclingDocument
-    storage.pull(filepath, _load_registry().get(filepath.name, {}).get("s3_key") or "")
+    storage.pull(filepath, (docregistry.get(filepath.name) or {}).get("s3_key") or "")
     cache_path = CACHE_DIR / f"{filepath.stem}__{file_hash(filepath)}.json"
     if cache_path.exists():
         return DoclingDocument.load_from_json(str(cache_path))
@@ -259,6 +261,9 @@ def index_document(filepath: Path) -> dict:
     (этапы/подэтапы, метки в Postgres). Векторов/эмбеддингов нет — ретрив идёт по
     LLM-меткам docpipe (см. rag.route_substages, planner через docpipe.chunks_for_substage)."""
     filename = filepath.name
+    if is_confidential(filename):
+        # Флаг поставили, пока файл ждал в очереди, — в модель его не отправляем.
+        return {"filename": filename, "status": "confidential", "chunks": 0}
     _update_registry(filename, status="processing", error=None,
                      phase="Классификация (docpipe)", progress=10)
     try:
@@ -343,7 +348,51 @@ def free_filename(filename: str) -> str:
     return f"{stem} ({n}){ext}"
 
 
-def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] = None) -> Path:
+def find_duplicate(content: bytes) -> Optional[dict]:
+    """Уже загруженный документ с тем же содержимым (кем угодно) — его не обрабатываем и не
+    оплачиваем повторно. Сначала SHA-256 из реестра; для документов, загруженных до того,
+    как реестр стал хранить хэш, — по хэшу содержимого в таблице разметки docpipe."""
+    digest = hashlib.sha256(content).hexdigest()
+    found = docregistry.find_by_sha256(digest)
+    if found:
+        return found
+    try:
+        import db
+        row = db.query("SELECT filename FROM documents WHERE content_hash = %s LIMIT 1", (digest[:32],), "one")
+    except Exception:
+        row = None
+    return docregistry.get(row["filename"]) if row else None
+
+
+def is_confidential(filename: str) -> bool:
+    return bool((docregistry.get(filename) or {}).get("confidential"))
+
+
+def set_confidential(filename: str, confidential: bool) -> dict:
+    """«Не отправлять в ИИ» — для чувствительных документов (положение об оплате труда и т.п.).
+    Включить: разметка документа удаляется (его фрагменты больше не попадают ни в генерацию
+    сообщений, ни в ответы на вопросы), файл остаётся в базе. Выключить: документ уходит на
+    обычную обработку. Возвращает запись реестра."""
+    if confidential:
+        try:
+            from docpipe import store as _dp_store
+            _dp_store.delete_by_filename(filename)
+        except Exception as e:
+            _log("CONFIDENTIAL", f"разметка {filename} не удалена: {e}")
+        try:
+            documents.remove_by_filename(filename)
+        except Exception:
+            pass
+        entry = _update_registry(filename, confidential=True, status="confidential", chunks=0,
+                                 phase=None, progress=None, error=None)
+    else:
+        entry = _update_registry(filename, confidential=False, status="uploaded", error=None)
+        enqueue_document(DOCS_DIR / filename)
+    return entry
+
+
+def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] = None,
+                       confidential: bool = False) -> Path:
     filename = safe_filename(filename)
     ext = Path(filename).suffix.lower()
     if ext not in SUPPORTED_EXT:
@@ -368,8 +417,11 @@ def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] =
     _update_registry(
         filename,
         size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
         uploaded_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
-        status="uploaded",
+        # Конфиденциальный документ хранится, но в ИИ не уходит: не размечается вовсе.
+        status="confidential" if confidential else "uploaded",
+        confidential=bool(confidential),
         chunks=0,
         folders=[],
         stage_ids=[],
@@ -417,7 +469,6 @@ def process_index_job(job_id: str):
             return
         filepath = Path(job["filepath"])
         _set_index_job(job_id, status="processing", started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-        _update_registry(filepath.name, status="processing", error=None)
         result = index_document(filepath)
         _set_index_job(job_id, status=result["status"], result=result,
                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
@@ -441,7 +492,7 @@ def requeue_stranded() -> int:
     памяти процесса, поэтому рестарт приложения (или потерянная задача) оставлял бы такие
     файлы навсегда «Загружен», не индексируя. Зовётся при старте. Возвращает число."""
     n = 0
-    for entry in _load_registry().values():
+    for entry in list_documents():
         if entry.get("status") in ("uploaded", "processing"):
             enqueue_document(DOCS_DIR / entry["filename"])
             n += 1
@@ -455,6 +506,8 @@ def reanalyze_document(filename: str) -> dict:
     """Переклассифицировать документ заново через docpipe (docling + LLM-разметка
     этапов/подэтапов, метки в Postgres). Векторов больше нет. Статус ведём по ходу
     (reanalyzing -> indexed/error), чтобы был виден в списке документов."""
+    if is_confidential(filename):
+        return {"filename": filename, "error": "Документ помечен «не отправлять в ИИ»"}
     _update_registry(filename, status="reanalyzing", error=None,
                      phase="Переклассификация (docpipe)", progress=10)
     try:

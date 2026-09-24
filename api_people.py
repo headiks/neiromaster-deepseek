@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Respons
 import json
 from urllib.parse import quote
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import auth
 import users
@@ -21,11 +21,21 @@ router = APIRouter()
 
 # ---------- Штатное расписание (первичный инструмент: люди и должности) ----------
 class StaffingImportRequest(BaseModel):
-    records: list = []
+    records: list = Field(default_factory=list, max_length=5000)
 
 
-@router.post("/staffing/preview", dependencies=admin_only)
-async def staffing_preview(file: UploadFile = File(...)):
+def _foreign_department(actor: dict, department: str) -> bool:
+    """Обычный администратор заводит людей только своего подразделения: иначе он создал бы
+    сотрудников, которых сам не видит и не может править (список фильтруется по отделу)."""
+    if users.is_owner(actor):
+        return False
+    own = (actor.get("department") or "").strip().lower()
+    dep = (department or "").strip().lower()
+    return bool(own and dep and dep != own)
+
+
+@router.post("/staffing/preview")
+async def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require_admin)):
     """Разбор загруженной xlsx-штатки: ИИ определяет разметку столбцов, возвращаем
     найденное сопоставление и извлечённые записи для подтверждения администратором."""
     content = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -40,19 +50,50 @@ async def staffing_preview(file: UploadFile = File(...)):
     known = staffing.existing_keys()
     for r in result.get("records") or []:
         r["exists"] = staffing.record_key(r) in known
+        r["foreign"] = _foreign_department(actor, r.get("department"))
     result["count"] = len(result.get("records") or [])
     return result
 
 
-@router.post("/staffing/import", dependencies=admin_only)
-async def staffing_import(req: StaffingImportRequest):
+@router.post("/staffing/import")
+async def staffing_import(req: StaffingImportRequest, actor: dict = Depends(require_admin)):
     """Массовое создание из подтверждённых строк единой таблицы: строки с ФИО — профили
-    сотрудников (логины/пароли в ответе, один раз), строки без ФИО — профили-вакансии."""
-    return staffing.import_records(req.records or [])
+    сотрудников (логины/пароли в ответе, один раз), строки без ФИО — профили-вакансии.
+    Обычный администратор создаёт только людей своего подразделения (пустое — его)."""
+    records = [r for r in (req.records or []) if isinstance(r, dict)][:5000]
+    foreign = []
+    if not users.is_owner(actor):
+        own = actor.get("department") or ""
+        mine = []
+        for r in records:
+            if _foreign_department(actor, r.get("department")):
+                foreign.append({"full_name": r.get("full_name") or r.get("position") or "—",
+                                "reason": "другое подразделение — заводит суперадмин"})
+            else:
+                mine.append({**r, "department": (r.get("department") or "").strip() or own})
+        records = mine
+    result = staffing.import_records(records, actor=actor)
+    result["skipped"] = foreign + result.get("skipped", [])
+    activitylog.log("action", user=actor, path="/staffing/import",
+                    detail={"action": "staffing_import", "profiles": len(result.get("profiles", [])),
+                            "vacancies": len(result.get("vacancies", []))})
+    return result
 
 
 class IdsRequest(BaseModel):
-    ids: list[str] = []
+    ids: list[str] = Field(default_factory=list, max_length=5000)
+
+
+def _delete_denied(actor: dict, target: dict) -> str:
+    """Причина, по которой актор не может удалить пользователя ('' — может). Одно правило
+    для одиночного и массового удаления: себя нельзя; обычный администратор — только
+    сотрудников своего подразделения; суперадмин — любого (последнего owner не даст users)."""
+    if target.get("id") == actor.get("id"):
+        return "нельзя удалить себя"
+    if not users.is_owner(actor) and (target.get("role") != users.ROLE_EMPLOYEE
+                                      or not users.can_manage(actor, target)):
+        return "недостаточно прав"
+    return ""
 
 
 @router.post("/users/bulk-delete")
@@ -65,11 +106,9 @@ async def bulk_delete(req: IdsRequest, actor: dict = Depends(require_admin)):
         if target is None:
             continue
         name = target.get("full_name") or uid
-        if uid == actor["id"]:
-            skipped.append({"full_name": name, "reason": "нельзя удалить себя"})
-            continue
-        if not users.can_manage(actor, target) or (not users.is_owner(actor) and target.get("role") != "employee"):
-            skipped.append({"full_name": name, "reason": "недостаточно прав"})
+        reason = _delete_denied(actor, target)
+        if reason:
+            skipped.append({"full_name": name, "reason": reason})
             continue
         try:
             if users.delete_user(uid):
@@ -86,7 +125,7 @@ async def bulk_delete(req: IdsRequest, actor: dict = Depends(require_admin)):
 async def credentials_xlsx(ids: str = "", actor: dict = Depends(require_admin)):
     """Excel «ФИО / логин / временный пароль» — по сотрудникам, ещё не задавшим свой пароль.
     ids (через запятую) — только эти (сразу после загрузки штатки); пусто — все видимые."""
-    wanted = {i for i in ids.split(",") if i}
+    wanted = {i for i in ids.split(",")[:5000] if i}
     rows = [u for u in users.visible_users(actor, users.list_users(with_secrets=True))
             if u.get("temp_password")
             and (not wanted or u["id"] in wanted)]
@@ -177,11 +216,11 @@ async def create_user(req: UserRequest, actor: dict = Depends(require_admin)):
     # Логин выдаётся один раз из фамилии и инициалов и не редактируется; временный пароль —
     # случайный, админ видит его в списке и в Excel до первого входа сотрудника.
     payload["username"] = staffing.new_username(payload.get("full_name") or "")
-    payload["password"] = staffing._temp_password()
-    # Отдел по умолчанию — отдел заводящего администратора: иначе он создаст человека,
-    # которого сам же не увидит (список людей отфильтрован по отделу).
-    if not users.is_owner(actor) and not (payload.get("department") or "").strip():
-        payload["department"] = actor.get("department") or ""
+    payload["password"] = staffing.temp_password()
+    # Обычный администратор заводит людей только в своё подразделение: иначе он создал бы
+    # человека, которого сам же не увидит (список людей отфильтрован по отделу).
+    if not users.is_owner(actor) and actor.get("department"):
+        payload["department"] = actor["department"]
     try:
         user = users.create_user(payload, actor=actor, role=users.ROLE_EMPLOYEE,
                                  issued_password=True)
@@ -199,7 +238,12 @@ async def get_user(user_id: str, actor: dict = Depends(require_admin)):
 async def update_user(user_id: str, req: UserRequest, actor: dict = Depends(require_admin)):
     """Правка профиля и назначение плана адаптации с датой выхода."""
     before = _target_user(user_id, actor)
-    user = users.update_profile(user_id, req.model_dump())
+    payload = req.model_dump()
+    # Подразделение определяет, кого видит администратор. Обычный админ не меняет его ни
+    # себе (иначе «переехал» бы в чужой отдел и увидел его людей), ни сотрудникам.
+    if not users.is_owner(actor):
+        payload["department"] = before.get("department") or ""
+    user = users.update_profile(user_id, payload)
     # Сменились план/дата выхода/должность -> будущие сообщения плана пересобираются сразу
     # (иначе сотрудник получал бы сообщения старого плана или не получал вовсе).
     keys = ("plan_id", "start_date", "plan_profession", "position")
@@ -212,13 +256,14 @@ async def update_user(user_id: str, req: UserRequest, actor: dict = Depends(requ
 async def remove_user(user_id: str, actor: dict = Depends(require_admin)):
     """Удаление пользователя: обычный админ — только сотрудников,
     суперадмин — любого (кроме самого себя; последнего owner сервер не даст)."""
-    if user_id == actor["id"]:
-        raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
     target = users.get_user(user_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-    if actor.get("role") != "owner" and target.get("role") != "employee":
-        raise HTTPException(status_code=403, detail="Обычный администратор может удалять только сотрудников")
+    reason = _delete_denied(actor, target)
+    if reason:
+        raise HTTPException(status_code=400 if target.get("id") == actor.get("id") else 403,
+                            detail="Нельзя удалить самого себя" if target.get("id") == actor.get("id")
+                            else "Администратор удаляет только сотрудников своего подразделения")
     try:
         deleted = users.delete_user(user_id)
     except ValueError as e:
@@ -226,6 +271,8 @@ async def remove_user(user_id: str, actor: dict = Depends(require_admin)):
     if not deleted:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     auth.drop_user_sessions(user_id)
+    activitylog.log("action", user=actor, path=f"/users/{user_id}",
+                    detail={"action": "user_delete", "target": target.get("username") or user_id})
     return {"user_id": user_id, "deleted": True}
 
 
@@ -240,6 +287,8 @@ async def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends
         raise HTTPException(status_code=400, detail=str(e))
     # Права изменились — пусть перезайдёт с актуальной ролью
     auth.drop_user_sessions(user_id)
+    activitylog.log("action", user=actor, path=f"/users/{user_id}/role",
+                    detail={"action": "role_change", "target": user.get("username"), "role": req.role})
     return users.public_view(user)
 
 
@@ -269,7 +318,7 @@ async def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
     нет (профиль-вакансия), он выдаётся один раз из ФИО. Сотрудник при входе задаст свой пароль.
     """
     target = _target_user(user_id, actor)
-    password = req.password or staffing._temp_password()
+    password = req.password or staffing.temp_password()
     try:
         if not target.get("username"):
             users.set_username(user_id, staffing.new_username(target.get("full_name") or ""))
@@ -279,7 +328,11 @@ async def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     auth.drop_user_sessions(user_id)
-    return {**users.public_view(users.get_user(user_id)), "temp_password": password}
+    updated = users.get_user(user_id)
+    auth.clear_failures(updated.get("username") or "")      # новый пароль снимает блокировку входа
+    activitylog.log("action", user=actor, path=f"/users/{user_id}/credentials",
+                    detail={"action": "password_issued", "target": updated.get("username")})
+    return {**users.public_view(updated), "temp_password": password}
 
 
 @router.post("/users/{user_id}/pause")
@@ -333,11 +386,11 @@ async def materialize_user_schedule(user_id: str, actor: dict = Depends(require_
 class TestMessage(BaseModel):
     title: str | None = None
     body: str | None = None
-    delay: int | None = 0   # секунд от «сейчас»; 0 — доставить сразу
+    delay: int | None = Field(default=0, ge=0, le=7 * 24 * 3600)   # секунд от «сейчас»; 0 — сразу
 
 
 class NotifyTestRequest(BaseModel):
-    messages: list[TestMessage] = []
+    messages: list[TestMessage] = Field(default_factory=list, max_length=50)
 
 
 @router.post("/users/{user_id}/notify-test", dependencies=admin_only)
@@ -358,7 +411,7 @@ async def notify_test(user_id: str, req: NotifyTestRequest, actor: dict = Depend
 
 
 class TestTypedMessages(BaseModel):
-    messages: list[dict] | None = None   # None — по примеру каждого типа
+    messages: list[dict] | None = Field(default=None, max_length=50)   # None — по примеру каждого типа
 
 
 @router.get("/test-messages/samples", dependencies=admin_only)

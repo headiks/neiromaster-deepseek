@@ -15,7 +15,7 @@
                удалять пользователей и раздавать права.
     employee — сотрудник. Чат с ассистентом и своё расписание адаптации.
 
-Хранилище: таблица users в SQLite (см. db.py). Открытых паролей нет — только соль
+Хранилище: таблица users в PostgreSQL (см. db.py). Открытых паролей нет — только соль
 и scrypt-хэш. Со старого data/users.json данные переносятся автоматически при старте.
 """
 
@@ -165,6 +165,11 @@ def _row_to_user(row) -> dict:
     if not (user.get("phone") or user.get("email")) and user.get("contact"):
         user["phone"], user["email"] = split_contact(user["contact"])
     return user
+
+
+def from_row(row) -> dict:
+    """Запись пользователя из строки SELECT * FROM users (с расшифровкой ПДн)."""
+    return _row_to_user(row)
 
 
 def split_contact(contact: str) -> tuple:
@@ -380,25 +385,58 @@ def ensure_can_manage(actor: dict, target: dict):
 
 
 # ---------- Запись ----------
+_DATE_FORMATS = ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%y", "%Y.%m.%d", "%Y/%m/%d")
+# Длина свободных полей профиля: защита от мусора в БД и раздутых ответов API.
+FIELD_MAX = 300
+NOTES_MAX = 5000
+
+
+def normalize_date(value) -> Optional[str]:
+    """Дата выхода в ISO (ГГГГ-ММ-ДД) из того, что приходит на практике: поле формы
+    (ISO), xlsx (datetime -> «2026-05-15 00:00:00»), xls/csv («15.05.2026», «15/05/2026»).
+    Нераспознанное -> None: без даты расписание просто не строится, а мусорная строка
+    ломала расчёт дат, и сообщения сотруднику не приходили вовсе."""
+    from datetime import date, datetime
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip().split(" ")[0].split("T")[0]
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+        if 1900 <= parsed.year <= 2200:
+            return parsed.isoformat()
+    return None
+
+
+def _text(raw: dict, key: str, limit: int = FIELD_MAX) -> str:
+    return str(raw.get(key) or "").strip()[:limit]
+
+
 def _apply_profile(user: dict, raw: dict) -> dict:
     """Профильные и адаптационные поля. Роль, логин, пароль и статус сюда не входят:
     статус адаптации считается сам (adaptation_status), пауза — set_status."""
-    phone, email = (raw.get("phone") or "").strip(), (raw.get("email") or "").strip()
+    phone, email = _text(raw, "phone", 64), _text(raw, "email", 254)
     if not (phone or email) and raw.get("contact"):          # старые клиенты шлют одно поле
-        phone, email = split_contact(raw.get("contact"))
+        phone, email = split_contact(_text(raw, "contact"))
     user.update({
-        "full_name": (raw.get("full_name") or user.get("full_name") or "").strip() or "Без имени",
-        "position": (raw.get("position") or "").strip(),
-        "department": (raw.get("department") or "").strip(),
+        "full_name": (_text(raw, "full_name") or (user.get("full_name") or "").strip()) or "Без имени",
+        "position": _text(raw, "position"),
+        "department": _text(raw, "department"),
         "phone": phone,
         "email": email,
         "contact": join_contact({"phone": phone, "email": email}),
-        "mentor": (raw.get("mentor") or "").strip(),
-        "manager": (raw.get("manager") or "").strip(),
-        "plan_id": (raw.get("plan_id") or "").strip() or None,
-        "plan_profession": (raw.get("plan_profession") or "").strip(),
-        "start_date": str(raw.get("start_date") or "")[:10] or None,
-        "notes": (raw.get("notes") or "").strip(),
+        "mentor": _text(raw, "mentor"),
+        "manager": _text(raw, "manager"),
+        "plan_id": _text(raw, "plan_id", 64) or None,
+        "plan_profession": _text(raw, "plan_profession"),
+        "start_date": normalize_date(raw.get("start_date")),
+        "notes": _text(raw, "notes", NOTES_MAX),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     })
     return user
@@ -662,7 +700,10 @@ def ensure_owner() -> Optional[dict]:
             return None
 
         username = f"admin-{secrets.token_hex(3)}"
-        password = secrets.token_urlsafe(12)
+        # Пароль можно задать заранее (автоматический деплой): NEIROMASTER_ADMIN_PASSWORD.
+        # Короче минимума — игнорируем и генерируем: слабый пароль владельца хуже случайного.
+        preset = os.environ.get("NEIROMASTER_ADMIN_PASSWORD") or ""
+        password = preset if len(preset) >= MIN_PASSWORD_LENGTH else secrets.token_urlsafe(12)
         create_user(
             {"username": username, "password": password, "full_name": "Главный администратор"},
             role=ROLE_OWNER,
@@ -707,8 +748,21 @@ def _import_records(records) -> int:
     return moved
 
 
+def migrate_start_dates() -> int:
+    """Разово приводит даты выхода к ISO. Штатка из .xls/.csv записывала «15.05.2026» —
+    такие сотрудники навсегда оставались «Запланирован» и не получали сообщений плана."""
+    fixed = 0
+    rows = db.query("SELECT id, start_date FROM users WHERE start_date IS NOT NULL "
+                    "AND start_date !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'", (), "all") or []
+    for r in rows:
+        db.execute("UPDATE users SET start_date = %s WHERE id = %s",
+                   (normalize_date(r["start_date"]), r["id"]))
+        fixed += 1
+    return fixed
+
+
 def migrate_legacy_json_users() -> int:
-    """Перенос аккаунтов из старого data/users.json в SQLite (разово)."""
+    """Перенос аккаунтов из старого data/users.json в БД (разово)."""
     if not USERS_PATH.exists():
         return 0
     try:

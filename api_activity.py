@@ -1,9 +1,10 @@
 """Логирование действий: приём клиентских событий (клики) и просмотр журнала админом."""
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import activitylog
+import security
 import users
 from fastapi import HTTPException
 from deps import current_user, require_admin, logged_in, owner_only
@@ -12,14 +13,17 @@ router = APIRouter()
 
 
 class EventRequest(BaseModel):
-    type: str                      # только из activitylog.CLIENT_EVENTS
-    path: str | None = None
+    type: str = Field(max_length=32)          # только из activitylog.CLIENT_EVENTS
+    path: str | None = Field(default=None, max_length=512)
     detail: dict | None = None
 
 
 @router.post("/api/events", dependencies=logged_in)
 async def ingest_event(req: EventRequest, request: Request, user: dict = Depends(current_user)):
-    """Событие от фронта (клик, просмотр). Тип — только из белого списка; лишнее игнорируем."""
+    """Событие от фронта (клик, просмотр). Тип — только из белого списка; лишнее игнорируем.
+    Не больше 120 событий в минуту от пользователя: журнал в БД не должен засыпаться скриптом."""
+    if not security.hit(f"events:{user['id']}", 120, 60):
+        return {"ok": False, "throttled": True}
     event_type = req.type if req.type in activitylog.CLIENT_EVENTS else "click"
     activitylog.log(event_type, user=user, request=request,
                     path=req.path, detail=activitylog.clean_client_detail(req.detail))

@@ -7,13 +7,14 @@
     - выдача и проверка токена сессии.
 
 Сессии хранятся в PostgreSQL (таблица sessions, см. db.py): переживают перезапуск
-сервера (пользователей не разлогинивает) и общие для всех uvicorn-воркеров.
-Защита от перебора (лок-аут) остаётся в памяти процесса — она короткоживущая и
-сбрасывается при рестарте, это допустимо.
+сервера (пользователей не разлогинивает) и общие для всех uvicorn-воркеров. В БД лежит
+не сам токен, а его SHA-256: утёкший дамп не даёт войти чужой сессией.
+Защита от перебора (лок-аут) — в Redis (общая для всех воркеров), без Redis — в памяти.
 """
 
 import os
 import time
+import hashlib
 import secrets
 import threading
 from typing import Optional
@@ -37,30 +38,81 @@ COOKIE_SECURE = os.environ.get("NEIROMASTER_INSECURE_COOKIE", "").lower() not in
 LOCKOUT_ATTEMPTS = 10
 LOCKOUT_SECONDS = 300
 
+# seen_at продлевается не чаще раза в минуту: при тысячах пользователей запись в БД на
+# КАЖДЫЙ запрос — лишняя нагрузка, а точность продления до минуты не нужна.
+SEEN_REFRESH = 60
+
 _lock = threading.Lock()
 _failures: dict = {}
+
+
+def _redis():
+    from redis_conn import get_redis
+    return get_redis()
+
+
+def _fail_key(key: str) -> str:
+    return f"nm:login:fail:{hashlib.sha256(key.encode('utf-8')).hexdigest()[:32]}"
 
 
 # ---------- Блокировка перебора ----------
 def _is_locked(key: str) -> int:
     """Сколько секунд осталось до разблокировки (0 — не заблокирован)."""
-    record = _failures.get(key)
-    if not record or record["count"] < LOCKOUT_ATTEMPTS:
-        return 0
-    remaining = int(record["last"] + LOCKOUT_SECONDS - time.time())
-    if remaining <= 0:
-        _failures.pop(key, None)
-        return 0
-    return remaining
+    r = _redis()
+    if r is not None:
+        try:
+            count = int(r.get(_fail_key(key)) or 0)
+            if count < LOCKOUT_ATTEMPTS:
+                return 0
+            return max(1, int(r.ttl(_fail_key(key))))
+        except Exception:
+            pass
+    with _lock:
+        record = _failures.get(key)
+        if not record or record["count"] < LOCKOUT_ATTEMPTS:
+            return 0
+        remaining = int(record["last"] + LOCKOUT_SECONDS - time.time())
+        if remaining <= 0:
+            _failures.pop(key, None)
+            return 0
+        return remaining
 
 
 def _record_failure(key: str):
-    record = _failures.setdefault(key, {"count": 0, "last": 0})
-    # Серия считается прерванной, если между попытками прошло больше окна блокировки
-    if time.time() - record["last"] > LOCKOUT_SECONDS:
-        record["count"] = 0
-    record["count"] += 1
-    record["last"] = time.time()
+    r = _redis()
+    if r is not None:
+        try:
+            pipe = r.pipeline()
+            pipe.incr(_fail_key(key))
+            pipe.expire(_fail_key(key), LOCKOUT_SECONDS)   # окно серии сдвигается с каждой неудачей
+            pipe.execute()
+            return
+        except Exception:
+            pass
+    with _lock:
+        record = _failures.setdefault(key, {"count": 0, "last": 0})
+        # Серия считается прерванной, если между попытками прошло больше окна блокировки
+        if time.time() - record["last"] > LOCKOUT_SECONDS:
+            record["count"] = 0
+        record["count"] += 1
+        record["last"] = time.time()
+
+
+def clear_failures(username: str):
+    """Снять блокировку логина: успешный вход или новый пароль от администратора."""
+    key = (username or "").strip().lower()
+    r = _redis()
+    if r is not None:
+        try:
+            r.delete(_fail_key(key))
+        except Exception:
+            pass
+    with _lock:
+        _failures.pop(key, None)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 # ---------- Вход ----------
@@ -71,8 +123,7 @@ def login(username: str, password: str, client: str = "") -> tuple:
     username = (username or "").strip().lower()
     key = username    # лок-аут по аккаунту, независимо от IP (см. LOCKOUT_ATTEMPTS)
 
-    with _lock:
-        locked_for = _is_locked(key)
+    locked_for = _is_locked(key)
     if locked_for:
         raise ValueError(f"Слишком много неудачных попыток. Повторите через {locked_for} сек.")
 
@@ -84,20 +135,18 @@ def login(username: str, password: str, client: str = "") -> tuple:
     password_ok = users.verify_password(password or "", salt, stored)
 
     if not user or not user.get("hash") or not password_ok:
-        with _lock:
-            _record_failure(key)
+        _record_failure(key)
         raise ValueError("Неверный логин или пароль")
 
     if not user.get("active"):
         raise ValueError("Учётная запись ещё не подтверждена администратором")
 
-    with _lock:
-        _failures.pop(key, None)
+    clear_failures(key)
 
     now = time.time()
     token = secrets.token_urlsafe(32)
     db.execute("INSERT INTO sessions (token, user_id, created_at, seen_at) VALUES (%s, %s, %s, %s)",
-               (token, user["id"], now, now))
+               (_hash_token(token), user["id"], now, now))
     db.execute("DELETE FROM sessions WHERE seen_at < %s", (now - SESSION_TTL,))  # чистим протухшие
     return token, user
 
@@ -108,20 +157,27 @@ def get_session_user(token: Optional[str]) -> Optional[dict]:
     Роль и активность читаются из хранилища при каждом запросе — снятие прав
     или блокировка действуют сразу, без ожидания перелогина.
     """
-    if not token:
+    if not token or len(token) > 256:
         return None
     now = time.time()
-    session = db.query("SELECT user_id, seen_at FROM sessions WHERE token = %s", (token,), "one")
+    hashed = _hash_token(token)
+    session = db.query("SELECT token, user_id, seen_at FROM sessions WHERE token = %s", (hashed,), "one")
     if not session:
-        return None
+        # Сессии, выданные до хэширования, лежат открытым токеном: находим и сразу
+        # переводим на хэш — пользователя не разлогинивает.
+        session = db.query("SELECT token, user_id, seen_at FROM sessions WHERE token = %s", (token,), "one")
+        if not session:
+            return None
+        db.execute("UPDATE sessions SET token = %s WHERE token = %s", (hashed, token))
     if now - session["seen_at"] > SESSION_TTL:
-        db.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        db.execute("DELETE FROM sessions WHERE token = %s", (hashed,))
         return None
-    db.execute("UPDATE sessions SET seen_at = %s WHERE token = %s", (now, token))
+    if now - session["seen_at"] > SEEN_REFRESH:
+        db.execute("UPDATE sessions SET seen_at = %s WHERE token = %s", (now, hashed))
 
     user = users.get_user(session["user_id"])
     if not user or not user.get("active"):
-        db.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        db.execute("DELETE FROM sessions WHERE token = %s", (hashed,))
         return None
     return user
 
@@ -129,7 +185,7 @@ def get_session_user(token: Optional[str]) -> Optional[dict]:
 def logout(token: Optional[str]):
     if not token:
         return
-    db.execute("DELETE FROM sessions WHERE token = %s", (token,))
+    db.execute("DELETE FROM sessions WHERE token = %s OR token = %s", (_hash_token(token), token))
 
 
 def drop_user_sessions(user_id: str):

@@ -1,7 +1,8 @@
 """Чат с ассистентом: вопрос -> RAG -> ответ, память диалога, эскалация человеку."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 import json
+import os
 import time
 import uuid
 import threading
@@ -9,18 +10,25 @@ from collections import OrderedDict, deque
 
 from redis_conn import get_redis
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+import users
+import security
 import questions
 from rag import handle_question, HISTORY_WINDOW
 from deps import require_setup_done, logged_in
 
 router = APIRouter()
 
+# Длинный «вопрос» — это не вопрос, а способ сжечь токены DeepSeek.
+QUESTION_MAX_CHARS = 2000
+# Вопросов к ИИ от одного пользователя в минуту (каждый — 2–3 запроса к модели).
+ASK_RATE_PER_MIN = int(os.environ.get("NEIROMASTER_ASK_RATE", "20"))
+
 
 class QuestionRequest(BaseModel):
-    question: str
-    session_id: str | None = None   # если не передан, сервер создаст новый
+    question: str = Field(max_length=QUESTION_MAX_CHARS)
+    session_id: str | None = Field(default=None, max_length=64)   # нет — сервер создаст новый
 
 
 class QuestionResponse(BaseModel):
@@ -163,20 +171,25 @@ def _route_to_human(result: dict, user: dict) -> dict:
     return result
 
 
-# Синхронный def (не async): handle_question ходит в Ollama/Qdrant синхронными
+# Синхронный def (не async): handle_question ходит в DeepSeek синхронными
 # requests на секунды-минуты. В async-обработчике это заблокировало бы весь event loop
 # uvicorn-воркера — «зависли» бы все параллельные запросы. Обычный def FastAPI выполняет
 # в threadpool, поэтому воркер продолжает обслуживать других пользователей.
 @router.post("/ask", response_model=QuestionResponse, dependencies=logged_in)
-def ask(req: QuestionRequest, user: dict = Depends(require_setup_done)):
+def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_setup_done)):
     start = time.time()
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Вопрос не может быть пустым")
+    security.limit(request, "ask", ASK_RATE_PER_MIN, 60, key=user["id"])
 
     # session_id связывает подряд идущие вопросы в один диалог. Фронтенд генерирует
     # его один раз на вкладку и присылает с каждым запросом; если его нет — заводим новый.
+    # Чужой session_id не принимаем: иначе в контекст попала бы переписка другого человека.
     session_id = req.session_id or str(uuid.uuid4())
+    owner = get_session_owner(session_id)
+    if owner and owner != user["id"]:
+        session_id = str(uuid.uuid4())
     history = get_recent_history(session_id)
 
     try:
@@ -186,6 +199,11 @@ def ask(req: QuestionRequest, user: dict = Depends(require_setup_done)):
         result["elapsed_time"] = time.time() - start
         result["session_id"] = session_id
         append_history(session_id, question, result.get("answer"), owner_id=user["id"])
+        if not users.is_admin(user):
+            # Сырые фрагменты регламентов сотруднику не нужны (он видит ответ): не раздаём
+            # документы целиком через API. Администратору — для отладки ответа.
+            result["top_fragments"] = []
+            result["candidates"] = []
         return QuestionResponse(**result)
     except Exception as e:
         # Внутреннюю причину — только в лог сервера, наружу общее сообщение:
