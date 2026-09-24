@@ -11,11 +11,19 @@ type Hooks = {
   cabinet?: { setAskView: (v: 'dialog' | 'questions') => void };
 };
 const hooks: Hooks = {};
+// Снимок редактора планов для возврата после тура: если тур закончился на другой странице,
+// редактор восстановится, когда страница планов снова откроется.
+let pendingPlans: unknown;
 
 /** Страница отдаёт туру свои действия (обновляются на каждой отрисовке). */
 export function useTourHooks<K extends keyof Hooks>(name: K, h: NonNullable<Hooks[K]>) {
   useEffect(() => {
     hooks[name] = h;
+    if (name === 'plans' && pendingPlans !== undefined) {
+      const snap = pendingPlans;
+      pendingPlans = undefined;
+      (h as NonNullable<Hooks['plans']>).restore(snap);
+    }
     return () => { if (hooks[name] === h) delete hooks[name]; };
   });
 }
@@ -171,7 +179,9 @@ const ADMIN: Scenario = {
     hooks.users?.closeDemo();
     hooks.users?.setStaffing(false);
     if (!s) return;
-    if (s.plans !== undefined) hooks.plans?.restore(s.plans);
+    if (s.plans !== undefined) {
+      if (hooks.plans) hooks.plans.restore(s.plans); else pendingPlans = s.plans;
+    }
     if (here() !== s.path) navigate(s.path);
     setTimeout(() => window.scrollTo(0, s.scrollY), 200);
   },

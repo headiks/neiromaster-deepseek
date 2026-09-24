@@ -1,6 +1,8 @@
 """
-E2E-проверка в настоящем браузере (Playwright + Chromium): админка, тур «Как пользоваться»,
-кабинет сотрудника на телефоне. Ловит ошибки JS в консоли, делает скриншоты.
+E2E-проверка нового сайта в настоящем браузере (Playwright + Chromium): первый вход,
+разделы админки, карточка сотрудника, тур «Как пользоваться», служебные страницы,
+заголовки безопасности, кабинет сотрудника на телефоне и на компьютере. Ловит ошибки JS
+в консоли и бесконечные циклы запросов, делает скриншоты.
 
 Нужен запущенный сервер на ЧИСТОЙ базе с известным начальным паролем владельца:
     NEIROMASTER_ADMIN_PASSWORD=Owner-start-2026 NEIROMASTER_INSECURE_COOKIE=1 uvicorn app:app
@@ -9,6 +11,7 @@ E2E-проверка в настоящем браузере (Playwright + Chromi
 Скриншоты — в E2E_SHOTS (по умолчанию ./e2e_shots). Браузер — Chromium из Playwright или
 путь в E2E_CHROMIUM. Модель DeepSeek не нужна.
 """
+import collections
 import os
 import re
 import sys
@@ -25,6 +28,7 @@ CHROMIUM = os.environ.get("E2E_CHROMIUM") or None
 
 errors: list = []
 checks: list = []
+SEEN = "localStorage.setItem('nm_tour_seen_admin','1');localStorage.setItem('nm_tour_seen_cabinet','1');"
 
 
 def check(cond, what):
@@ -61,46 +65,62 @@ def api(page, method, url, body=None):
 
 def login(page, username, password):
     page.goto(f"{BASE}/login")
-    page.fill("#username", username)
-    page.fill("#password", password)
+    page.fill("input[autocomplete=username]", username)
+    page.fill("input[autocomplete=current-password]", password)
     with page.expect_navigation(timeout=15000):
-        page.click("#submit-btn")
+        page.click("button[type=submit]")
     page.wait_for_load_state("load")
-    page.wait_for_timeout(700)
+    page.wait_for_timeout(900)
 
 
-def tour_run(page, label, expect_min_steps):
+def setup_password(page, password):
+    pw = page.locator("input[type=password]")
+    pw.nth(0).fill(password)
+    pw.nth(1).fill(password)
+    page.click("button[type=submit]")
+    page.wait_for_url(re.compile(r".*/login$"), timeout=15000)
+
+
+def open_tour(page):
+    page.click("[data-tour=profile-menu]")
+    page.get_by_role("menuitem", name="Как пользоваться").click()
+
+
+def tour_run(page, label, expect_min, start):
     """Проходит тур кнопкой «Далее», проверяя, что каждый шаг показан, и закрывает его."""
-    page.click("#btn-tour")
+    start()
     page.wait_for_selector(".nmt-card.nmt-in", timeout=8000)
     total = int(re.search(r"из (\d+)", page.inner_text(".nmt-count")).group(1))
-    check(total >= expect_min_steps, f"{label}: в туре {total} шагов (ожидалось ≥ {expect_min_steps})")
-    seen_titles = []
+    check(total >= expect_min, f"{label}: в туре {total} шагов (ожидалось ≥ {expect_min})")
+    titles = []
     for i in range(total):
         page.wait_for_function("() => document.querySelector('.nmt-card.nmt-in')", timeout=10000)
         title = page.inner_text(".nmt-title")
-        seen_titles.append(title)
-        # Шаги самодостаточны: даже при быстром пролистывании нужный элемент подсвечен.
+        titles.append(title)
         if title in ("Карточка сотрудника", "План и дата выхода"):
             page.wait_for_timeout(400)
-            check(page.is_visible("#employee-dialog"), f"{label}: «{title}» — карточка сотрудника открыта")
+            check(page.locator("dialog.nmt-demo[open]").count() == 1, f"{label}: «{title}» — карточка сотрудника открыта")
         if title in ("Название плана", "Этапы"):
             page.wait_for_timeout(400)
-            check(page.locator("#stages-container .stage-card").count() >= 1, f"{label}: «{title}» — демо-план в редакторе")
+            check(page.locator(".nm-stage").count() >= 1, f"{label}: «{title}» — демо-план в редакторе")
         if title == "Напишите вопрос своими словами":
-            check(page.is_visible("#question-input"), f"{label}: поле вопроса видно")
-        if i in (0, 3, 6, total // 2, total - 1):
+            page.wait_for_timeout(300)
+            check(page.is_visible("#nm-question"), f"{label}: поле вопроса видно")
+        if title == "Отправить":
+            check(page.input_value("#nm-question") != "", f"{label}: тур напечатал пример вопроса")
+        if i in (0, 4, total // 2, total - 1):
             time.sleep(0.9)
             shot(page, f"{label}-tour-{i + 1:02d}")
         if i < total - 1:
-            count_before = page.inner_text(".nmt-count")
+            before = page.inner_text(".nmt-count")
             page.click('.nmt-card [data-act="next"]')
             page.wait_for_function("(c) => document.querySelector('.nmt-count').textContent !== c "
-                                   "&& document.querySelector('.nmt-card.nmt-in')", arg=count_before, timeout=15000)
-    check(len(set(seen_titles)) == total, f"{label}: все {total} шагов тура показаны без повторов")
+                                   "&& document.querySelector('.nmt-card.nmt-in')", arg=before, timeout=15000)
+    check(len(set(titles)) == total, f"{label}: все {total} шагов показаны без повторов")
     page.click('.nmt-card [data-act="next"]')          # «Готово ✓» закрывает тур
     page.wait_for_function("() => document.querySelector('.nmt-root').hidden", timeout=5000)
-    return seen_titles
+    page.wait_for_timeout(600)
+    return titles
 
 
 def main():
@@ -109,148 +129,202 @@ def main():
 
         # ---------------------------------------------------------- владелец
         ctx = browser.new_context(viewport={"width": 1366, "height": 860}, locale="ru-RU")
+        ctx.add_init_script(SEEN)
         page = ctx.new_page()
         watch(page, "admin")
+        requests = collections.Counter()
+        page.on("request", lambda r: requests.update([r.url.split("?")[0].replace(BASE, "")]))
         print("Вход владельца и первичная настройка")
         login(page, owner_username(), OWNER_START)
         check(page.url.endswith("/setup"), "первый вход ведёт на /setup")
-        page.fill("#password", OWNER_PASS)
-        page.fill("#password2", OWNER_PASS)
-        page.click("#submit-btn")
-        page.wait_for_url(re.compile(r".*/login$"), timeout=15000)
+        setup_password(page, OWNER_PASS)
         check(True, "свой пароль задан, сессия сброшена — снова вход")
         login(page, owner_username(), OWNER_PASS)
-        check(page.url.endswith("/admin"), "после смены пароля — админка")
+        check(page.url.endswith("/admin/users"), "после смены пароля — админка (/admin/users)")
 
         print("Подготовка данных через API")
         plan = api(page, "POST", "/plans/template")["data"]
         check(plan and plan.get("plan_id"), "стандартный план создан")
+        today = time.strftime("%Y-%m-%d")
         e1 = api(page, "POST", "/users", {"full_name": "Петров Пётр Петрович", "position": "Оператор",
-                                          "department": "Цех 1", "plan_id": plan["plan_id"],
-                                          "start_date": time.strftime("%Y-%m-%d")})["data"]
-        api(page, "POST", "/users", {"full_name": "Сидорова Анна Сергеевна", "position": "Мастер",
-                                     "department": "Цех 1"})
+                                          "department": "Цех 1", "plan_id": plan["plan_id"], "start_date": today})["data"]
+        api(page, "POST", "/users", {"full_name": "Сидорова Анна Сергеевна", "position": "Мастер", "department": "Цех 1"})
         r = api(page, "POST", "/users/" + e1["id"] + "/test-messages", {})
         check(r["status"] == 200, "тестовые сообщения всех типов отправлены сотруднику")
-        page.reload()
-        page.wait_for_load_state("load")
-        page.wait_for_timeout(800)
 
-        print("Вкладки админки")
-        for tab in ("employees", "builder", "docs", "plantexts", "questions"):
-            page.click(f'.tab[data-tab="{tab}"]')
+        print("Разделы админки")
+        requests.clear()
+        for nav, heading in (("nav-users", "Пользователи"), ("nav-plans", "Планы адаптации"), ("nav-documents", "Документы"),
+                             ("nav-messages", "Сообщения сотрудникам"), ("nav-questions", "Вопросы сотрудников")):
+            page.click(f"[data-tour={nav}]")
             page.wait_for_timeout(900)
-            check(page.is_visible(f"#pane-{tab}"), f"вкладка {tab} открывается")
-            shot(page, f"admin-{tab}")
-        page.click('.tab[data-tab="employees"]')
-        page.wait_for_timeout(500)
-        check(page.locator("#employee-list tbody tr").count() >= 3, "в списке пользователей есть строки")
+            check(page.get_by_role("heading", name=heading).count() >= 1, f"раздел «{heading}» открывается")
+            shot(page, f"admin-{nav}")
+        worst = max(requests.values()) if requests else 0
+        check(worst < 15, f"нет циклов запросов (максимум {worst} одинаковых запросов за обход разделов)")
 
-        print("Конструктор: выбор сохранённого плана и снимок состояния")
-        page.click('.tab[data-tab="builder"]')
+        page.click("[data-tour=nav-users]")
         page.wait_for_timeout(800)
-        page.select_option("#plan-select", plan["plan_id"])
-        page.wait_for_timeout(800)
-        title_before = page.input_value("#plan-title")
-        stages_before = page.locator("#stages-container .stage-card").count()
+        rows = page.locator(".nm-table-body .nm-table-row").count()
+        check(rows >= 3, f"в списке пользователей есть строки ({rows})")
+        page.fill("input[aria-label='Поиск']", "Сидорова")
+        page.wait_for_timeout(300)
+        check(page.locator(".nm-table-body .nm-table-row").count() == 1, "поиск по ФИО фильтрует список")
+        page.fill("input[aria-label='Поиск']", "")
+
+        print("Карточка сотрудника: создание через интерфейс")
+        page.click("[data-tour=btn-add-user]")
+        page.wait_for_selector("dialog[open]")
+        page.fill("[data-tour=emp-name] input", "Кузнецова Ольга Игоревна")
+        page.get_by_role("button", name="Сохранить").click()
+        page.wait_for_selector("text=Сотрудник создан", timeout=8000)
+        check(page.locator("dialog[open] code").count() >= 1, "после создания показан временный пароль")
+        shot(page, "admin-user-created")
+        page.get_by_role("button", name="Готово").click()
+        page.wait_for_timeout(600)
+        check(page.locator(".nm-table-body .nm-table-row").count() == rows + 1, "новый сотрудник в списке")
+
+        print("Конструктор плана")
+        page.click("[data-tour=nav-plans]")
+        page.wait_for_timeout(900)
+        page.select_option("[data-tour=plan-select] select", plan["plan_id"])
+        page.wait_for_timeout(900)
+        stages_before = page.locator(".nm-stage").count()
         check(stages_before == 8, f"стандартный план: 8 этапов в редакторе (есть {stages_before})")
-        page.click('.tab[data-tab="employees"]')
-        page.wait_for_timeout(400)
+        title_before = page.input_value("[data-tour=plan-title] input")
+        shot(page, "admin-plan-editor")
 
         print("Тур по админке")
-        titles = tour_run(page, "admin", 25)
-        check(any("Стандартный" in t or "С чего начать" in t for t in titles), "тур показывает выбор плана")
-        page.wait_for_timeout(600)
-        check(page.locator('.tab.active').get_attribute("data-tab") == "employees", "после тура — та же вкладка")
-        check(not page.is_visible("#employee-dialog"), "окно карточки закрыто после тура")
-        page.click('.tab[data-tab="builder"]')
-        page.wait_for_timeout(500)
-        check(page.input_value("#plan-title") == title_before, "редактируемый план вернулся после тура")
-        check(page.locator("#stages-container .stage-card").count() == stages_before, "этапы плана не изменились")
+        titles = tour_run(page, "admin", 25, lambda: open_tour(page))
+        check(any("С чего начать" in t for t in titles), "тур показывает выбор плана")
+        check(page.url.endswith("/admin/plans"), "после тура — тот же раздел")
+        check(page.locator("dialog[open]").count() == 0, "окно карточки закрыто после тура")
+        check(page.input_value("[data-tour=plan-title] input") == title_before, "редактируемый план вернулся после тура")
+        check(page.locator(".nm-stage").count() == stages_before, "этапы плана не изменились")
         plans_after = api(page, "GET", "/plans")["data"]["plans"]
         check(len(plans_after) == 1, "тур ничего не сохранил (план один)")
 
-        print("Автопросмотр: тур идёт сам")
-        page.click('.tab[data-tab="employees"]')
-        page.click("#btn-tour")
-        page.wait_for_selector(".nmt-card.nmt-in")
+        print("Автопросмотр и Esc")
+        open_tour(page)
+        page.wait_for_selector(".nmt-card.nmt-in", timeout=8000)
         first = page.inner_text(".nmt-count")
-        page.wait_for_function("(c) => document.querySelector('.nmt-count').textContent !== c",
-                               arg=first, timeout=20000)
+        page.wait_for_function("(c) => document.querySelector('.nmt-count').textContent !== c", arg=first, timeout=25000)
         check(True, f"автопросмотр сам перешёл к следующему шагу ({first} → {page.inner_text('.nmt-count')})")
         page.keyboard.press("Escape")
         page.wait_for_function("() => document.querySelector('.nmt-root').hidden", timeout=5000)
         check(True, "Esc закрывает тур")
 
+        print("Тема")
+        page.click("[data-tour=profile-menu]")
+        page.get_by_role("menuitem", name="Тёмная тема").click()
+        check(page.evaluate("document.documentElement.getAttribute('data-theme')") == "dark", "тёмная тема включается из меню профиля")
+        shot(page, "admin-dark")
+        page.click("[data-tour=profile-menu]")
+        page.get_by_role("menuitem", name="Светлая тема").click()
+
         print("Служебные страницы")
-        for path in ("/globaltest", "/logs", "/plans-db", "/s3", "/documents-board", "/documents-table",
-                     "/doc-breakdown", "/notify-test", "/queue-test", "/message-test"):
+        for path in ("/logs", "/plans-db", "/notify-test", "/queue-test", "/s3", "/documents-table",
+                     "/documents-board", "/doc-breakdown", "/globaltest", "/message-test"):
             before = len(errors)
-            resp = page.goto(f"{BASE}{path}")
-            page.wait_for_timeout(1200)
-            check(resp.status == 200 and len(errors) == before, f"{path} открывается без ошибок JS")
-        page.goto(f"{BASE}/admin")
-        page.wait_for_timeout(800)
+            resp = page.goto(BASE + path)
+            page.wait_for_timeout(900)
+            check(resp.status == 200 and len(errors) == before and page.locator("h1").count() >= 1,
+                  f"{path} открывается без ошибок JS")
+        hdr = page.goto(BASE + "/admin/users").headers.get("content-security-policy", "")
+        check("frame-ancestors 'none'" in hdr and "script-src 'self';" in hdr, "CSP без inline-скриптов на страницах")
 
-        print("Безопасность в браузере")
-        hdr = page.evaluate("async () => (await fetch('/admin')).headers.get('content-security-policy')")
-        check(hdr and "frame-ancestors 'none'" in hdr, "CSP на страницах")
-        creds = api(page, "POST", f"/users/{e1['id']}/credentials", {"password": "Employee-pass-1"})
+        creds = api(page, "POST", f"/users/{e1['id']}/credentials", {"password": None})
         check(creds["status"] == 200, "администратор выдал сотруднику пароль")
+        emp_login, emp_tmp = creds["data"]["username"], creds["data"]["temp_password"]
+        ctx.close()
 
-        # ---------------------------------------------------------- сотрудник на телефоне
-        m = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
-                                locale="ru-RU", device_scale_factor=2)
+        # ---------------------------------------------------------- сотрудник, телефон
+        print("Кабинет сотрудника на телефоне")
+        m = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True,
+                                has_touch=True, locale="ru-RU")
+        m.add_init_script(SEEN)
         mp = m.new_page()
-        watch(mp, "cabinet")
-        print("Кабинет сотрудника (мобильный Chrome)")
-        login(mp, creds["data"]["username"], "Employee-pass-1")
-        check(mp.url.rstrip("/").endswith(":8000") or mp.url.endswith("/"), "сотрудник попадает в кабинет")
-        mp.wait_for_timeout(1500)
-        cards = mp.locator("#today-list .bubble")
+        watch(mp, "mobile")
+        login(mp, emp_login, emp_tmp)
+        check(mp.url.rstrip("/") == BASE, "сотрудник входит по выданному паролю и попадает в кабинет")
+        check(mp.locator("[data-tour=tabbar]").is_visible(), "на телефоне — таб-бар как в приложении")
+        mp.wait_for_timeout(800)
+        cards = mp.locator("[data-tour=today] article")
         check(cards.count() >= 5, f"в чате сегодняшние сообщения ({cards.count()})")
-        # старые сверху, новые снизу: время карточек не убывает
-        times = mp.eval_on_selector_all("#today-list .b-time", "els => els.map(e => e.textContent)")
+        times = mp.locator("[data-tour=today] article time").all_inner_texts()
         check(times == sorted(times), "сообщения: старые сверху, новые снизу")
-        box = mp.eval_on_selector("#today-list", "el => el.scrollHeight - el.scrollTop - el.clientHeight")
-        check(box < 60, "лента прокручена к последнему сообщению")
-        shot(mp, "cabinet-today")
-        # чек-лист: отметка пункта сохраняется
-        item = mp.locator("#today-list .check").first
-        if item.count():
-            item.click()
-            mp.wait_for_timeout(600)
-            check(mp.locator("#today-list .check.on").count() >= 1, "пункт чек-листа отмечается")
-        tour_run(mp, "cabinet", 10)
-        check(mp.locator('.tab.active').get_attribute("data-tab") == "today", "после тура кабинет на вкладке «Чат»")
-        check(mp.input_value("#question-input") == "", "напечатанный туром вопрос стёрт")
-        for tab in ("history", "ask", "settings"):
-            mp.click(f'.tab[data-tab="{tab}"]')
+        gap = mp.evaluate("document.documentElement.scrollHeight - window.scrollY - window.innerHeight")
+        check(gap < 60, "лента прокручена к последнему сообщению")
+        shot(mp, "mobile-chat")
+        box = mp.locator("[data-tour=today] [role=checkbox]").first
+        box.click()
+        mp.wait_for_timeout(700)
+        check(box.get_attribute("aria-checked") == "true", "пункт чек-листа отмечается")
+        mp.reload()
+        mp.wait_for_timeout(1500)
+        check(mp.locator("[data-tour=today] [role=checkbox][aria-checked=true]").count() >= 1, "отметка сохранилась на сервере")
+        for tab in ("history", "ask", "settings", "chat"):
+            mp.click(f"[data-tour=tab-{tab}]")
             mp.wait_for_timeout(500)
-            shot(mp, f"cabinet-{tab}")
-        overflow = mp.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
-        check(overflow <= 1, "нет горизонтальной прокрутки на телефоне")
+            check(mp.locator(f"[data-tour=tab-{tab}][aria-current=page]").count() == 1, f"вкладка «{tab}» открывается")
+            if tab != "chat":
+                shot(mp, f"mobile-{tab}")
+        mp.click("[data-tour=tab-settings]")
+        mp.wait_for_timeout(400)
+        mp.get_by_role("switch", name="Я на больничном").click()
+        mp.wait_for_timeout(900)
+        check(mp.get_by_role("switch", name="Я на больничном").get_attribute("aria-checked") == "true", "больничный включается")
+        mp.click("[data-tour=tab-chat]")
+        mp.wait_for_timeout(500)
+        check(mp.locator(".nm-banner").count() == 1, "на «Чате» — баннер больничного")
+        mp.get_by_role("button", name="Снять больничный").click()
+        mp.wait_for_timeout(900)
+        check(mp.locator(".nm-banner").count() == 0, "больничный снят")
 
-        # Админка на телефоне — тур читаем (карточка-шторка)
-        ap = m.new_page()
-        watch(ap, "admin-mobile")
-        login(ap, owner_username(), OWNER_PASS)
-        ap.click("#btn-tour")
-        ap.wait_for_selector(".nmt-card.nmt-in")
-        ap.wait_for_timeout(900)
-        shot(ap, "admin-mobile-tour")
-        rect = ap.eval_on_selector(".nmt-card", "e => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.bottom]; }")
+        print("Тур по кабинету (телефон)")
+        mp.click("[data-tour=tab-settings]")
+        mp.wait_for_timeout(400)
+        tour_run(mp, "mobile", 10, lambda: mp.get_by_role("button", name="Как пользоваться").click())
+        check(mp.locator("[data-tour=tab-settings][aria-current=page]").count() == 1, "после тура — та же вкладка")
+        mp.click("[data-tour=tab-ask]")
+        mp.wait_for_timeout(400)
+        check(mp.input_value("#nm-question") == "", "напечатанный туром вопрос стёрт")
+        overflow = mp.evaluate("document.documentElement.scrollWidth - window.innerWidth")
+        check(overflow <= 1, "нет горизонтальной прокрутки на телефоне")
+        mp.click("[data-tour=tab-settings]")
+        mp.get_by_role("button", name="Как пользоваться").click()
+        mp.wait_for_selector(".nmt-card.nmt-in", timeout=8000)
+        rect = mp.evaluate("(() => { const r = document.querySelector('.nmt-card').getBoundingClientRect(); return [r.left, r.right, r.bottom]; })()")
         check(rect[0] >= 0 and rect[1] <= 390 and rect[2] <= 844, "карточка тура помещается в экран телефона")
-        ap.keyboard.press("Escape")
+        mp.keyboard.press("Escape")
+        m.close()
+
+        # ---------------------------------------------------------- сотрудник, компьютер
+        print("Кабинет сотрудника на компьютере")
+        d = browser.new_context(viewport={"width": 1366, "height": 860}, locale="ru-RU")
+        d.add_init_script(SEEN)
+        dp = d.new_page()
+        watch(dp, "desktop-employee")
+        login(dp, emp_login, emp_tmp)
+        check(dp.locator("[data-tour=progress]").is_visible(), "карточка прогресса адаптации")
+        check("День 1 из" in dp.inner_text("[data-tour=progress]"), "прогресс: «День 1 из N» в день выхода")
+        check(dp.locator("[data-tour=assistant] #nm-question").is_visible(), "ассистент со строкой вопроса")
+        check(dp.locator("[data-tour=admin-nav]").count() == 0, "сотруднику не видны разделы администратора")
+        r = dp.goto(BASE + "/admin/users")
+        dp.wait_for_timeout(500)
+        check(dp.url.rstrip("/") == BASE, "админка сотруднику недоступна (редирект в кабинет)")
+        shot(dp, "desktop-cabinet")
+        tour_run(dp, "cabinet", 8, lambda: (dp.click("[data-tour=profile-menu]"), dp.get_by_role("menuitem", name="Как пользоваться").click()))
+        d.close()
         browser.close()
 
-    print("\nОшибки JS:" if errors else "\nОшибок JS нет")
-    for e in errors:
-        print("  " + e)
-    bad = [w for ok, w in checks if not ok]
-    print(f"Проверок: {len(checks)}, провалено: {len(bad)}")
-    return 1 if bad or errors else 0
+    failed = [w for ok, w in checks if not ok]
+    print(f"\nПроверок: {len(checks)}, упало: {len(failed)}; ошибок JS: {len(errors)}")
+    for e in errors[:20]:
+        print("  JS:", e)
+    if failed or errors:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
