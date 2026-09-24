@@ -106,7 +106,8 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
                            "или уменьши входной фрагмент).")
     if not content.strip():
         raise RuntimeError("DeepSeek: пустой ответ модели.")
-    return masker.unmask(content)
+    # Ответ в JSON: значения возвращаем JSON-экранированными (кавычки в названиях и т.п.).
+    return masker.unmask(content, json_safe=json_mode or pii.looks_like_json(content))
 
 
 def _record_usage(model: str, usage: dict):
