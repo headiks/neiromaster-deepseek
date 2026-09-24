@@ -1,7 +1,9 @@
 # Где что хранится (ревизия схемы)
 
-Всё, кроме двух JSON-файлов, лежит в PostgreSQL. Схема создаётся идемпотентно при старте:
-`db.SCHEMA_STATEMENTS`, `docpipe/schema.py`, `documents.CREATE_TABLE`.
+Всё лежит в PostgreSQL (в схеме кабинета). Схема создаётся идемпотентно при старте:
+`db.SCHEMA_STATEMENTS`, `docregistry.CREATE_TABLE`, `questions.CREATE_TABLE`,
+`docpipe/schema.py`, `documents.CREATE_TABLE`. Прежние JSON-файлы (`registry.json`,
+`pending_questions.json`) переносятся в БД при старте и переименовываются в `*.migrated`.
 
 ## Люди и доступ
 
@@ -10,7 +12,8 @@
 | Пользователи, роли, профиль, план, дата выхода | `users` | `username` UNIQUE, idx `role`. ПДн (ФИО, должность, отдел, телефон, email, заметки, временный пароль) шифруются Fernet при `NEIROMASTER_PII_KEY` |
 | Временный пароль до первого входа | `users.temp_password` | Очищается, как только сотрудник задаёт свой пароль |
 | Статус адаптации | считается на лету: `users.adaptation_status` | В БД хранится только пауза (`status='paused'`) |
-| Сессии | `sessions` | idx `user_id` |
+| Сессии | `sessions` | В колонке `token` — **SHA-256** токена, не сам токен. idx `user_id` |
+| Вопросы сотрудников без ответа | `questions` | idx `(status, created_at)`, `(user_id, created_at)`. Текст, ответ и контакты шифруются как ПДн |
 | Журнал действий | `activity_log` | idx `ts`, `(user_id, ts)`, `(event_type, ts)` |
 
 ## Документы
@@ -18,8 +21,9 @@
 | Что | Где |
 |---|---|
 | Оригиналы | S3 `<суперадмин>/<админ>/<файл>` + локальный кэш `data/documents/` |
-| Жизненный цикл файла (статус, владелец, s3_key) | **`data/registry.json`** (файл под межпроцессной блокировкой) |
-| Метаданные и дедупликация по SHA-256 | `document_meta` (PK `sha256`, idx GIN `stage_ids`, idx `filename`) |
+| Жизненный цикл файла (статус, владелец, s3_key, SHA-256, «не отправлять в ИИ») | `doc_registry` (PK `filename`, `data` JSONB; idx по статусу, дате, SHA-256, GIN по папкам). Обновление — атомарное слияние полей `data \|\| …` |
+| Дедупликация при загрузке | SHA-256 содержимого в `doc_registry` + `documents.content_hash` (для загруженных раньше) |
+| `document_meta` | устаревшая таблица (заполнялась при векторной привязке); новых строк нет |
 | Карточка документа, SHA-256 содержимого | `documents` (docpipe; UNIQUE `content_hash`, idx `filename`) |
 | Текстовые фрагменты (секции) | `sections` (idx `doc_id`) |
 | Разметка секций по этапам/подэтапам | `section_labels` (idx **GIN `substages jsonb_path_ops`** — горячий путь генерации и ответов) |
@@ -47,15 +51,13 @@
 | Кэш ответов на частые вопросы | `nm:qa:<версия базы>:<sha256>` (TTL 7 дней), версия — `nm:qa:ver` |
 | Расход токенов DeepSeek по дням | `nm:llm:<YYYY-MM-DD>` → `GET /api/llm-usage` |
 
-## Что осталось перенести в PostgreSQL
+## Состояние в Redis — дополнительно
 
-1. **Вопросы сотрудников** — `data/questions.json` (`questions.py`). Таблица `questions`
-   (id, user_id, question, resolved_question, reason, status, answer, answered_by, created_at)
-   с индексами `(status, created_at)` и `user_id`.
-2. **Реестр документов** — `data/registry.json` (`docregistry.py`). Слить с `document_meta`
-   (добавить status/phase/progress/error/uploaded_by*/s3_key), ключ — `filename` UNIQUE.
-
-Оба перехода — после разворачивания тестовой БД: без неё миграцию данных не проверить.
+| Что | Ключ |
+|---|---|
+| Блокировка перебора пароля (общая для всех воркеров) | `nm:login:fail:<хэш логина>` (TTL 5 мин) |
+| Лимиты частоты (вход, регистрация, вопросы, журнал) | `nm:rl:<имя>:<ip или пользователь>` |
+| Замок запуска генерации плана | `nmclaim:genstart:<plan_id>` |
 
 ## Индексы: что не добавлено и почему
 

@@ -99,6 +99,9 @@ fi
 # поэтому в .env.production держи WEB_CONCURRENCY=6 (см. .env.example).
 WEB_WORKERS="${NEIROMASTER_WEB_WORKERS:-6}"     # только для текста подсказки ниже
 RQ_WORKERS="${NEIROMASTER_RQ_WORKERS:-4}"       # worker-процессы под тяжёлые задачи
+# Сайт слушает только localhost: наружу его отдаёт HTTPS-прокси (Caddy/nginx). Открыть
+# порт напрямую (без TLS) — NEIROMASTER_BIND=0.0.0.0:8000 ./install.sh (не рекомендуется).
+BIND="${NEIROMASTER_BIND:-127.0.0.1:8000}"
 
 echo "==> [6/7] systemd-сервисы: web (gunicorn) + worker (RQ)"
 cat <<EOF | $SUDO tee /etc/systemd/system/rag-app.service > /dev/null
@@ -113,9 +116,12 @@ WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
 # Несколько uvicorn-воркеров = процессная многопоточность web-тира под нагрузку.
 # -w НЕ задаём: gunicorn берёт число воркеров из WEB_CONCURRENCY (env-файл) — тюним без правки юнита.
+# -b 127.0.0.1: снаружи сайт доступен только через HTTPS-прокси (кука сессии Secure).
+# --forwarded-allow-ips: прокси на этом же хосте — доверяем его X-Forwarded-For (реальный IP
+# клиента нужен лимитам входа и журналу действий).
 ExecStart=$APP_DIR/.venv/bin/gunicorn app:app \\
     -k uvicorn.workers.UvicornWorker \\
-    -b 0.0.0.0:8000 --timeout 120 --graceful-timeout 30
+    -b $BIND --timeout 120 --graceful-timeout 30 --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 User=$APP_USER
 
@@ -172,6 +178,10 @@ echo ""
 echo "Масштаб под нагрузку: web-воркеры — WEB_CONCURRENCY в env-файле, число worker-процессов —"
 echo "запуском новых rag-worker@N. Кап одновременных вызовов DeepSeek — DEEPSEEK_MAX_CONCURRENCY."
 echo ""
-echo "Если серверу нужен внешний доступ к сайту (порт 8000) — откройте его в firewall:"
-echo "    sudo ufw allow 8000/tcp"
-echo "Порты Postgres (5432) и Redis (6379) остаются на localhost — наружу не открывать."
+echo "Сайт слушает $BIND. Наружу его отдаёт HTTPS-прокси, например Caddy (сертификат сам):"
+echo "    sudo apt install caddy"
+echo "    echo 'ваш-домен.ru { reverse_proxy 127.0.0.1:8000 }' | sudo tee /etc/caddy/Caddyfile"
+echo "    sudo systemctl reload caddy && sudo ufw allow 80,443/tcp"
+echo "Проверка живости: curl -s http://$BIND/healthz   -> {\"ok\":true,...}"
+echo "Порты Postgres (5432), Redis (6379) и приложения (8000) — только localhost, наружу не открывать."
+echo "Чек-лист выкатки: docs/production.md"

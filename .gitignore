@@ -61,3 +61,8 @@ NeiroMaster.apk
 
 # FCM service-account (секрет) — не хранить в git
 secrets/
+
+# --- Артефакты локальных проверок ---
+e2e_shots/
+dump.rdb
+.pytest_cache/
