@@ -3,7 +3,7 @@
 // сообщений плана/ответов. API сверен с docs.expo.dev v57 (см. mobile/AGENTS.md).
 import { Platform } from "react-native";
 import * as Notifications from "expo-notifications";
-import { registerPushToken, removePushToken } from "./api";
+import { api } from "./api";
 
 // Как показывать уведомление, когда приложение на переднем плане.
 Notifications.setNotificationHandler({
@@ -42,7 +42,7 @@ export async function registerForPush(): Promise<string | null> {
     if (status !== "granted") return null;
     const res = await Notifications.getDevicePushTokenAsync(); // { type, data: <FCM token> }
     currentToken = res.data;
-    await registerPushToken(res.data, res.type || Platform.OS);
+    await api.registerPushToken(res.data, res.type || Platform.OS);
     return res.data;
   } catch (e) {
     console.warn("[push] регистрация не удалась", e);
@@ -57,7 +57,7 @@ export const hasRemotePush = () => !!currentToken;
 // Отвязать токен на сервере (вызывать ДО logout — нужен живой Bearer).
 export async function unregisterForPush(): Promise<void> {
   try {
-    if (currentToken) await removePushToken(currentToken);
+    if (currentToken) await api.removePushToken(currentToken);
   } catch {
     // не критично: мёртвый токен бэк вычистит по ответу Expo (DeviceNotRegistered)
   }

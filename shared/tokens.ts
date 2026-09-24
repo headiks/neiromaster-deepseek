@@ -15,6 +15,9 @@ export type Palette = {
   tabBar: string;                       // плавающий таб-бар
   blur: number;                         // intensity для expo-blur
   shadow: string;
+  lineStrong: string;                   // контур элементов управления (контраст ≥ 3:1)
+  knob: string;                         // ручка переключателя
+  backdrop: string;                     // затемнение под модальным окном
 };
 
 export const LIGHT: Palette = {
@@ -26,7 +29,8 @@ export const LIGHT: Palette = {
   fill: "rgba(255,255,255,0.50)", soft: "rgba(76,111,255,0.13)", softInk: "#2a45c9",
   okSoft: "rgba(21,122,76,0.12)", warn: "#8f5d00", warnSoft: "rgba(230,160,20,0.16)",
   dangerSoft: "rgba(207,46,46,0.10)", tabBar: "rgba(255,255,255,0.62)", blur: 40,
-  shadow: "rgba(40,50,110,0.12)",
+  shadow: "rgba(40,50,110,0.12)", lineStrong: "rgba(15,18,34,0.26)", knob: "#ffffff",
+  backdrop: "rgba(10,12,25,0.38)",
 };
 
 export const DARK: Palette = {
@@ -38,7 +42,8 @@ export const DARK: Palette = {
   fill: "rgba(255,255,255,0.07)", soft: "rgba(142,162,255,0.18)", softInk: "#bfcaff",
   okSoft: "rgba(99,224,163,0.13)", warn: "#ffcc66", warnSoft: "rgba(255,204,102,0.13)",
   dangerSoft: "rgba(255,128,128,0.13)", tabBar: "rgba(30,34,56,0.55)", blur: 30,
-  shadow: "rgba(0,0,0,0.35)",
+  shadow: "rgba(0,0,0,0.35)", lineStrong: "rgba(255,255,255,0.34)", knob: "#ffffff",
+  backdrop: "rgba(0,0,0,0.55)",
 };
 
 // Отступы, радиусы, типографика (веб: --nm-r 26, --nm-r-s 16, пилюли 999).
