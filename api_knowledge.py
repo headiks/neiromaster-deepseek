@@ -19,12 +19,12 @@ class StageRequest(BaseModel):
 
 
 @router.get("/knowledge/stages", dependencies=admin_only)
-async def get_stages():
+def get_stages():
     return {"stages": stages.list_stages()}
 
 
 @router.post("/knowledge/stages", dependencies=admin_only)
-async def create_stage(req: StageRequest):
+def create_stage(req: StageRequest):
     try:
         return stages.create_stage(req.title, req.description or "", req.substages)
     except ValueError as e:
@@ -32,7 +32,7 @@ async def create_stage(req: StageRequest):
 
 
 @router.put("/knowledge/stages/{stage_id}", dependencies=admin_only)
-async def update_stage(stage_id: str, req: StageRequest):
+def update_stage(stage_id: str, req: StageRequest):
     if stages.get_stage(stage_id) is None:
         raise HTTPException(status_code=404, detail="Этап не найден")
     try:
@@ -42,7 +42,7 @@ async def update_stage(stage_id: str, req: StageRequest):
 
 
 @router.delete("/knowledge/stages/{stage_id}", dependencies=admin_only)
-async def delete_stage(stage_id: str):
+def delete_stage(stage_id: str):
     if not stages.delete_stage(stage_id):
         raise HTTPException(status_code=404, detail="Этап не найден")
     return {"deleted": True}
@@ -54,14 +54,14 @@ class ResolveRequest(BaseModel):
 
 
 @router.get("/questions", dependencies=admin_only)
-async def get_questions(status: str | None = "open"):
+def get_questions(status: str | None = "open"):
     """Очередь вопросов сотрудников, на которые ассистент не ответил сам."""
     return {"questions": questions.list_all(status=status or None),
             "open_count": questions.count_open()}
 
 
 @router.post("/questions/{qid}/resolve", dependencies=admin_only)
-async def resolve_question(qid: str, req: ResolveRequest, actor: dict = Depends(require_admin)):
+def resolve_question(qid: str, req: ResolveRequest, actor: dict = Depends(require_admin)):
     """Администратор отвечает на вопрос — ответ уходит в личный кабинет сотрудника."""
     try:
         entry = questions.resolve(qid, req.answer, actor.get("full_name") or actor.get("username"))

@@ -62,7 +62,7 @@ class SickRequest(BaseModel):
 
 # ---------- Вход, регистрация, свой профиль ----------
 @router.post("/api/login")
-async def api_login(req: LoginRequest, request: Request, response: Response):
+def api_login(req: LoginRequest, request: Request, response: Response):
     client = security.client_ip(request)
     # Попыток входа с одного адреса в минуту (перебор по многим логинам сразу); перебор
     # одного логина отдельно ограничивает лок-аут в auth.login. Щедро: в компании за NAT
@@ -86,7 +86,7 @@ async def api_login(req: LoginRequest, request: Request, response: Response):
 
 
 @router.post("/api/register")
-async def api_register(req: RegisterRequest, request: Request):
+def api_register(req: RegisterRequest, request: Request):
     """Самостоятельная регистрация сотрудника (ждёт подтверждения администратора)."""
     if not ALLOW_REGISTRATION:
         raise HTTPException(status_code=403, detail="Регистрация отключена — доступ выдаёт администратор")
@@ -105,13 +105,13 @@ async def api_register(req: RegisterRequest, request: Request):
 
 
 @router.get("/api/config")
-async def api_config():
+def api_config():
     """Публичные настройки для страниц входа (без секретов)."""
     return {"registration": ALLOW_REGISTRATION}
 
 
 @router.post("/api/logout")
-async def api_logout(request: Request, response: Response):
+def api_logout(request: Request, response: Response):
     # Браузер — кука, приложение — Bearer: разлогиниваем тот токен, которым пришли.
     token = _session_token(request)
     activitylog.log("logout", user=auth.get_session_user(token), request=request)
@@ -121,13 +121,13 @@ async def api_logout(request: Request, response: Response):
 
 
 @router.get("/api/me")
-async def api_me(user: dict = Depends(current_user)):
+def api_me(user: dict = Depends(current_user)):
     return users.public_view(user)
 
 
 @router.post("/api/setup-credentials")
-async def api_setup_credentials(req: CredentialsRequest, response: Response,
-                                user: dict = Depends(current_user)):
+def api_setup_credentials(req: CredentialsRequest, response: Response,
+                          user: dict = Depends(current_user)):
     """
     Первичная настройка: пользователь заменяет выданный пароль своим (логин остаётся).
     Доступна только тем, у кого стоит флаг must_change_credentials.
@@ -145,8 +145,8 @@ async def api_setup_credentials(req: CredentialsRequest, response: Response,
 
 
 @router.post("/api/password")
-async def api_change_password(req: PasswordChangeRequest, response: Response,
-                              user: dict = Depends(current_user)):
+def api_change_password(req: PasswordChangeRequest, response: Response,
+                        user: dict = Depends(current_user)):
     if user.get("role") == users.ROLE_EMPLOYEE:
         raise HTTPException(status_code=403, detail="Пароль сотрудника меняет администратор")
     try:
@@ -159,7 +159,7 @@ async def api_change_password(req: PasswordChangeRequest, response: Response,
 
 
 @router.get("/api/my/schedule", dependencies=logged_in)
-async def api_my_schedule(user: dict = Depends(require_setup_done)):
+def api_my_schedule(user: dict = Depends(require_setup_done)):
     """Свой план адаптации — то, что сотрудник видит в личном кабинете."""
     try:
         return adaptation.build_employee_schedule(user)
@@ -168,20 +168,20 @@ async def api_my_schedule(user: dict = Depends(require_setup_done)):
 
 
 @router.get("/api/my/questions", dependencies=logged_in)
-async def api_my_questions(user: dict = Depends(require_setup_done)):
+def api_my_questions(user: dict = Depends(require_setup_done)):
     """Свои эскалированные вопросы и ответы на них от администратора."""
     return {"questions": questions.list_for_user(user["id"])}
 
 
 @router.get("/api/my/messages", dependencies=logged_in)
-async def api_my_messages(user: dict = Depends(require_setup_done)):
+def api_my_messages(user: dict = Depends(require_setup_done)):
     """Инбокс: сообщения плана, которые уже наступили по расписанию и доставлены."""
     return {"messages": messaging.inbox(user["id"]),
             "unread": messaging.unread_count(user["id"])}
 
 
 @router.post("/api/my/messages/{message_id}/read", dependencies=logged_in)
-async def api_mark_message_read(message_id: str, user: dict = Depends(require_setup_done)):
+def api_mark_message_read(message_id: str, user: dict = Depends(require_setup_done)):
     """Отметить доставленное сообщение прочитанным."""
     if not messaging.mark_read(user["id"], message_id):
         raise HTTPException(status_code=404, detail="Сообщение не найдено или уже прочитано")
@@ -193,8 +193,8 @@ class AnswersRequest(BaseModel):
 
 
 @router.post("/api/my/messages/{message_id}/answer", dependencies=logged_in)
-async def api_answer_message(message_id: str, req: AnswersRequest,
-                             user: dict = Depends(require_setup_done)):
+def api_answer_message(message_id: str, req: AnswersRequest,
+                       user: dict = Depends(require_setup_done)):
     """Ответы на чек-лист/опрос/тест из инбокса (приложение и кабинет — одно хранилище)."""
     if len(json.dumps(req.answers, ensure_ascii=False).encode("utf-8")) > _ANSWERS_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Слишком большой ответ")
@@ -204,20 +204,19 @@ async def api_answer_message(message_id: str, req: AnswersRequest,
 
 
 @router.post("/api/my/status", dependencies=logged_in)
-async def api_set_my_status(req: SickRequest, user: dict = Depends(require_setup_done)):
-    """Сотрудник сам ставит/снимает больничный. Пауза приостанавливает доставку
-    сообщений плана (см. messaging.dispatch_due). Возвращает актуальный статус."""
+def api_set_my_status(req: SickRequest, user: dict = Depends(require_setup_done)):
+    """Сотрудник сам ставит/снимает больничный: план встаёт на паузу, после выхода
+    продолжается с того же места (messaging.set_sick). Возвращает актуальный статус."""
     was_sick = user.get("status") == "paused"
-    updated = users.set_status(user["id"], "paused" if req.sick else "active")
+    updated = messaging.set_sick(user["id"], req.sick)
     if was_sick != req.sick:
-        messaging.notify_mentor_sick(updated, req.sick)
         activitylog.log("action", user=user, path="/api/my/status",
                         detail={"action": "sick_on" if req.sick else "sick_off"})
     return {"status": updated["status"], "sick": updated["status"] == "paused"}
 
 
 @router.post("/api/my/messages/test", dependencies=logged_in)
-async def api_test_notification(req: TestNotification, user: dict = Depends(require_setup_done)):
+def api_test_notification(req: TestNotification, user: dict = Depends(require_setup_done)):
     """Ручная отправка тестового уведомления себе — для проверки очереди и всплывашек."""
     row_id = messaging.push_test(user["id"], (req.title or "").strip(), (req.body or "").strip())
     return {"ok": True, "id": row_id}
@@ -229,7 +228,7 @@ class PushTokenRequest(BaseModel):
 
 
 @router.post("/api/my/push-token", dependencies=logged_in)
-async def api_register_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
+def api_register_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
     """Регистрация push-токена устройства (Expo) сотрудника — приложение шлёт после логина
     и при смене токена. По нему приходят пуши о доставке сообщений плана."""
     import push
@@ -239,7 +238,7 @@ async def api_register_push_token(req: PushTokenRequest, user: dict = Depends(re
 
 
 @router.delete("/api/my/push-token", dependencies=logged_in)
-async def api_remove_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
+def api_remove_push_token(req: PushTokenRequest, user: dict = Depends(require_setup_done)):
     """Отвязать push-токен (выход из аккаунта / отключение уведомлений на устройстве)."""
     import push
     push.remove_token((req.token or "").strip(), user_id=user["id"])

@@ -70,9 +70,10 @@ _COLUMNS = (
     "must_change_credentials", "created_at", "updated_at", "password_changed_at",
     "position", "department", "contact", "mentor", "manager", "plan_id",
     "plan_profession", "start_date", "status", "notes", "created_by",
-    "phone", "email", "temp_password",
+    "phone", "email", "temp_password", "pauses",
 )
 _BOOL_COLUMNS = ("active", "must_change_credentials")
+_JSON_COLUMNS = ("pauses",)
 
 
 # ---------- Пароли ----------
@@ -183,6 +184,11 @@ def _row_to_user(row) -> dict:
         user[col] = bool(user[col])
     for col in _ENCRYPTED_COLUMNS:
         user[col] = _decrypt_field(user[col])
+    for col in _JSON_COLUMNS:
+        try:
+            user[col] = json.loads(user[col] or "[]")
+        except (TypeError, ValueError):
+            user[col] = []
     # Старое единое поле «Контакт» -> раздельные телефон/email (до первого сохранения).
     if not (user.get("phone") or user.get("email")) and user.get("contact"):
         user["phone"], user["email"] = split_contact(user["contact"])
@@ -206,8 +212,16 @@ def join_contact(user: dict) -> str:
     return ", ".join(p for p in (user.get("phone"), user.get("email")) if p)
 
 
+def _db_value(col: str, value):
+    if col in _ENCRYPTED_COLUMNS:
+        return _encrypt_field(value)
+    if col in _JSON_COLUMNS:
+        return json.dumps(value or [], ensure_ascii=False)
+    return value
+
+
 def _insert(user: dict):
-    values = [_encrypt_field(user[c]) if c in _ENCRYPTED_COLUMNS else user[c] for c in _COLUMNS]
+    values = [_db_value(c, user.get(c)) for c in _COLUMNS]
     placeholders = ", ".join("%s" for _ in _COLUMNS)
     db.execute(f"INSERT INTO users ({', '.join(_COLUMNS)}) VALUES ({placeholders})", values)
 
@@ -215,7 +229,7 @@ def _insert(user: dict):
 def _save_user(user: dict):
     """Перезапись всех колонок записи по id (аналог прежнего load->mutate->save)."""
     cols = [c for c in _COLUMNS if c != "id"]
-    values = [_encrypt_field(user.get(c)) if c in _ENCRYPTED_COLUMNS else user.get(c) for c in cols]
+    values = [_db_value(c, user.get(c)) for c in cols]
     values.append(user["id"])
     db.execute(f"UPDATE users SET {', '.join(c + ' = %s' for c in cols)} WHERE id = %s", values)
 
@@ -256,6 +270,7 @@ def _blank_user(**fields) -> dict:
         "created_by": None,
         "phone": "",
         "email": "",
+        "pauses": [],
         # Выданный администратором пароль — хранится (шифруется при NEIROMASTER_PII_KEY),
         # пока сотрудник не задаст свой, чтобы админ мог показать/выгрузить его повторно.
         "temp_password": "",
@@ -515,7 +530,12 @@ def update_profile(user_id: str, raw: dict) -> Optional[dict]:
         user = get_user(user_id)
         if not user:
             return None
+        before = (user.get("plan_id") or "", user.get("start_date") or "")
         _apply_profile(user, raw)
+        if (user.get("plan_id") or "", user.get("start_date") or "") != before:
+            # Новый план или дата выхода — новое расписание: прошлые больничные к нему не
+            # относятся (идущий больничный продолжается, но считается с этого момента).
+            user["pauses"] = [{"start": _utc_now(), "end": None}] if user.get("status") == "paused" else []
         _save_user(user)
     return dict(user)
 
@@ -559,17 +579,72 @@ def set_password(user_id: str, password: str, must_change: bool = False,
 
 def set_status(user_id: str, status: str) -> dict:
     """Сменить статус адаптации (planned/active/done/paused). Пауза = сотрудник на
-    больничном: планировщик не доставляет ему сообщения плана, пока статус paused."""
+    больничном: планировщик не доставляет ему сообщения плана, пока статус paused.
+    Начало и конец больничного записываются в pauses — по ним сдвигается расписание
+    (employees.shift_for_pauses). Снимать больничный — через messaging.set_sick: там
+    расписание сдвигается раньше, чем снимается пауза."""
     if status not in ADAPTATION_STATUSES:
         raise ValueError(f"Недопустимый статус: {status}")
     with _lock:
         user = get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден")
-        user["status"] = status
-        user["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        now = _utc_now()
+        pauses = [dict(p) for p in user.get("pauses") or []]
+        if status == "paused" and user.get("status") != "paused":
+            pauses.append({"start": now, "end": None})
+        elif status != "paused":
+            pauses = _close_pauses(pauses, now)
+        user.update({"status": status, "pauses": pauses, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         _save_user(user)
     return dict(user)
+
+
+def close_pause(user_id: str) -> dict:
+    """Закрыть текущий больничный (конец = сейчас), не снимая статус paused: пока статус
+    не снят, планировщик сотруднику ничего не выпускает — можно спокойно сдвинуть расписание."""
+    with _lock:
+        user = get_user(user_id)
+        if not user:
+            raise ValueError("Пользователь не найден")
+        user["pauses"] = _close_pauses(user.get("pauses") or [], _utc_now())
+        _save_user(user)
+    return dict(user)
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _close_pauses(pauses: list, now: str) -> list:
+    return [{**p, "end": p.get("end") or now} for p in pauses]
+
+
+def pause_periods(user: dict, now=None) -> list:
+    """Больничные сотрудника [(начало, конец)] в UTC по порядку; у текущего конец = now."""
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    out = []
+    for p in user.get("pauses") or []:
+        try:
+            start = datetime.fromisoformat(p["start"])
+            end = datetime.fromisoformat(p["end"]) if p.get("end") else now
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        if end > start:
+            out.append((start, end))
+    return sorted(out)
+
+
+def paused_days(user: dict, now=None) -> int:
+    """Сколько дней (с округлением вверх) сотрудник провёл на больничных."""
+    seconds = sum((end - start).total_seconds() for start, end in pause_periods(user, now))
+    return int(-(-seconds // 86400))
 
 
 def set_credentials(user_id: str, username: Optional[str], password: str) -> dict:
@@ -617,7 +692,8 @@ def adaptation_status(user: dict, plan: Optional[dict] = None, today=None) -> st
         import planner
         days = sum(planner.stage_span_days(s.get("duration") or {})
                    for s in plan.get("stages") or [] if s.get("anchor") != "before_start")
-        if days and today >= start + timedelta(days=days):
+        # Больничные продлевают план: он продолжается с того места, где остановился.
+        if days and today >= start + timedelta(days=days + paused_days(user)):
             return "done"
     return "active"
 

@@ -32,7 +32,7 @@ def _require_known(filename: str) -> dict:
 
 # ---------- Управление документами ----------
 @router.get("/documents")
-async def get_documents(user: dict = Depends(require_admin)):
+def get_documents(user: dict = Depends(require_admin)):
     """Список документов в базе с их статусом индексации (загружен / обрабатывается / готов / ошибка).
     Суперадмину — все документы, администратору — только его собственные загрузки."""
     return {"documents": visible_documents(user),
@@ -40,7 +40,7 @@ async def get_documents(user: dict = Depends(require_admin)):
 
 
 @router.get("/documents/board")
-async def get_documents_board(plan_id: str | None = None, user: dict = Depends(require_admin)):
+def get_documents_board(plan_id: str | None = None, user: dict = Depends(require_admin)):
     """Данные экрана «этапы ↔ документы»: по каталогу этапов или (plan_id) по этапам и
     подэтапам конкретного плана — видно, каким подэтапам плана не хватает документов.
     Привязка — по LLM-разметке docpipe (не по косинусу), score = уверенность модели.
@@ -58,7 +58,7 @@ async def get_documents_board(plan_id: str | None = None, user: dict = Depends(r
 
 
 @router.get("/documents/table")
-async def get_documents_table(user: dict = Depends(require_admin)):
+def get_documents_table(user: dict = Depends(require_admin)):
     """Табличные данные по документам: строки — из реестра (то, что видит этот
     администратор), привязка к подэтапам — по LLM-разметке docpipe, как и на доске."""
     import docpipe
@@ -81,7 +81,7 @@ async def get_documents_table(user: dict = Depends(require_admin)):
 
 
 @router.get("/documents/{filename}/substage-map")
-async def get_document_substage_map(filename: str, user: dict = Depends(require_admin)):
+def get_document_substage_map(filename: str, user: dict = Depends(require_admin)):
     """Разбивка документа по подэтапам — по LLM-разметке (блоки, обоснование why,
     «общая информация»). Раньше здесь была приблизительная косинусная оценка; теперь
     это то же, что показывает «Разбор документа»."""
@@ -94,7 +94,7 @@ async def get_document_substage_map(filename: str, user: dict = Depends(require_
 
 
 @router.post("/documents/{filename}/reindex")
-async def reindex_document(filename: str, user: dict = Depends(require_admin)):
+def reindex_document(filename: str, user: dict = Depends(require_admin)):
     """Переразметка документа (docling-кэш переиспользуется) — синхронно. Сообщения планов,
     опиравшиеся на документ, обновятся фоном (только затронутые подэтапы)."""
     _require_known(filename)
@@ -107,8 +107,8 @@ async def reindex_document(filename: str, user: dict = Depends(require_admin)):
 
 
 @router.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...), mode: str = "", confidential: bool = False,
-                          user: dict = Depends(require_admin)):
+def upload_document(file: UploadFile = File(...), mode: str = "", confidential: bool = False,
+                    user: dict = Depends(require_admin)):
     """
     Загрузка нового регламента. Файл сохраняется в data/documents/ (+ S3) и ставится
     в фоновую очередь: docling-разбор -> разметка секций DeepSeek по этапам/подэтапам.
@@ -121,7 +121,7 @@ async def upload_document(file: UploadFile = File(...), mode: str = "", confiden
     # Читаем не больше лимита +1 байт: иначе гигабайтный файл целиком буферизуется в
     # RAM ещё до проверки размера (потенциальный OOM). Лишний байт нужен, чтобы отличить
     # «ровно лимит» от «больше лимита».
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413,
                             detail=f"Файл превышает лимит {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ")
@@ -181,8 +181,8 @@ async def upload_document(file: UploadFile = File(...), mode: str = "", confiden
 
 
 @router.get("/api/s3/list")
-async def api_s3_list(prefix: str = "", recursive: bool = False,
-                      user: dict = Depends(require_admin)):
+def api_s3_list(prefix: str = "", recursive: bool = False,
+                user: dict = Depends(require_admin)):
     """Листинг бакета (метаданные): «папки» + файлы уровня, либо рекурсивно. Хранилище
     может быть на другом сервере — endpoint/bucket отдаём в ответе.
 
@@ -204,7 +204,7 @@ async def api_s3_list(prefix: str = "", recursive: bool = False,
 
 
 @router.get("/documents/jobs/{job_id}", dependencies=admin_only)
-async def get_document_job(job_id: str):
+def get_document_job(job_id: str):
     """Статус фоновой индексации загруженного документа."""
     job = indexing.get_index_job(job_id)
     if job is None:
@@ -213,7 +213,7 @@ async def get_document_job(job_id: str):
 
 
 @router.get("/documents/label-jobs/{job_id}", dependencies=admin_only)
-async def get_label_job(job_id: str):
+def get_label_job(job_id: str):
     """Статус фоновой LLM-разметки docpipe (проход по секциям, возобновляемый)."""
     import docpipe
     job = docpipe.get_job(job_id)
@@ -223,7 +223,7 @@ async def get_label_job(job_id: str):
 
 
 @router.get("/documents/labeled")
-async def list_labeled_documents(user: dict = Depends(require_admin)):
+def list_labeled_documents(user: dict = Depends(require_admin)):
     """Имена документов, размеченных docpipe (для просмотрщика разбора). Только свои."""
     import docpipe.store as dstore
     allowed = {d.get("filename") for d in visible_documents(user)}
@@ -231,7 +231,7 @@ async def list_labeled_documents(user: dict = Depends(require_admin)):
 
 
 @router.get("/documents/{filename}/labels")
-async def get_document_labels(filename: str, user: dict = Depends(require_admin)):
+def get_document_labels(filename: str, user: dict = Depends(require_admin)):
     """Полный разбор документа (docpipe): карточка документа + блоки (секции) с текстом,
     метками (этапы/подэтапы/профессии), обоснованием «почему», названиями и описаниями
     этапов/подэтапов, и чанками каждого блока. Источник правды по разметке (LLM, temp=0)."""
@@ -244,7 +244,7 @@ async def get_document_labels(filename: str, user: dict = Depends(require_admin)
 
 
 @router.delete("/documents/{filename}")
-async def remove_document(filename: str, user: dict = Depends(require_admin)):
+def remove_document(filename: str, user: dict = Depends(require_admin)):
     """Удаляет документ: разметку docpipe (PostgreSQL), оригинал (диск + S3), кэш docling."""
     ensure_doc_access(user, filename, write=True)
     existed = indexing.delete_document(filename)
@@ -270,7 +270,7 @@ class FolderRequest(BaseModel):
 
 
 @router.get("/folders", dependencies=admin_only)
-async def get_folders():
+def get_folders():
     """Смысловые папки базы знаний. Их создаёт и редактирует человек — ИИ только
     классифицирует документы внутрь существующих папок, но не заводит новые."""
     result = folders.list_folders()
@@ -382,8 +382,8 @@ def set_document_confidential(filename: str, req: ConfidentialRequest, user: dic
 
 
 @router.post("/documents/{filename}/clarify")
-async def clarify_document(filename: str, req: ClarifyRequest,
-                           user: dict = Depends(require_admin)):
+def clarify_document(filename: str, req: ClarifyRequest,
+                     user: dict = Depends(require_admin)):
     """Текстовое уточнение пользователя (актуальность/архив/область действия — ТЗ §17).
     Исходный документ не переписывается — уточнение хранится как доп. контекст."""
     ensure_doc_access(user, filename, write=True)

@@ -16,7 +16,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 import uvicorn
 
 import db
@@ -180,7 +182,23 @@ app.add_middleware(
     allow_credentials=False,
 )
 
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+class _Static(StaticFiles):
+    """Сборка сайта: файлы в static/app/assets/ с хешем в имени — кэшируются навсегда
+    (новая сборка = новые имена), остальное браузер перепроверяет по ETag."""
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        immutable = f"{os.sep}app{os.sep}assets{os.sep}" in str(full_path)
+        response.headers["Cache-Control"] = ("public, max-age=31536000, immutable" if immutable
+                                             else "no-cache")
+        return response
+
+
+app.mount("/static", _Static(directory=str(STATIC_DIR)), name="static")
+# Сжатие ответов (скрипты сайта, JSON списков): через VPN/медленную сеть страницы
+# открываются в разы быстрее. HTTPS-прокси может сжимать и сам — повторно не сожмётся.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.middleware("http")
@@ -188,16 +206,21 @@ async def log_page_views(request, call_next):
     """Просмотры страниц — централизованно: GET-запрос, отдавший HTML (не /static, не /api).
     Так не нужно дублировать логирование в каждом обработчике страницы."""
     response = await call_next(request)
+    path = request.url.path
+    if (request.method == "GET" and response.status_code == 200
+            and not path.startswith("/static") and not path.startswith("/api")
+            and "text/html" in response.headers.get("content-type", "")):
+        # Запись в БД — в пуле потоков: синхронный запрос на event loop стопорит весь воркер.
+        await run_in_threadpool(_log_page_view, request, path)
+    return response
+
+
+def _log_page_view(request, path: str):
     try:
-        path = request.url.path
-        if (request.method == "GET" and response.status_code == 200
-                and not path.startswith("/static") and not path.startswith("/api")
-                and "text/html" in response.headers.get("content-type", "")):
-            user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
-            activitylog.log("page_view", user=user, request=request, path=path)
+        user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+        activitylog.log("page_view", user=user, request=request, path=path)
     except Exception:
         pass
-    return response
 
 
 # Заголовки безопасности и проверка Origin — самым внешним слоем (добавлен последним).

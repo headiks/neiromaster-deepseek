@@ -104,6 +104,9 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_password TEXT DEFAULT ''",
+    # Больничные: [{"start": ISO UTC, "end": ISO UTC | null}] — по ним расписание сдвигается,
+    # и план после выхода продолжается с того места, где сотрудник остановился.
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS pauses TEXT NOT NULL DEFAULT '[]'",
     # Пароль сотрудника меняет только администратор: флага «сменить при входе» у
     # сотрудников нет. Раньше он стоял у всех из штатки и блокировал /api/my/* (403) —
     # приложение не получало сообщений и не регистрировало push-токен.

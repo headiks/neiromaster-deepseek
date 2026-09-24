@@ -16,7 +16,9 @@
 """
 
 import time
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import planner
 import users
@@ -62,6 +64,49 @@ def _substitute_deep(value, employee: dict):
     return value
 
 
+def shift_for_pauses(send_at: datetime, pauses: list) -> datetime:
+    """Время сообщения с учётом больничных. pauses — [(начало, конец)] по порядку, в том же
+    времени, что send_at; у идущего больничного конец — «сейчас». Сообщение, которое пришлось
+    бы на больничный или позже него, сдвигается на его длину: план продолжается с того места,
+    где сотрудник остановился. Сообщения до больничного (уже полученные) не сдвигаются."""
+    for start, end in pauses:
+        if send_at >= start:
+            send_at += end - start
+    return send_at
+
+
+def local_pauses(employee: dict, tzname: str) -> list:
+    """Больничные сотрудника во времени плана (без таймзоны — как send_at расписания)."""
+    try:
+        tz = ZoneInfo(tzname or planner.DEFAULT_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo(planner.DEFAULT_TIMEZONE)
+    return [(start.astimezone(tz).replace(tzinfo=None), end.astimezone(tz).replace(tzinfo=None))
+            for start, end in users.pause_periods(employee)]
+
+
+def apply_pauses(items: list, pauses: list) -> list:
+    """Сдвигает send_at позиций расписания на больничные (исходное время — в planned_at)."""
+    planned = [datetime.fromisoformat(i["schedule"]["send_at"]) for i in items
+               if (i.get("schedule") or {}).get("send_at")]
+    if not pauses or not planned:
+        return items
+    # Часы плана идут с первого сообщения: больничный до него ничего не сдвигает.
+    first = min(planned)
+    pauses = [(max(start, first), end) for start, end in pauses if end > max(start, first)]
+    out = []
+    for item in items:
+        sched = dict(item.get("schedule") or {})
+        if sched.get("send_at"):
+            planned = datetime.fromisoformat(sched["send_at"])
+            shifted = shift_for_pauses(planned, pauses)
+            if shifted != planned:
+                sched["planned_at"] = sched["send_at"]
+                sched["send_at"] = shifted.isoformat(timespec="minutes")
+        out.append({**item, "schedule": sched})
+    return out
+
+
 def build_employee_schedule(employee: dict) -> dict:
     """
     Собирает персональное расписание сотрудника.
@@ -79,6 +124,8 @@ def build_employee_schedule(employee: dict) -> dict:
 
     # Считаем смещения по дате выхода именно этого сотрудника
     items = planner.resolve_schedule({**plan, "start_date": employee["start_date"]})
+    tzname = plan.get("timezone", planner.DEFAULT_TIMEZONE)
+    items = apply_pauses(items, local_pauses(employee, tzname))
 
     # Контент — по «плану профессии» сотрудника, если задан явно; иначе по его должности
     # (расписание этой профессии). Если своего нет — общее (profession="").
@@ -123,7 +170,10 @@ def build_employee_schedule(employee: dict) -> dict:
         "plan_title": plan.get("title"),
         "role": plan.get("role"),
         "start_date": employee["start_date"],
-        "timezone": plan.get("timezone", planner.DEFAULT_TIMEZONE),
+        "timezone": tzname,
+        # Больничные: план стоит, пока сотрудник болеет, и потом продолжается с того же места.
+        "paused": employee.get("status") == "paused",
+        "pauses": employee.get("pauses") or [],
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "plan_generated": schedule is not None,
         "messages": messages,

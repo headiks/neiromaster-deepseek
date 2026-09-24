@@ -19,7 +19,7 @@ class EventRequest(BaseModel):
 
 
 @router.post("/api/events", dependencies=logged_in)
-async def ingest_event(req: EventRequest, request: Request, user: dict = Depends(current_user)):
+def ingest_event(req: EventRequest, request: Request, user: dict = Depends(current_user)):
     """Событие от фронта (клик, просмотр). Тип — только из белого списка; лишнее игнорируем.
     Не больше 120 событий в минуту от пользователя: журнал в БД не должен засыпаться скриптом."""
     if not security.hit(f"events:{user['id']}", 120, 60):
@@ -31,8 +31,8 @@ async def ingest_event(req: EventRequest, request: Request, user: dict = Depends
 
 
 @router.get("/api/activity")
-async def list_activity(event_type: str | None = None, user_id: str | None = None,
-                        limit: int = 200, actor: dict = Depends(require_admin)):
+def list_activity(event_type: str | None = None, user_id: str | None = None,
+                  limit: int = 200, actor: dict = Depends(require_admin)):
     """
     Журнал действий. Разграничение как на основной странице: суперадмин видит логи ВСЕХ,
     администратор — только пользователей СВОЕГО отдела (и свои). Фильтры: тип, пользователь.
@@ -50,7 +50,7 @@ async def list_activity(event_type: str | None = None, user_id: str | None = Non
 
 
 @router.get("/api/llm-usage", dependencies=owner_only)
-async def llm_usage(days: int = 14):
+def llm_usage(days: int = 14):
     """Расход токенов DeepSeek по дням (вызовы, prompt/completion, попадания в кэш DeepSeek)."""
     import deepseek
     return {"days": deepseek.usage_by_day(max(1, min(days, 90)))}

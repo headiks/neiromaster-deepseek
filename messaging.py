@@ -149,10 +149,8 @@ def dispatch_due() -> int:
     rows = db.query(
         "UPDATE scheduled_messages SET status = 'delivered', delivered_at = now(), "
         "updated_at = now() WHERE status = 'pending' AND send_at <= now() "
-        # Сотрудник на больничном (status='paused') не получает сообщения плана —
-        # они ждут в pending и выпустятся, когда он снимет паузу.
-        # ponytail: даты не сдвигаются — по возвращении накопившееся выйдет разом;
-        # сдвиг расписания на срок болезни добавить, если понадобится.
+        # Сотрудник на больничном (status='paused') не получает сообщения плана. После
+        # выхода set_sick сдвигает их на срок болезни — план продолжится с того же места.
         "AND employee_id NOT IN (SELECT id FROM users WHERE status = 'paused') "
         "RETURNING id, employee_id, title, body, kind",
         fetch="all",
@@ -320,6 +318,27 @@ def save_answers(employee_id: str, message_row_id: str, answers: dict) -> bool:
 
 
 # ---------- Больничный ----------
+def set_sick(employee_id: str, sick: bool) -> dict:
+    """Больничный: план полностью встаёт, после выхода продолжается с того места, где
+    сотрудник остановился (будущие сообщения сдвигаются на срок болезни, пропущенное не
+    приходит пачкой). Ставит сам сотрудник («Я на больничном») или администратор."""
+    before = users.get_user(employee_id)
+    if not before:
+        raise ValueError("Пользователь не найден")
+    if (before.get("status") == "paused") == sick:
+        return before
+    if sick:
+        user = users.set_status(employee_id, "paused")
+    else:
+        # Порядок важен: сначала закрыть больничный и сдвинуть ожидающие сообщения, и только
+        # потом снять паузу. Иначе планировщик успел бы выпустить их по старым датам разом.
+        user = users.close_pause(employee_id)
+        materialize_employee(user, force=True)
+        user = users.set_status(employee_id, "active")
+    notify_mentor_sick(user, sick)
+    return user
+
+
 def notify_mentor_sick(employee: dict, sick: bool) -> bool:
     """Сотрудник ушёл на больничный / вернулся -> уведомление его наставнику (инбокс + пуш).
     Наставник в карточке — ФИО; ищем пользователя с таким ФИО. Не нашли -> False."""
@@ -333,10 +352,10 @@ def notify_mentor_sick(employee: dict, sick: bool) -> bool:
     who = employee.get("full_name") or employee.get("username") or "Сотрудник"
     if sick:
         deliver_now(mentor["id"], f"{who} на больничном",
-                    f"{who} отметил(а) больничный. Сообщения плана адаптации приостановлены до выхода.")
+                    f"{who} отметил(а) больничный. План адаптации поставлен на паузу до выхода.")
     else:
         deliver_now(mentor["id"], f"{who} вернулся(ась) к работе",
-                    f"{who} снял(а) отметку о больничном. Сообщения плана адаптации возобновлены.")
+                    f"{who} снял(а) отметку о больничном. План адаптации продолжится с того места, где остановился.")
     return True
 
 
