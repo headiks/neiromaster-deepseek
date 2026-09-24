@@ -16,7 +16,8 @@ import db
 
 # Что разрешено принимать от фронта через POST /api/events. Серверные типы
 # (login, logout, login_failed, action) фронт слать не может — их ставит бэкенд.
-CLIENT_EVENTS = {"click", "page_view"}
+# client_error — ошибка интерфейса (текст, стек, сборка): видно, что сломалось у пользователя.
+CLIENT_EVENTS = {"click", "page_view", "client_error"}
 _MAX_DETAIL_BYTES = 4096   # ограничение размера detail от клиента
 
 

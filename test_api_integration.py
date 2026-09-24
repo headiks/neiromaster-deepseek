@@ -108,6 +108,7 @@ def _as_owner(env, owner):
 def test_security_headers_and_healthz(env):
     r = env["client"].get("/healthz")
     assert r.status_code == 200 and r.json()["db"] is True
+    assert r.json()["build"].startswith("index-"), "healthz показывает, какая сборка сайта отдаётся"
     h = r.headers
     assert h["x-frame-options"] == "DENY" and h["x-content-type-options"] == "nosniff"
     assert "frame-ancestors 'none'" in h["content-security-policy"]

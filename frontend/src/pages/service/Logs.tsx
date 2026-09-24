@@ -9,8 +9,8 @@ import type { AdminUser } from '../../lib/types';
 import { Badge, Button, Card, Chip, Empty, Input, PageHeader, Select, Spinner } from '../../ui';
 
 type Event = { ts: string; user_id?: string; username?: string; role?: string; event_type: string; path?: string; detail?: Record<string, unknown>; ip?: string };
-const EVENTS: Record<string, string> = { '': 'Все', login: 'Вход', logout: 'Выход', login_failed: 'Неудачный вход', page_view: 'Просмотр', click: 'Клик', action: 'Действие' };
-const TONE: Record<string, 'ok' | 'danger' | 'accent' | 'muted' | 'warn'> = { login: 'ok', logout: 'muted', login_failed: 'danger', action: 'accent', click: 'muted', page_view: 'muted' };
+const EVENTS: Record<string, string> = { '': 'Все', login: 'Вход', logout: 'Выход', login_failed: 'Неудачный вход', page_view: 'Просмотр', click: 'Клик', action: 'Действие', client_error: 'Ошибка интерфейса' };
+const TONE: Record<string, 'ok' | 'danger' | 'accent' | 'muted' | 'warn'> = { login: 'ok', logout: 'muted', login_failed: 'danger', action: 'accent', click: 'muted', page_view: 'muted', client_error: 'danger' };
 
 function ts(s?: string) {
   const d = s ? new Date(s) : null;
