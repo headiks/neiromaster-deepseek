@@ -5,6 +5,37 @@ html, body, #root { min-height: 100%; }
 body { overflow-x: hidden; }
 button { font-family: inherit; }
 img { max-width: 100%; }
+/* ---------- Полосы прокрутки: тонкие, в цвет темы, без стрелок ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--nm-scroll); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--nm-scroll-hover); }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--nm-scroll) transparent; }
+}
+
+/* ---------- Чекбоксы и радиокнопки — как отметки чек-листа (.nm-check-box) ---------- */
+input[type="checkbox"], input[type="radio"] {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none; width: 20px; height: 20px;
+  display: inline-grid; place-content: center; vertical-align: middle; cursor: pointer;
+  border: 2px solid var(--nm-line-strong); border-radius: 6px; background: var(--nm-surface);
+  transition: background-color .15s var(--nm-ease), border-color .15s var(--nm-ease);
+}
+input[type="radio"] { border-radius: 50%; }
+input[type="checkbox"]::before, input[type="radio"]::before { content: ""; transform: scale(0); transition: transform .12s var(--nm-ease); }
+input[type="checkbox"]::before { width: 11px; height: 11px; background: var(--nm-on-accent);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%); }
+input[type="checkbox"]:checked, input[type="checkbox"]:indeterminate { background: var(--nm-accent); border-color: var(--nm-accent); }
+input[type="checkbox"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:indeterminate::before { transform: scale(1); clip-path: none; width: 10px; height: 2.5px; border-radius: 2px; }
+input[type="radio"]::before { width: 10px; height: 10px; border-radius: 50%; background: var(--nm-accent); }
+input[type="radio"]:checked { border-color: var(--nm-accent); }
+input[type="radio"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:hover:not(:disabled):not(:checked), input[type="radio"]:hover:not(:disabled):not(:checked) { border-color: var(--nm-accent); }
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outline: 2px solid var(--nm-accent); outline-offset: 2px; }
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cursor: not-allowed; }
+
 .nm-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .nm-muted { color: var(--nm-muted); }
 .nm-small { font-size: var(--nm-fs-small); }
@@ -82,19 +113,18 @@ img { max-width: 100%; }
 }
 
 /* ---------- Меню (профиль, действия) ---------- */
-.nm-menu-wrap { position: relative; }
-.nm-menu { position: absolute; z-index: 60; min-width: 240px; padding: 6px; border-radius: var(--nm-r-s);
-           display: flex; flex-direction: column; gap: 2px; box-shadow: var(--nm-shadow-float);
+.nm-menu-wrap { position: relative; flex: none; }
+/* Позицию считает Menu.tsx (по кнопке, в пределах окна). */
+.nm-menu { position: fixed; z-index: 70; min-width: 240px; max-width: calc(100vw - 16px); padding: 6px; border-radius: var(--nm-r-s);
+           display: flex; flex-direction: column; gap: 2px; box-shadow: var(--nm-shadow-float); overflow-y: auto; overscroll-behavior: contain;
            background: var(--nm-glass-solid); border: 1px solid var(--nm-line); animation: nm-pop .16s var(--nm-ease); }
-.nm-menu[data-side="top"] { bottom: calc(100% + 8px); right: 0; }
-.nm-menu[data-side="bottom-end"] { top: calc(100% + 8px); right: 0; }
+.nm-menu > * { flex: none; }
 .nm-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 12px;
                 background: none; color: var(--nm-text); font: 500 14px/1.3 var(--nm-font); text-align: left; cursor: pointer; }
 .nm-menu-item:hover, .nm-menu-item:focus-visible { background: var(--nm-fill); }
 .nm-menu-item .lucide { width: 17px; height: 17px; color: var(--nm-muted); }
 .nm-menu-label { padding: 8px 10px 4px; font-size: 12px; color: var(--nm-muted); }
 .nm-menu-sep { height: 1px; background: var(--nm-line); margin: 4px 6px; }
-@media (max-width: 900px) { .nm-menu[data-side="top"] { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; } }
 @keyframes nm-pop { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
 
 /* ---------- Поля и выбор ---------- */
@@ -115,7 +145,6 @@ img { max-width: 100%; }
            background: var(--nm-fill); border: 1px solid var(--nm-line-strong); color: var(--nm-muted); font-size: 11px; font-weight: 700; cursor: help; }
 .nm-error { color: var(--nm-danger); font-size: var(--nm-fs-small); }
 .nm-checkbox { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; }
-.nm-checkbox input { width: 18px; height: 18px; accent-color: var(--nm-accent); margin: 0; flex: none; }
 .nm-search { position: relative; }
 .nm-search .lucide { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: var(--nm-muted); pointer-events: none; }
 .nm-search .nm-input { padding-left: 44px; }
@@ -167,9 +196,13 @@ img { max-width: 100%; }
 .nm-callout .nm-btn { margin-left: auto; }
 .nm-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 16px; text-align: center; color: var(--nm-muted); font-size: 14px; }
 .nm-empty .lucide { width: 30px; height: 30px; opacity: .7; }
-.nm-spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--nm-line-strong); border-top-color: var(--nm-accent);
-           animation: nm-rot .8s linear infinite; display: inline-block; flex: none; }
+/* Вращается внутренний слой, а внешний его обрезает: повёрнутый квадрат не выступает за свои
+   границы, и у контейнера с прокруткой (чат ассистента) не мигает полоса прокрутки. */
+.nm-spin { width: 18px; height: 18px; border-radius: 50%; display: inline-block; flex: none; position: relative; overflow: hidden; vertical-align: middle; }
+.nm-spin::before { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--nm-line-strong);
+                   border-top-color: var(--nm-accent); animation: nm-rot .8s linear infinite; }
 @keyframes nm-rot { to { transform: rotate(360deg); } }
+.nm-btn-primary .nm-spin::before { border-color: color-mix(in srgb, var(--nm-on-accent) 35%, transparent); border-top-color: var(--nm-on-accent); }
 .nm-skeleton { border-radius: var(--nm-r); min-height: 90px; background: linear-gradient(90deg, var(--nm-fill), var(--nm-surface), var(--nm-fill));
                background-size: 200% 100%; animation: nm-shimmer 1.4s ease-in-out infinite; }
 @keyframes nm-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
@@ -255,7 +288,7 @@ img { max-width: 100%; }
 
 /* Ассистент */
 .nm-chat { display: flex; flex-direction: column; gap: 12px; }
-.nm-chat-log { display: flex; flex-direction: column; gap: 12px; max-height: 460px; overflow-y: auto; padding-right: 2px; }
+.nm-chat-log { display: flex; flex-direction: column; gap: 12px; max-height: 460px; overflow-x: hidden; overflow-y: auto; padding-right: 2px; }
 .nm-chat-hello { color: var(--nm-muted); font-size: 14px; }
 .nm-typing { display: inline-flex; align-items: center; gap: 8px; color: var(--nm-muted); font-size: 14px; }
 .nm-chips { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -295,7 +328,6 @@ img { max-width: 100%; }
 .nm-cell-title { font-size: 14px; font-weight: 600; color: var(--nm-text); overflow: hidden; text-overflow: ellipsis; }
 .nm-cell-sub { font-size: 12.5px; color: var(--nm-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
 .nm-cell-actions { display: flex; gap: 4px; justify-content: flex-end; align-items: center; flex-wrap: nowrap; }
-.nm-table-row input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--nm-accent); }
 @media (max-width: 900px) {
   .nm-table[data-responsive="cards"] .nm-table-head { display: none; }
   .nm-table[data-responsive="cards"] .nm-table-row { grid-template-columns: minmax(0, 1fr) !important; gap: 6px; }

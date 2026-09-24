@@ -23,7 +23,7 @@ SERVICE_PAGES = ("/s3", "/documents-board", "/documents-table", "/logs", "/plans
 
 
 @router.get("/", response_class=HTMLResponse)
-async def root(request: Request):
+def root(request: Request):
     """Личный кабинет сотрудника: сообщения плана, прогресс, ассистент."""
     user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
     if user is None:
@@ -34,17 +34,17 @@ async def root(request: Request):
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page():
+def login_page():
     return spa_html()
 
 
 @router.get("/register", response_class=HTMLResponse)
-async def register_page():
+def register_page():
     return spa_html()
 
 
 @router.get("/setup", response_class=HTMLResponse)
-async def setup_page(request: Request):
+def setup_page(request: Request):
     """Первичная настройка: замена выданного пароля своим."""
     user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
     if user is None:
@@ -55,20 +55,20 @@ async def setup_page(request: Request):
 
 
 @router.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request):
+def admin_page(request: Request):
     """Админка: пользователи, планы, документы, сообщения, вопросы."""
     return page_for_admin(request)
 
 
 @router.get("/admin/{section}", response_class=HTMLResponse)
-async def admin_section(section: str, request: Request):
+def admin_section(section: str, request: Request):
     if section not in ADMIN_SECTIONS:
         return RedirectResponse(url="/admin", status_code=303)
     return page_for_admin(request)
 
 
 def _service_page(path: str):
-    async def page(request: Request):
+    def page(request: Request):
         return page_for_admin(request)
     page.__name__ = "page_" + path.strip("/").replace("-", "_")
     router.add_api_route(path, page, methods=["GET"], response_class=HTMLResponse)
@@ -79,7 +79,7 @@ for _path in SERVICE_PAGES:
 
 
 @router.get("/favicon.ico", include_in_schema=False)
-async def favicon():
+def favicon():
     """Браузеры просят /favicon.ico сами — отдаём логотип, а не 404 в консоли."""
     return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml",
                         headers={"Cache-Control": "public, max-age=86400"})

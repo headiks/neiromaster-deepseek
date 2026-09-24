@@ -1,5 +1,5 @@
 // Прогресс адаптации и итоги интерактивных сообщений — одна логика для сайта и приложения.
-import { fromYmd, parseDate, ymd } from "./format";
+import { fromYmd, parseDate, plural, shortWhen, ymd } from "./format";
 import type { Answers, Msg, MySchedule, Payload, QuizQuestion, ScheduleItem } from "./types";
 
 const DAY = 86400000;
@@ -11,11 +11,23 @@ export type Progress = {
   stage: string;                  // текущий этап
   started: boolean;
   finished: boolean;
+  paused: boolean;                // на больничном: план стоит, дни не идут
   next: { title: string; stage: string; substage: string; at: Date } | null;
   upcoming: { title: string; stage: string; substage: string; brief: string; at: Date }[];
 };
 
 const itemAt = (it: ScheduleItem) => parseDate(it.schedule?.send_at);
+const plannedAt = (it: ScheduleItem) => parseDate(it.schedule?.planned_at || it.schedule?.send_at);
+
+/** Сколько мс плана (от from до now) пришлось на больничные — эти дни план стоял. */
+function pausedMs(s: MySchedule, from: Date, now: Date): number {
+  return (s.pauses || []).reduce((sum, p) => {
+    const a = parseDate(p.start), b = p.end ? parseDate(p.end) : now;
+    if (!a || !b) return sum;
+    const lo = Math.max(a.getTime(), from.getTime()), hi = Math.min(b.getTime(), now.getTime());
+    return sum + Math.max(0, hi - lo);
+  }, 0);
+}
 
 /** «День 3 из 30», текущий этап и что дальше — по расписанию из /api/my/schedule. */
 export function adaptationProgress(s: MySchedule | null | undefined, now: Date = new Date()): Progress | null {
@@ -26,9 +38,12 @@ export function adaptationProgress(s: MySchedule | null | undefined, now: Date =
   dated.sort((a, b) => a.at.getTime() - b.at.getTime());
   if (!start) return null;
   const today = fromYmd(ymd(now)) as Date;
-  const lastDay = dated.length ? fromYmd(ymd(dated[dated.length - 1].at)) as Date : start;
+  // Длина плана — по исходным датам; дни больничного не считаются: план в это время стоит.
+  const planned = s.messages.map(plannedAt).filter(Boolean) as Date[];
+  const lastPlanned = planned.length ? new Date(Math.max(...planned.map((d) => d.getTime()))) : start;
+  const lastDay = fromYmd(ymd(lastPlanned)) as Date;
   const total = Math.max(1, Math.round((lastDay.getTime() - start.getTime()) / DAY) + 1);
-  const raw = Math.floor((today.getTime() - start.getTime()) / DAY) + 1;
+  const raw = Math.floor((today.getTime() - start.getTime()) / DAY) + 1 - Math.round(pausedMs(s, start, now) / DAY);
   const started = raw >= 1;
   const day = Math.min(Math.max(raw, 0), total);
   const past = dated.filter((x) => x.at.getTime() <= now.getTime());
@@ -48,9 +63,31 @@ export function adaptationProgress(s: MySchedule | null | undefined, now: Date =
     stage: current?.stage?.title || "",
     started,
     finished: started && !future.length && raw > total,
+    paused: !!s.paused,
     next: future.length ? view(future[0]) : null,
     upcoming: future.slice(0, 6).map(view),
   };
+}
+
+/** Заголовок карточки прогресса: «До выхода 3 дня», «День 5 из 30», «Пауза · день 5 из 30». */
+export function progressTitle(p: Progress, s: MySchedule, now: Date = new Date()): string {
+  if (!p.started) {
+    const start = fromYmd(s.start_date);
+    const left = start ? Math.ceil((start.getTime() - now.getTime()) / DAY) : 0;
+    return left > 0 ? `До выхода ${left} ${plural(left, "день", "дня", "дней")}` : "Скоро старт";
+  }
+  if (p.finished) return "План пройден";
+  return p.paused ? `Пауза · день ${p.day} из ${p.total}` : `День ${p.day} из ${p.total}`;
+}
+
+/** Когда придёт следующее. На больничном дат нет: план стоит до выхода. */
+export function whenNext(p: Progress, at: Date): string {
+  return p.paused ? "после выхода с больничного" : shortWhen(at);
+}
+
+/** «Дальше: Знакомство с наставником — завтра в 10:00». */
+export function nextLine(p: Progress): string {
+  return p.next ? `Дальше: ${p.next.substage || p.next.title} — ${whenNext(p, p.next.at)}` : "";
 }
 
 // ---- Интерактивные сообщения ----

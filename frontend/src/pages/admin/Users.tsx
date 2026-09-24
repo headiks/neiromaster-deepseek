@@ -260,7 +260,10 @@ function CredentialsDialog({ user, onClose, onChanged }: { user: AdminUser | nul
   );
 }
 
-type UserSchedule = { employee: { full_name: string }; plan_title: string; start_date: string; plan_generated: boolean; messages: ScheduleMessage[] };
+type UserSchedule = {
+  employee: { full_name: string }; plan_title: string; start_date: string; plan_generated: boolean; messages: ScheduleMessage[];
+  paused?: boolean; pauses?: { start: string; end: string | null }[];
+};
 
 function ScheduleDialog({ user, onClose }: { user: AdminUser | null; onClose: () => void }) {
   const [data, setData] = useState<UserSchedule | null>(null);
@@ -277,13 +280,17 @@ function ScheduleDialog({ user, onClose }: { user: AdminUser | null; onClose: ()
               <a className="nm-btn nm-btn-secondary" href={`${base}/schedule.json`} download><Download aria-hidden />schedule.json</a></> : undefined}>
       {error && <Callout tone="warn" icon={TriangleAlert}>{error}</Callout>}
       {!data && !error && <Spinner />}
+      {data?.paused && <Callout tone="warn" icon={Pause}>Сотрудник на больничном: план стоит. После возобновления он продолжится с того же места — даты ниже сдвинутся на срок паузы.</Callout>}
+      {data && !data.paused && !!data.pauses?.length && <Callout icon={Clock}>Даты сдвинуты на больничные ({data.pauses.length}): план продолжился с того места, где сотрудник остановился.</Callout>}
       {data && !data.plan_generated && <Callout tone="warn" icon={TriangleAlert}>У плана «{data.plan_title}» ещё нет сообщений. Даты рассчитаны, тексты пустые — обновите сообщения в разделе «Сообщения».</Callout>}
       {data && (
         <div className="nm-stack">
           {data.messages.map((m) => (
             <Card key={m.message_id} style={{ gap: 4 }}>
               <div className="nm-card-kicker"><span>{m.stage.title} · {m.substage.title}</span>
-                <time>{m.schedule.send_at ? m.schedule.send_at.replace('T', ' ') : `${m.schedule.offset_days >= 0 ? '+' : ''}${m.schedule.offset_days} дн., ${m.schedule.time}`}</time></div>
+                <time title={m.schedule.planned_at ? `По плану: ${m.schedule.planned_at.replace('T', ' ')}` : undefined}>
+                  {m.schedule.send_at ? m.schedule.send_at.replace('T', ' ') : `${m.schedule.offset_days >= 0 ? '+' : ''}${m.schedule.offset_days} дн., ${m.schedule.time}`}
+                  {m.schedule.planned_at && <span className="nm-muted"> (сдвинуто)</span>}</time></div>
               <div className="nm-small nm-pre">{m.content.text || '—'}</div>
               {m.error && <div className="nm-micro nm-danger-text">{m.error}</div>}
             </Card>
@@ -356,8 +363,8 @@ export default function Users() {
     }
   };
   const pause = async (u: AdminUser, paused: boolean) => {
-    if (paused && !(await confirm({ title: 'Приостановить адаптацию?', text: `Сообщения плана для «${u.full_name}» не будут приходить, пока не возобновите.`, ok: 'Приостановить' }))) return;
-    act(() => api.post(`/users/${enc(u.id)}/pause`, { paused }), paused ? 'Адаптация приостановлена' : 'Адаптация возобновлена');
+    if (paused && !(await confirm({ title: 'Приостановить адаптацию?', text: `План «${u.full_name}» встанет на паузу. После возобновления продолжится с того места, где остановился: даты сообщений сдвинутся на срок паузы.`, ok: 'Приостановить' }))) return;
+    act(() => api.post(`/users/${enc(u.id)}/pause`, { paused }), paused ? 'Адаптация приостановлена' : 'Адаптация возобновлена — план продолжится с того же места');
   };
   const bulkDelete = async () => {
     const names = list.filter((u) => selected.has(u.id)).map((u) => u.full_name);

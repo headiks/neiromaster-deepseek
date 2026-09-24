@@ -375,6 +375,67 @@ def test_ensure_all_ignores_test_notifications(env, owner, monkeypatch):
     assert users.get_user(emp["id"])["start_date"] == "2026-10-01"
 
 
+def test_sick_leave_pauses_and_resumes_plan(env, owner, monkeypatch):
+    """Больничный: пока болеет — ничего не приходит; после выхода план продолжается с того
+    места, где остановился (пропущенное не приходит пачкой), полученное остаётся как было."""
+    from datetime import date, datetime, timedelta, timezone
+    import db
+    import messaging
+    import planner
+    import users
+    c = _as_owner(env, owner)
+    plan = c.post("/plans/template", headers=ORIGIN).json()
+    start = (date.today() - timedelta(days=6)).isoformat()
+    emp = c.post("/users", headers=ORIGIN, json={"full_name": "Болеев Борис Борисович",
+                                                 "plan_id": plan["plan_id"], "start_date": start}).json()
+    # Тексты «сгенерированы»: без текста сообщения не материализуются.
+    texts = {"messages": [{"message_id": i["message_id"], "content": {"text": "Текст"}}
+                          for i in planner.resolve_schedule({**plan, "start_date": start})]}
+    monkeypatch.setattr(planner, "load_schedule", lambda plan_id, profession="": texts)
+    uid = emp["id"]
+    messaging.materialize_employee(users.get_user(uid), force=True)
+    rows = lambda: {r["id"]: r for r in db.query(  # noqa: E731
+        "SELECT id, status, send_at FROM scheduled_messages WHERE employee_id = %s AND plan_id IS NOT NULL", (uid,))}
+    planned = {k: r["send_at"] for k, r in rows().items()}
+    # 3 дня назад сотрудник заболел: всё, что было до этого, он уже получил.
+    now = datetime.now(timezone.utc)
+    sick_from = now - timedelta(days=3)
+    db.execute("UPDATE scheduled_messages SET status = 'delivered', delivered_at = send_at "
+               "WHERE employee_id = %s AND send_at < %s", (uid, sick_from))
+    history = {k for k, r in rows().items() if r["status"] == "delivered"}
+    missed = {k for k, t in planned.items() if sick_from <= t <= now}
+    assert history and missed, "в сценарии есть и полученные, и пропущенные на больничном сообщения"
+
+    r = c.post(f"/users/{uid}/pause", headers=ORIGIN, json={"paused": True})
+    assert r.status_code == 200 and r.json()["status"] == "paused"
+    u = users.get_user(uid)
+    assert len(u["pauses"]) == 1 and u["pauses"][0]["end"] is None
+    u["pauses"][0]["start"] = sick_from.isoformat(timespec="seconds")
+    users._save_user(u)
+    messaging.dispatch_due()
+    assert not {k for k, r in rows().items() if r["status"] == "delivered"} - history, "на больничном ничего не приходит"
+
+    r = c.post(f"/users/{uid}/pause", headers=ORIGIN, json={"paused": False})
+    assert r.status_code == 200 and r.json()["status"] == "active"
+    after = rows()
+    assert {k for k, r in after.items() if r["status"] == "delivered"} == history, "история не переписана"
+    for k in missed:     # пропущенное сдвинуто на срок болезни — продолжится с того же места
+        shift = after[k]["send_at"] - planned[k]
+        assert abs(shift - timedelta(days=3)) < timedelta(minutes=2), (k, shift)
+    messaging.dispatch_due()
+    burst = {k for k, r in rows().items() if r["status"] == "delivered"} - history
+    assert len(burst) <= 1, f"после выхода пропущенное не должно приходить пачкой: {burst}"
+
+    u = users.get_user(uid)
+    assert u["pauses"][0]["end"] and u["status"] == "active"
+    sched = c.get(f"/users/{uid}/schedule").json()
+    assert sched["paused"] is False and any(m["schedule"].get("planned_at") for m in sched["messages"])
+    # Новый план/дата выхода — прошлые больничные к нему не относятся.
+    c.put(f"/users/{uid}", headers=ORIGIN, json={**{k: emp.get(k) for k in ("full_name", "plan_id")},
+                                                 "start_date": date.today().isoformat()})
+    assert users.get_user(uid)["pauses"] == []
+
+
 def test_answers_size_limit(env, owner):
     c = _as_owner(env, owner)
     r = c.post("/api/my/messages/x/answer", json={"answers": {"a": "x" * 40000}}, headers=ORIGIN)

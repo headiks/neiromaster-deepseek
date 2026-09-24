@@ -32,19 +32,19 @@ class PlanRequest(BaseModel):
 
 
 @router.get("/catalog", dependencies=admin_only)
-async def get_catalog():
+def get_catalog():
     """Каталог этапов и шаблонов подэтапов — из него человек собирает план."""
     return planner.load_catalog()
 
 
 @router.get("/plans", dependencies=admin_only)
-async def get_plans():
+def get_plans():
     import autoplan
     return {"plans": planner.list_plans(), "default_plan_id": autoplan.get_default_plan_id()}
 
 
 @router.post("/plans/{plan_id}/set-default")
-async def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
+def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
     """Сделать план активным общим: он будет автоматически назначаться новым сотрудникам
     по должности, а также сразу назначается всем сотрудникам БЕЗ плана (ручные не трогаем).
     Пока у сотрудника нет даты выхода — план неактивен (сообщения не идут)."""
@@ -59,7 +59,7 @@ async def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
 
 
 @router.post("/plans")
-async def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
+def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
     plan = planner.assign_topics(planner.normalize_plan(req.model_dump(exclude={"expected_updated_at"})))
     planner.save_plan(plan)
     activitylog.log("action", user=user, path="/plans",
@@ -69,7 +69,7 @@ async def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
 
 
 @router.post("/plans/template")
-async def create_full_template(title: str | None = None, user: dict = Depends(require_admin)):
+def create_full_template(title: str | None = None, user: dict = Depends(require_admin)):
     """Стандартный план из всего каталога (все этапы и подэтапы, разнесены по дням этапа),
     единый для всех профессий. Дальше редактируется как обычный план."""
     plan = planner.build_full_template((title or "")[:300])
@@ -85,7 +85,7 @@ async def create_full_template(title: str | None = None, user: dict = Depends(re
 
 
 @router.get("/plans/coverage", dependencies=admin_only)
-async def plans_coverage():
+def plans_coverage():
     """Хватает ли документов планам: по каждому плану (стандартному и своему) — сколько
     подэтапов обеспечены документами и для каких их нет («догрузите»)."""
     present = planner.substages_with_docs()
@@ -94,7 +94,7 @@ async def plans_coverage():
 
 
 @router.get("/plans/{plan_id}", dependencies=admin_only)
-async def get_plan(plan_id: str):
+def get_plan(plan_id: str):
     plan = planner.load_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="План не найден")
@@ -102,7 +102,7 @@ async def get_plan(plan_id: str):
 
 
 @router.put("/plans/{plan_id}")
-async def update_plan(plan_id: str, req: PlanRequest, user: dict = Depends(require_admin)):
+def update_plan(plan_id: str, req: PlanRequest, user: dict = Depends(require_admin)):
     existing = planner.load_plan(plan_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="План не найден")
@@ -125,7 +125,7 @@ async def update_plan(plan_id: str, req: PlanRequest, user: dict = Depends(requi
 
 
 @router.delete("/plans/{plan_id}")
-async def remove_plan(plan_id: str, user: dict = Depends(require_admin)):
+def remove_plan(plan_id: str, user: dict = Depends(require_admin)):
     """Удаление плана: его сообщения (plan_schedules) уходят каскадом, у сотрудников
     назначение снимается, активный общий план — сбрасывается."""
     if not planner.delete_plan(plan_id):
@@ -140,7 +140,7 @@ async def remove_plan(plan_id: str, user: dict = Depends(require_admin)):
 
 
 @router.post("/plans/{plan_id}/duplicate", dependencies=admin_only)
-async def duplicate_plan(plan_id: str, title: str | None = None):
+def duplicate_plan(plan_id: str, title: str | None = None):
     """Копия плана под смежную должность — дальше редактируется как обычно."""
     plan = planner.duplicate_plan(plan_id, (title or "")[:300] or None)
     if plan is None:
@@ -188,7 +188,7 @@ def _gen_target(plan_id: str, profession: str | None) -> tuple:
 
 
 @router.get("/plans/{plan_id}/generate-estimate", dependencies=admin_only)
-async def generate_estimate(plan_id: str, profession: str | None = None):
+def generate_estimate(plan_id: str, profession: str | None = None):
     """Сколько запросов к DeepSeek потребует «Обновить сообщения» — без вызова модели
     (сверка SHA-256 отпечатков входов). llm_calls=0 -> всё актуально."""
     plan, positions, include_general = _gen_target(plan_id, profession)
@@ -196,7 +196,7 @@ async def generate_estimate(plan_id: str, profession: str | None = None):
 
 
 @router.post("/plans/{plan_id}/generate", dependencies=admin_only)
-async def generate_plan(plan_id: str, profession: str | None = None):
+def generate_plan(plan_id: str, profession: str | None = None):
     """Инкрементальная генерация сообщений плана (фоном, прогресс — GET /jobs/{job_id}).
     Модель зовётся только для подэтапов с изменившимися входами; ничего не менялось ->
     status='up_to_date' без единого запроса. Идёт генерация этого плана -> вернётся она же."""
@@ -205,14 +205,14 @@ async def generate_plan(plan_id: str, profession: str | None = None):
 
 
 @router.post("/plans/{plan_id}/generate-missing", dependencies=admin_only)
-async def generate_missing(plan_id: str, profession: str | None = None):
+def generate_missing(plan_id: str, profession: str | None = None):
     """Совместимость со старым фронтом: то же, что /generate (генерация теперь всегда
     трогает только недостающее и изменившееся)."""
-    return await generate_plan(plan_id, profession)
+    return generate_plan(plan_id, profession)
 
 
 @router.post("/plans/{plan_id}/refresh-catalog", dependencies=admin_only)
-async def refresh_plan_catalog(plan_id: str):
+def refresh_plan_catalog(plan_id: str):
     """Подтянуть в существующий план свежие описания этапов и брифы подэтапов из каталога
     (по catalog_id). Обновляет только тексты; расписание, порядок, заголовки и ручные
     подэтапы не трогает. После этого содержимое перегенерируется по кнопке «Догенерировать»."""
@@ -223,7 +223,7 @@ async def refresh_plan_catalog(plan_id: str):
 
 
 @router.post("/plans/{plan_id}/rollout")
-async def rollout_plan(plan_id: str, user: dict = Depends(require_admin)):
+def rollout_plan(plan_id: str, user: dict = Depends(require_admin)):
     """Применить готовый план ко всем сотрудникам: назначить план каждому сотруднику и
     запустить фоновую генерацию содержания под каждую уникальную должность из штатки.
     Прогресс — через GET /jobs/{job_id}. Сотрудник дальше видит план своей профессии."""
@@ -248,7 +248,7 @@ async def rollout_plan(plan_id: str, user: dict = Depends(require_admin)):
 
 
 @router.get("/jobs/{job_id}", dependencies=admin_only)
-async def get_job(job_id: str):
+def get_job(job_id: str):
     job = planner.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
@@ -256,7 +256,7 @@ async def get_job(job_id: str):
 
 
 @router.post("/jobs/{job_id}/cancel", dependencies=admin_only)
-async def cancel_generation(job_id: str):
+def cancel_generation(job_id: str):
     """Отмена фоновой генерации: уже сгенерированные подэтапы сохраняются, дальше не идём."""
     job = planner.cancel_job(job_id)
     if job is None:
@@ -265,7 +265,7 @@ async def cancel_generation(job_id: str):
 
 
 @router.get("/plans/{plan_id}/schedule", dependencies=admin_only)
-async def get_schedule(plan_id: str, profession: str | None = None, missing_ok: bool = False):
+def get_schedule(plan_id: str, profession: str | None = None, missing_ok: bool = False):
     """Расписание плана. profession — показать вариант под конкретную должность (иначе общий).
     missing_ok — сообщений ещё нет: 200 с null вместо 404 (админке это штатный случай)."""
     schedule = planner.load_schedule(plan_id, profession or "")
@@ -277,7 +277,7 @@ async def get_schedule(plan_id: str, profession: str | None = None, missing_ok: 
 
 
 @router.delete("/plans/{plan_id}/schedule", dependencies=admin_only)
-async def delete_schedule(plan_id: str, profession: str, user: dict = Depends(require_admin)):
+def delete_schedule(plan_id: str, profession: str, user: dict = Depends(require_admin)):
     """Удаляет сгенерированные тексты плана под конкретную должность."""
     prof = (profession or "").strip()
     if not prof:
@@ -290,7 +290,7 @@ async def delete_schedule(plan_id: str, profession: str, user: dict = Depends(re
 
 
 @router.get("/plans/{plan_id}/professions", dependencies=admin_only)
-async def get_plan_professions(plan_id: str):
+def get_plan_professions(plan_id: str):
     """Должности для селектора генерации:
     - professions — под которые УЖЕ сгенерированы отдельные расписания;
     - available — все известные должности (из профилей сотрудников и штатки), чтобы
@@ -339,7 +339,7 @@ EXPORT_FILES = {
 
 
 @router.get("/plans/{plan_id}/export/{name}", dependencies=admin_only)
-async def export_plan(plan_id: str, name: str, profession: str | None = None):
+def export_plan(plan_id: str, name: str, profession: str | None = None):
     """Экспорт плана/расписания из БД. profession — какое расписание отдать (пустой = общее)."""
     if name not in EXPORT_FILES:
         raise HTTPException(status_code=400, detail=f"Доступны: {', '.join(EXPORT_FILES)}")

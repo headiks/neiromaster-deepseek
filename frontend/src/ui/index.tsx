@@ -202,13 +202,15 @@ export function PageHeader({ kicker, title, subtitle, actions, display }: {
 export const useUid = useId;
 
 /** Закрытие по клику вне элемента и по Escape. */
-export function useDismiss(open: boolean, onClose: () => void, ref: React.RefObject<HTMLElement | null>) {
+export function useDismiss(open: boolean, onClose: () => void, ref: React.RefObject<HTMLElement | null>,
+                           extra?: React.RefObject<HTMLElement | null>) {
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
+    const inside = (n: Node) => !!(ref.current?.contains(n) || extra?.current?.contains(n));
+    const onDown = (e: MouseEvent) => { if (ref.current && !inside(e.target as Node)) onClose(); };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey, true); };
-  }, [open, onClose, ref]);
+  }, [open, onClose, ref, extra]);
 }

@@ -30,7 +30,7 @@ function SickBanner() {
   return (
     <div className="nm-banner" role="status">
       <ThermometerSun aria-hidden />
-      <span className="nm-grow">Вы на больничном — сообщения плана на паузе.</span>
+      <span className="nm-grow">Вы на больничном — план на паузе. После выхода он продолжится с того же места.</span>
       <Button size="sm" variant="secondary" onClick={() => set(false)} loading={busy}>Снять больничный</Button>
     </div>
   );

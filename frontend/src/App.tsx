@@ -1,6 +1,6 @@
 // Маршруты сайта. Доступ проверяет и сервер (api_pages.py), и клиент: без входа — на /login,
 // с временным паролем — на /setup, админские разделы — только администраторам.
-import { lazy, Suspense, useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from './lib/theme';
 import { MeProvider, useMe } from './lib/me';
@@ -10,6 +10,8 @@ import { CabinetProvider } from './lib/cabinet';
 import { installActivityLog } from './lib/activity';
 import { ConfirmProvider } from './ui/confirm';
 import { Spinner } from './ui';
+import { ErrorBoundary } from './ui/ErrorBoundary';
+import { lazyPage, preloadWhenIdle } from './lib/lazyPage';
 import { AppShell } from './blocks/AppShell';
 import { TourHost } from './tour';
 import Login from './pages/auth/Login';
@@ -17,21 +19,24 @@ import Register from './pages/auth/Register';
 import Setup from './pages/auth/Setup';
 import Cabinet from './pages/cabinet/Cabinet';
 
-const Users = lazy(() => import('./pages/admin/Users'));
-const Plans = lazy(() => import('./pages/admin/Plans'));
-const Documents = lazy(() => import('./pages/admin/Documents'));
-const Messages = lazy(() => import('./pages/admin/Messages'));
-const Questions = lazy(() => import('./pages/admin/Questions'));
-const Logs = lazy(() => import('./pages/service/Logs'));
-const PlansDb = lazy(() => import('./pages/service/PlansDb'));
-const NotifyTest = lazy(() => import('./pages/service/NotifyTest'));
-const QueueTest = lazy(() => import('./pages/service/QueueTest'));
-const S3Browser = lazy(() => import('./pages/service/S3Browser'));
-const DocumentsTable = lazy(() => import('./pages/service/DocumentsTable'));
-const DocumentsBoard = lazy(() => import('./pages/service/DocumentsBoard'));
-const DocBreakdown = lazy(() => import('./pages/service/DocBreakdown'));
-const GlobalTest = lazy(() => import('./pages/service/GlobalTest'));
-const MessageTest = lazy(() => import('./pages/service/MessageTest'));
+const Users = lazyPage(() => import('./pages/admin/Users'));
+const Plans = lazyPage(() => import('./pages/admin/Plans'));
+const Documents = lazyPage(() => import('./pages/admin/Documents'));
+const Messages = lazyPage(() => import('./pages/admin/Messages'));
+const Questions = lazyPage(() => import('./pages/admin/Questions'));
+const Logs = lazyPage(() => import('./pages/service/Logs'));
+const PlansDb = lazyPage(() => import('./pages/service/PlansDb'));
+const NotifyTest = lazyPage(() => import('./pages/service/NotifyTest'));
+const QueueTest = lazyPage(() => import('./pages/service/QueueTest'));
+const S3Browser = lazyPage(() => import('./pages/service/S3Browser'));
+const DocumentsTable = lazyPage(() => import('./pages/service/DocumentsTable'));
+const DocumentsBoard = lazyPage(() => import('./pages/service/DocumentsBoard'));
+const DocBreakdown = lazyPage(() => import('./pages/service/DocBreakdown'));
+const GlobalTest = lazyPage(() => import('./pages/service/GlobalTest'));
+const MessageTest = lazyPage(() => import('./pages/service/MessageTest'));
+// Сначала — основные разделы, потом служебные.
+const ADMIN_PAGES = [Users, Plans, Documents, Messages, Questions, Logs, PlansDb, NotifyTest, QueueTest,
+  S3Browser, DocumentsTable, DocumentsBoard, DocBreakdown, GlobalTest, MessageTest];
 
 function Loading() {
   return <div className="nm-auth"><Spinner /></div>;
@@ -54,8 +59,17 @@ function Protected() {
 /** Разделы администратора: один сайдбар на все страницы, страницы грузятся по требованию. */
 function AdminLayout() {
   const { isAdmin } = useMe();
+  const { pathname } = useLocation();
+  // Разделы подгружаются заранее, в простое: переход по меню не ждёт сеть.
+  useEffect(() => { if (isAdmin) preloadWhenIdle(ADMIN_PAGES); }, [isAdmin]);
   if (!isAdmin) return <Navigate to="/" replace />;
-  return <AppShell><Suspense fallback={<Spinner />}><Outlet /></Suspense></AppShell>;
+  return (
+    <AppShell>
+      <ErrorBoundary key={pathname}>
+        <Suspense fallback={<Spinner />}><Outlet /></Suspense>
+      </ErrorBoundary>
+    </AppShell>
+  );
 }
 
 function Titles() {
@@ -68,6 +82,7 @@ export default function App() {
   useEffect(() => { installActivityLog(); }, []);
   return (
     <BrowserRouter>
+      <ErrorBoundary>
       <ThemeProvider>
         <ToastProvider>
           <ConfirmProvider>
@@ -104,6 +119,7 @@ export default function App() {
           </ConfirmProvider>
         </ToastProvider>
       </ThemeProvider>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }

@@ -35,10 +35,10 @@ def _foreign_department(actor: dict, department: str) -> bool:
 
 
 @router.post("/staffing/preview")
-async def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require_admin)):
+def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require_admin)):
     """Разбор загруженной xlsx-штатки: ИИ определяет разметку столбцов, возвращаем
     найденное сопоставление и извлечённые записи для подтверждения администратором."""
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413,
                             detail=f"Файл превышает лимит {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ")
@@ -56,7 +56,7 @@ async def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(r
 
 
 @router.post("/staffing/import")
-async def staffing_import(req: StaffingImportRequest, actor: dict = Depends(require_admin)):
+def staffing_import(req: StaffingImportRequest, actor: dict = Depends(require_admin)):
     """Массовое создание из подтверждённых строк единой таблицы: строки с ФИО — профили
     сотрудников (логины/пароли в ответе, один раз), строки без ФИО — профили-вакансии.
     Обычный администратор создаёт только людей своего подразделения (пустое — его)."""
@@ -97,7 +97,7 @@ def _delete_denied(actor: dict, target: dict) -> str:
 
 
 @router.post("/users/bulk-delete")
-async def bulk_delete(req: IdsRequest, actor: dict = Depends(require_admin)):
+def bulk_delete(req: IdsRequest, actor: dict = Depends(require_admin)):
     """Удаление отмеченных галочками. Каждого проверяем как одиночное удаление: себя нельзя,
     обычный админ — только сотрудников своего отдела. Неподходящие — в skipped с причиной."""
     deleted, skipped = [], []
@@ -122,7 +122,7 @@ async def bulk_delete(req: IdsRequest, actor: dict = Depends(require_admin)):
 
 
 @router.get("/users/credentials.xlsx")
-async def credentials_xlsx(ids: str = "", actor: dict = Depends(require_admin)):
+def credentials_xlsx(ids: str = "", actor: dict = Depends(require_admin)):
     """Excel «ФИО / логин / временный пароль» — по сотрудникам, ещё не задавшим свой пароль.
     ids (через запятую) — только эти (сразу после загрузки штатки); пусто — все видимые."""
     wanted = {i for i in ids.split(",")[:5000] if i}
@@ -186,7 +186,7 @@ def _target_user(user_id: str, actor: dict) -> dict:
 
 
 @router.get("/users")
-async def get_users(actor: dict = Depends(require_admin)):
+def get_users(actor: dict = Depends(require_admin)):
     """Суперадмин видит всех, администратор — только людей своего отдела (и себя)."""
     plans = {p["plan_id"]: p for p in planner.list_plans()}
     full = {}                                   # полные планы — для длительности (автостатус)
@@ -207,7 +207,7 @@ async def get_users(actor: dict = Depends(require_admin)):
 
 
 @router.post("/users", dependencies=admin_only)
-async def create_user(req: UserRequest, actor: dict = Depends(require_admin)):
+def create_user(req: UserRequest, actor: dict = Depends(require_admin)):
     """
     Заведение сотрудника администратором. Логин и временный пароль необязательны:
     профиль можно создать заранее, а доступ выдать позже.
@@ -230,12 +230,12 @@ async def create_user(req: UserRequest, actor: dict = Depends(require_admin)):
 
 
 @router.get("/users/{user_id}")
-async def get_user(user_id: str, actor: dict = Depends(require_admin)):
+def get_user(user_id: str, actor: dict = Depends(require_admin)):
     return users.public_view(_target_user(user_id, actor))
 
 
 @router.put("/users/{user_id}")
-async def update_user(user_id: str, req: UserRequest, actor: dict = Depends(require_admin)):
+def update_user(user_id: str, req: UserRequest, actor: dict = Depends(require_admin)):
     """Правка профиля и назначение плана адаптации с датой выхода."""
     before = _target_user(user_id, actor)
     payload = req.model_dump()
@@ -253,7 +253,7 @@ async def update_user(user_id: str, req: UserRequest, actor: dict = Depends(requ
 
 
 @router.delete("/users/{user_id}", dependencies=admin_only)
-async def remove_user(user_id: str, actor: dict = Depends(require_admin)):
+def remove_user(user_id: str, actor: dict = Depends(require_admin)):
     """Удаление пользователя: обычный админ — только сотрудников,
     суперадмин — любого (кроме самого себя; последнего owner сервер не даст)."""
     target = users.get_user(user_id)
@@ -277,7 +277,7 @@ async def remove_user(user_id: str, actor: dict = Depends(require_admin)):
 
 
 @router.post("/users/{user_id}/role", dependencies=owner_only)
-async def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends(require_owner)):
+def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends(require_owner)):
     """Назначить администратором или убрать из администраторов — только главный."""
     if user_id == actor["id"]:
         raise HTTPException(status_code=400, detail="Нельзя изменить собственную роль")
@@ -293,7 +293,7 @@ async def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends
 
 
 @router.post("/users/{user_id}/active")
-async def change_user_active(user_id: str, req: ActiveRequest, actor: dict = Depends(require_admin)):
+def change_user_active(user_id: str, req: ActiveRequest, actor: dict = Depends(require_admin)):
     """
     Подтверждение регистрации и блокировка доступа. Администратор может
     активировать и блокировать сотрудников, главный администратор — кого угодно.
@@ -311,8 +311,8 @@ async def change_user_active(user_id: str, req: ActiveRequest, actor: dict = Dep
 
 
 @router.post("/users/{user_id}/credentials")
-async def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
-                               actor: dict = Depends(require_admin)):
+def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
+                         actor: dict = Depends(require_admin)):
     """
     Новый временный пароль (пусто — сгенерируем). Логин вручную не меняется: если его ещё
     нет (профиль-вакансия), он выдаётся один раз из ФИО. Сотрудник при входе задаст свой пароль.
@@ -336,18 +336,16 @@ async def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
 
 
 @router.post("/users/{user_id}/pause")
-async def pause_user(user_id: str, req: PauseRequest, actor: dict = Depends(require_admin)):
-    """Приостановить адаптацию (больничный и т.п.) или возобновить: пока пауза, сообщения
-    плана не доставляются. То же сотрудник может сделать сам в кабинете («Я на больничном»)."""
-    before = _target_user(user_id, actor)
-    user = users.set_status(user_id, "paused" if req.paused else "active")
-    if (before.get("status") == "paused") != req.paused:
-        messaging.notify_mentor_sick(user, req.paused)
-    return users.public_view(user)
+def pause_user(user_id: str, req: PauseRequest, actor: dict = Depends(require_admin)):
+    """Приостановить адаптацию (больничный и т.п.) или возобновить: пока пауза, план стоит,
+    после неё продолжается с того же места. То же сотрудник может сделать сам в кабинете
+    («Я на больничном»)."""
+    _target_user(user_id, actor)
+    return users.public_view(messaging.set_sick(user_id, req.paused))
 
 
 @router.post("/users/{user_id}/transfer-ownership", dependencies=owner_only)
-async def transfer_ownership(user_id: str, actor: dict = Depends(require_owner)):
+def transfer_ownership(user_id: str, actor: dict = Depends(require_owner)):
     """Передача роли главного администратора. Прежний владелец остаётся админом."""
     try:
         new_owner = users.transfer_ownership(actor["id"], user_id)
@@ -360,7 +358,7 @@ async def transfer_ownership(user_id: str, actor: dict = Depends(require_owner))
 
 
 @router.get("/users/{user_id}/schedule")
-async def get_user_schedule(user_id: str, actor: dict = Depends(require_admin)):
+def get_user_schedule(user_id: str, actor: dict = Depends(require_admin)):
     """
     Персональное расписание: план-шаблон, пересчитанный на дату выхода этого
     сотрудника, с подстановкой плейсхолдеров. Считается на лету — при правке
@@ -374,7 +372,7 @@ async def get_user_schedule(user_id: str, actor: dict = Depends(require_admin)):
 
 
 @router.post("/users/{user_id}/schedule/materialize")
-async def materialize_user_schedule(user_id: str, actor: dict = Depends(require_admin)):
+def materialize_user_schedule(user_id: str, actor: dict = Depends(require_admin)):
     """Пересобрать расписание-инстансы сотрудника для доставки по времени (инбокс).
     Планировщик и сам досоздаёт недостающее, но после смены плана/даты выхода это
     сразу обновляет будущие (ещё не доставленные) сообщения."""
@@ -394,7 +392,7 @@ class NotifyTestRequest(BaseModel):
 
 
 @router.post("/users/{user_id}/notify-test", dependencies=admin_only)
-async def notify_test(user_id: str, req: NotifyTestRequest, actor: dict = Depends(require_admin)):
+def notify_test(user_id: str, req: NotifyTestRequest, actor: dict = Depends(require_admin)):
     """Тестировщик уведомлений: кладёт несколько сообщений в инбокс выбранного
     пользователя. Он увидит их очередью на своей странице (кабинет/админка)."""
     target = _target_user(user_id, actor)
@@ -415,13 +413,13 @@ class TestTypedMessages(BaseModel):
 
 
 @router.get("/test-messages/samples", dependencies=admin_only)
-async def test_message_samples():
+def test_message_samples():
     """Примеры тестовых сообщений всех типов — заготовка для редактора на странице /message-test."""
     return {"messages": messaging.test_samples()}
 
 
 @router.post("/users/{user_id}/test-messages", dependencies=admin_only)
-async def send_test_messages(user_id: str, req: TestTypedMessages, actor: dict = Depends(require_admin)):
+def send_test_messages(user_id: str, req: TestTypedMessages, actor: dict = Depends(require_admin)):
     """Тестовые сообщения выбранному пользователю: тип, заголовок, текст, пункты чек-листа,
     вопросы опроса/теста и задержку задаёт администратор. Приходят в инбокс и пушем."""
     target = _target_user(user_id, actor)
@@ -438,7 +436,7 @@ EMPLOYEE_EXPORTS = {"schedule.json", "schedule.md"}
 
 
 @router.get("/users/{user_id}/export/{name}")
-async def export_user_schedule(user_id: str, name: str, actor: dict = Depends(require_admin)):
+def export_user_schedule(user_id: str, name: str, actor: dict = Depends(require_admin)):
     if name not in EMPLOYEE_EXPORTS:
         raise HTTPException(status_code=400, detail=f"Доступны: {', '.join(EMPLOYEE_EXPORTS)}")
 

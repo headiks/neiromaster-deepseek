@@ -236,7 +236,7 @@ def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_set
 
 
 @router.delete("/session/{session_id}")
-async def reset_session(session_id: str, user: dict = Depends(require_setup_done)):
+def reset_session(session_id: str, user: dict = Depends(require_setup_done)):
     """Очищает историю диалога для сессии (например, при нажатии «Новый диалог» на сайте).
     Чужую сессию чистить нельзя — иначе любой вошедший стирал бы историю по чужому id."""
     owner = get_session_owner(session_id)

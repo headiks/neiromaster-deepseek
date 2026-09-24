@@ -105,6 +105,28 @@ def test_every_private_route_requires_login():
     assert not unguarded, f"маршруты без проверки доступа: {unguarded}"
 
 
+def test_no_blocking_async_handlers():
+    """async-обработчик выполняется прямо на event loop: синхронный запрос к БД/S3/ИИ внутри
+    него стопорит весь воркер, и остальные запросы к нему висят (страницы «не грузятся до
+    перезагрузки»). Обработчик без await должен быть обычным def — FastAPI запустит его в пуле
+    потоков."""
+    import ast
+    import inspect
+    import textwrap
+    blocking = []
+    for r in routes(load_app()):
+        endpoint = getattr(r, "endpoint", None)
+        if endpoint is None or not inspect.iscoroutinefunction(endpoint):
+            continue
+        try:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(endpoint)))
+        except (OSError, TypeError):
+            continue
+        if not any(isinstance(n, ast.Await) for n in ast.walk(tree)):
+            blocking.append(f"{sorted(r.methods or [])} {r.path} ({endpoint.__name__})")
+    assert not blocking, f"async-обработчики без await (сделать def): {blocking}"
+
+
 def test_admin_pages_are_admin_only():
     import inspect
     for r in routes(load_app()):

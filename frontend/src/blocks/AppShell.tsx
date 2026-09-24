@@ -4,7 +4,7 @@ import { useCallback, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   Activity, CalendarRange, ClipboardList, Database, FileText, FlaskConical, GraduationCap, House, KeyRound, LogOut,
-  MessageCircleQuestion, MessagesSquare, Moon, MoreHorizontal, Send, Sun, Users,
+  MessageCircleQuestion, MessagesSquare, Moon, Send, Settings, Sun, Users,
 } from 'lucide-react';
 import { initials } from '@shared/format';
 import { ROLE } from '@shared/status';
@@ -78,7 +78,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <span className="nm-profile-name">{me?.full_name || me?.username || '…'}</span>
               <span className="nm-profile-role">{role}</span>
             </span>
-            <Menu side="top" label="Профиль" items={[
+            <Menu side="top" anchor=".nm-profile" label="Настройки" items={[
               { label: 'Как пользоваться', icon: GraduationCap, onClick: () => startTour() },
               { label: dark ? 'Светлая тема' : 'Тёмная тема', icon: dark ? Sun : Moon, onClick: toggle },
               { label: 'Сменить пароль', icon: KeyRound, onClick: () => setPwOpen(true), hidden: !isAdmin },
@@ -88,7 +88,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               { label: 'Тест уведомлений', icon: Send, href: '/notify-test', hidden: !isOwner },
               { label: 'Очереди', icon: Activity, href: '/queue-test', hidden: !isOwner },
               { label: 'Диагностика', icon: FlaskConical, href: '/globaltest', hidden: !isOwner },
-            ]} trigger={(p) => <Button variant="ghost" iconOnly size="sm" icon={MoreHorizontal} aria-label="Меню профиля" data-tour="profile-menu" {...p} />} />
+            ]} trigger={(p) => <Button variant="ghost" iconOnly size="sm" icon={Settings} aria-label="Настройки" title="Настройки" data-tour="profile-menu" {...p} />} />
             <Button variant="ghost" iconOnly size="sm" icon={LogOut} aria-label="Выйти" title="Выйти" onClick={logout} />
           </div>
         </div>

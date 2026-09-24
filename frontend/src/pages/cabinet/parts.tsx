@@ -2,7 +2,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BellRing, CalendarCheck, History as HistoryIcon, Inbox } from 'lucide-react';
 import type { Msg } from '@shared/types';
-import { dayLabel, msgDay, shortWhen, ymd } from '@shared/format';
+import { dayLabel, msgDay, ymd } from '@shared/format';
+import { whenNext } from '@shared/progress';
 import { useInbox, notifyEnabled, NOTIFY_KEY } from '../../lib/inbox';
 import { useCabinet } from '../../lib/cabinet';
 import { useMe } from '../../lib/me';
@@ -60,7 +61,7 @@ export function UpNext() {
     <Card pad={false} data-tour="upnext">
       {progress.upcoming.slice(0, 4).map((u, i) => (
         <div className="nm-upnext" key={i}>
-          <div className="nm-upnext-when">{shortWhen(u.at)}</div>
+          <div className="nm-upnext-when">{whenNext(progress, u.at)}</div>
           <div>
             <div className="nm-upnext-title">{u.title}</div>
             {u.brief && <div className="nm-upnext-brief">{u.brief.length > 140 ? `${u.brief.slice(0, 140)}…` : u.brief}</div>}
@@ -83,7 +84,7 @@ export function useSick() {
     try {
       const r = await api.setSick(on);
       setMe({ ...me, status: r.sick ? 'paused' : r.status || 'active' });
-      toast.ok(r.sick ? 'Отметили больничный: сообщения плана на паузе.' : 'С возвращением! Накопившиеся сообщения придут.');
+      toast.ok(r.sick ? 'Отметили больничный: план на паузе.' : 'С возвращением! План продолжится с того места, где вы остановились.');
     } catch (e) {
       toast.error(messageOf(e));
     } finally {
@@ -132,7 +133,7 @@ export function SettingsToggles({ withTheme }: { withTheme?: { dark: boolean; to
       <div className="nm-setting" data-tour="sick">
         <div className="nm-grow">
           <div className="nm-setting-title">Я на больничном</div>
-          <div className="nm-setting-sub">Сообщения плана не приходят, наставник получит уведомление. Выключите после выхода — накопившееся придёт.</div>
+          <div className="nm-setting-sub">План на паузе, наставник получит уведомление. После выхода план продолжится с того места, где вы остановились.</div>
         </div>
         <Toggle label="Я на больничном" checked={sick.sick} onChange={sick.set} disabled={sick.busy} />
       </div>

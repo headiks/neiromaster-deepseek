@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { MyQuestion, MySchedule } from '@shared/types';
 import { answerText } from '@shared/api';
 import { adaptationProgress, type Progress } from '@shared/progress';
+import { useMe } from './me';
 import { api, ApiError } from './api';
 import { usePolling } from './poll';
 
@@ -35,11 +36,13 @@ export function CabinetProvider({ children }: { children: ReactNode }) {
   const [questionsLoaded, setQL] = useState(false);
   const seq = useRef(0);
 
+  // Больничный поставили или сняли — даты плана сдвигаются, расписание берём заново.
+  const status = useMe().me?.status;
   useEffect(() => {
-    api.mySchedule().then(setSchedule).catch((e) => {
+    api.mySchedule().then((s) => { setSchedule(s); setMissing(null); }).catch((e) => {
       setMissing(e instanceof ApiError && e.status === 404 ? e.message : 'Не удалось загрузить план.');
     });
-  }, []);
+  }, [status]);
 
   const reloadQuestions = useCallback(() => {
     api.myQuestions().then((d) => {

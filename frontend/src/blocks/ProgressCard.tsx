@@ -2,8 +2,8 @@
 // в мобильной раскладке — карточка в столбик (как в приложении).
 import { CalendarClock } from 'lucide-react';
 import type { MySchedule } from '@shared/types';
-import { ruDate, shortWhen, fromYmd, plural } from '@shared/format';
-import type { Progress as P } from '@shared/progress';
+import { ruDate } from '@shared/format';
+import { nextLine, progressTitle, type Progress as P } from '@shared/progress';
 import { Card, Progress } from '../ui';
 
 export function ProgressCard({ progress, schedule, missing, stacked }: {
@@ -19,12 +19,8 @@ export function ProgressCard({ progress, schedule, missing, stacked }: {
     );
   }
   if (!progress || !schedule) return <div className="nm-skeleton" style={{ minHeight: stacked ? 110 : 74 }} aria-hidden />;
-  const start = fromYmd(schedule.start_date);
-  const daysLeft = start ? Math.ceil((start.getTime() - Date.now()) / 86400000) : 0;
-  const title = !progress.started
-    ? (daysLeft > 0 ? `До выхода ${daysLeft} ${plural(daysLeft, 'день', 'дня', 'дней')}` : 'Скоро старт')
-    : progress.finished ? 'План пройден' : `День ${progress.day} из ${progress.total}`;
-  const next = progress.next ? `Дальше: ${progress.next.substage || progress.next.title} — ${shortWhen(progress.next.at)}` : '';
+  const title = progressTitle(progress, schedule);
+  const next = nextLine(progress);
   const meta = `План «${schedule.plan_title || 'адаптации'}» · выход ${ruDate(schedule.start_date)}`;
   if (stacked) {
     return (
