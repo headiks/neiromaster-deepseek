@@ -114,10 +114,34 @@ def test_security_headers_and_healthz(env):
     assert "unpkg" not in h["content-security-policy"]
 
 
-def test_static_pages_have_no_external_scripts(env):
-    for name in ("admin.html", "index.html", "login.html", "setup.html", "register.html"):
-        text = (BASE / "static" / name).read_text(encoding="utf-8")
-        assert "unpkg.com" not in text and "googleapis" not in text, name
+def test_spa_pages_and_access(env):
+    """Все страницы — одно SPA (static/app) без внешних и inline-скриптов; доступ проверяет сервер."""
+    import re
+    c = env["client"]
+    c.cookies.clear()
+    r = c.get("/login")
+    assert r.status_code == 200 and '<div id="root">' in r.text
+    assert "unpkg.com" not in r.text and "googleapis" not in r.text
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", r.text), "inline-скрипт в SPA нарушит CSP"
+    assert "script-src 'self';" in r.headers["content-security-policy"]
+    for path in ("/", "/admin", "/admin/users", "/logs", "/queue-test"):
+        r = c.get(path, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login", path
+    asset = re.search(r'src="(/static/app/assets/[^"]+\.js)"', c.get("/login").text).group(1)
+    assert c.get(asset).status_code == 200
+
+
+def test_spa_admin_pages_for_admin_only(env, owner):
+    import users
+    c = _as_owner(env, owner)
+    assert c.get("/admin/plans").status_code == 200
+    assert c.get("/admin/nope", follow_redirects=False).headers["location"] == "/admin"
+    emp = c.post("/users", headers=ORIGIN, json={"full_name": "Страницын Пётр Петрович"}).json()
+    users.set_credentials(emp["id"], None, "employee-pass-1")
+    _login(c, emp["username"], "employee-pass-1")
+    r = c.get("/admin/users", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert c.get("/").status_code == 200
 
 
 def test_cross_site_post_with_cookie_rejected(env, owner):

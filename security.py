@@ -25,12 +25,13 @@ from redis_conn import get_redis
 
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
-# Скрипты: свои файлы + inline (страницы собраны на inline-обработчиках). Внешние CDN
-# запрещены — иконки Lucide лежат в static/vendor. connect-src 'self' не даёт XSS
-# утащить данные на чужой сервер через fetch.
+# Скрипты — только свои файлы: сайт (static/app, сборка frontend/) не использует inline-скрипты
+# и обработчики, поэтому внедрённый в страницу <script> не выполнится. Внешние CDN запрещены —
+# шрифт и иконки собраны в бандл. Стили: 'unsafe-inline' нужен для style-атрибутов React.
+# connect-src 'self' не даёт XSS утащить данные на чужой сервер через fetch.
 CSP = "; ".join((
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",

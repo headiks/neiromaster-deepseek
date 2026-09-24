@@ -26,9 +26,17 @@ def _bg(fn, *args):
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
-def _read_static(name: str) -> str:
-    with open(STATIC_DIR / name, "r", encoding="utf-8") as f:
-        return f.read()
+SPA_INDEX = STATIC_DIR / "app" / "index.html"
+_NOT_BUILT = ("<!DOCTYPE html><meta charset='utf-8'><title>НейроМастер</title>"
+              "<p>Интерфейс не собран: выполните <code>cd frontend && npm ci && npm run build</code>.</p>")
+
+
+def spa_html() -> HTMLResponse:
+    """Страница сайта: собранное SPA (frontend/ -> static/app/index.html)."""
+    try:
+        return HTMLResponse(SPA_INDEX.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return HTMLResponse(_NOT_BUILT, status_code=503)
 
 
 def _set_session_cookie(response: Response, token: str):
@@ -116,10 +124,10 @@ def ensure_doc_access(user: dict, filename: str, write: bool = False):
                             detail="Общий документ суперадмина: менять и удалять его может только суперадмин")
 
 
-def page_for_admin(request: Request, filename: str):
+def page_for_admin(request: Request):
     """
     Страница админки: вошёл -> прошёл первичную настройку -> администратор.
-    Один хелпер вместо пяти одинаковых блоков в маршрутах страниц.
+    Один хелпер вместо одинаковых блоков в маршрутах страниц.
     """
     user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
     if user is None:
@@ -128,4 +136,4 @@ def page_for_admin(request: Request, filename: str):
         return RedirectResponse(url="/setup", status_code=303)
     if not users.is_admin(user):
         return RedirectResponse(url="/", status_code=303)
-    return HTMLResponse(_read_static(filename))
+    return spa_html()
