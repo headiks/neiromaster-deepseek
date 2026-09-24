@@ -7,9 +7,13 @@ require_owner) и правила разграничения между адми�
 видит только своё» пришлось бы поддерживать в нескольких местах.
 """
 
+import functools
+import os
 import threading
 from pathlib import Path
 
+import anyio
+import anyio.to_thread
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -24,6 +28,19 @@ STATIC_DIR = BASE_DIR / "static"
 def _bg(fn, *args):
     """Фоновая задача (реанализ базы и т.п. — может быть долгой из-за LLM)."""
     threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+# Обработчики def FastAPI гоняет в ОБЩЕМ пуле потоков (40 на воркер), в нём же StaticFiles
+# читает файлы сайта. Вызов DeepSeek прямо в запросе держит поток до минут: десятки таких
+# запросов занимали весь пул, и воркер переставал отдавать даже куски сайта и /api/me —
+# страница падала с «связь с сервером прервалась». Долгие обработчики — в своём пуле:
+# лишние ждут очереди без потока, общий пул остаётся свободным.
+SLOW_POOL = anyio.CapacityLimiter(int(os.environ.get("NEIROMASTER_SLOW_THREADS", "16")))
+
+
+async def run_slow(fn, *args, **kwargs):
+    """Выполнить долгую синхронную работу (ИИ в запросе) в отдельном пуле потоков."""
+    return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs), limiter=SLOW_POOL)
 
 
 SPA_INDEX = STATIC_DIR / "app" / "index.html"

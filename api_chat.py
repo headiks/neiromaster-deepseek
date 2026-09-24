@@ -16,7 +16,7 @@ import users
 import security
 import questions
 from rag import handle_question, HISTORY_WINDOW
-from deps import require_setup_done, logged_in
+from deps import require_setup_done, logged_in, run_slow
 
 router = APIRouter()
 
@@ -181,12 +181,15 @@ def _source_names(sources) -> list:
     return names[:3]
 
 
-# Синхронный def (не async): handle_question ходит в DeepSeek синхронными
-# requests на секунды-минуты. В async-обработчике это заблокировало бы весь event loop
-# uvicorn-воркера — «зависли» бы все параллельные запросы. Обычный def FastAPI выполняет
-# в threadpool, поэтому воркер продолжает обслуживать других пользователей.
+# handle_question ходит в DeepSeek синхронными requests на секунды-минуты: сама работа —
+# в _ask в отдельном пуле (deps.run_slow), чтобы ждущие ответа модели не заняли потоки,
+# которыми воркер отдаёт сайт и остальные API.
 @router.post("/ask", response_model=QuestionResponse, dependencies=logged_in)
-def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_setup_done)):
+async def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_setup_done)):
+    return await run_slow(_ask, req, request, user)
+
+
+def _ask(req: QuestionRequest, request: Request, user: dict):
     start = time.time()
     question = req.question.strip()
     if not question:

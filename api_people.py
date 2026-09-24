@@ -14,7 +14,7 @@ import employees as adaptation
 import messaging
 import activitylog
 from config import MAX_UPLOAD_BYTES
-from deps import require_admin, require_owner, admin_only, owner_only
+from deps import require_admin, require_owner, admin_only, owner_only, run_slow
 
 router = APIRouter()
 
@@ -35,9 +35,14 @@ def _foreign_department(actor: dict, department: str) -> bool:
 
 
 @router.post("/staffing/preview")
-def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require_admin)):
+async def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require_admin)):
     """Разбор загруженной xlsx-штатки: ИИ определяет разметку столбцов, возвращаем
-    найденное сопоставление и извлечённые записи для подтверждения администратором."""
+    найденное сопоставление и извлечённые записи для подтверждения администратором.
+    Разметку делает DeepSeek (до минут) — в отдельном пуле, см. deps.run_slow."""
+    return await run_slow(_staffing_preview, file, actor)
+
+
+def _staffing_preview(file: UploadFile, actor: dict):
     content = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413,

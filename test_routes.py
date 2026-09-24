@@ -127,6 +127,17 @@ def test_no_blocking_async_handlers():
     assert not blocking, f"async-обработчики без await (сделать def): {blocking}"
 
 
+def test_llm_handlers_use_slow_pool():
+    """Ручки, которые ждут DeepSeek прямо в запросе, — только через deps.run_slow: иначе
+    десятки ожидающих занимают общий пул потоков, и воркер перестаёт отдавать куски сайта."""
+    import inspect
+    slow = {"/ask", "/staffing/preview"}
+    found = {r.path: r.endpoint for r in routes(load_app()) if r.path in slow}
+    assert set(found) == slow, f"не найдены маршруты: {slow - set(found)}"
+    for path, endpoint in found.items():
+        assert "run_slow(" in inspect.getsource(endpoint), f"{path} не через run_slow"
+
+
 def test_admin_pages_are_admin_only():
     import inspect
     for r in routes(load_app()):
