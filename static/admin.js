@@ -2,11 +2,17 @@
 // порядок исполнения тот же (внешний script с src выполняется на месте подключения).
 // refreshIcons() определяется отдельным inline-скриптом после загрузки Lucide (см. admin.html).
         // ---------------- Общее ----------------
+        const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+        /** Текст -> безопасный HTML: и для содержимого, и для значений атрибутов в кавычках. */
         function escapeHtml(str) {
             if (str === null || str === undefined) return '';
-            const div = document.createElement('div');
-            div.textContent = String(str);
-            return div.innerHTML;
+            return String(str).replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
+        }
+        /** Аргумент для inline-обработчика: onclick="f(${jsArg(x)})". Браузер раскодирует
+            HTML-сущности в атрибуте ДО запуска JS, поэтому одного escapeHtml мало — сначала
+            JSON-строка (JS-литерал), затем экранирование для атрибута. */
+        function jsArg(value) {
+            return escapeHtml(JSON.stringify(value === null || value === undefined ? '' : String(value)));
         }
 
         /** fetch с единой обработкой протухшей сессии: 401 -> обратно на форму входа. */
@@ -163,8 +169,18 @@
             uploadStatus[file.name] = 'загрузка...';
             renderUploadStatus();
 
-            apiJson('/documents/upload' + (mode ? '?mode=' + mode : ''), { method: 'POST', body: formData })
+            const params = new URLSearchParams();
+            if (mode) params.set('mode', mode);
+            if (document.getElementById('upload-confidential').checked) params.set('confidential', 'true');
+            apiJson('/documents/upload' + (params.toString() ? '?' + params : ''), { method: 'POST', body: formData })
                 .then(({ ok, data }) => {
+                    if (ok && data && data.status === 'confidential') {
+                        uploadStatus[file.name] = escapeHtml(data.message);
+                        renderUploadStatus();
+                        loadDocuments().then(loadCoverage);
+                        setTimeout(() => { delete uploadStatus[file.name]; renderUploadStatus(); }, 6000);
+                        return;
+                    }
                     if (data && data.conflict === 'same_name') {
                         // Новая версия документа: одной кнопкой заменить старую или сохранить рядом.
                         const who = data.uploaded_by_name ? `, загрузил ${data.uploaded_by_name}` : '';
@@ -273,6 +289,7 @@
                 case 'indexed': return 'Готов к поиску';
                 case 'reanalyzing': return 'Переанализ…';
                 case 'error': return 'Ошибка';
+                case 'confidential': return '🔒 Не отправляется в ИИ';
                 default: return status;
             }
         }
@@ -315,7 +332,7 @@
             // тогда раньше показывалось «ФАЙЛ»). docFormat даёт и то, и другое.
             const fmt = docFormat(d);
             const sc = (d.score != null) ? `<div class="sc">уверенность ${Number(d.score).toFixed(2)}</div>` : '';
-            return `<div class="bdoc" data-fn="${escapeHtml(d.filename || '')}" onclick="openSubstageMap(this.dataset.fn)" title="Показать куски текста и критерий попадания"><div class="ext ${fmt.cls}">${fmt.label}</div><div><div class="nm">${escapeHtml(d.filename || '')}</div>${sc}</div></div>`;
+            return `<div class="bdoc" data-fn="${escapeHtml(d.filename || '')}" onclick="openSubstageMap(this.dataset.fn)" title="Показать куски текста и критерий попадания"><div class="ext ${fmt.cls}">${escapeHtml(fmt.label)}</div><div><div class="nm">${escapeHtml(d.filename || '')}</div>${sc}</div></div>`;
         }
         function bCountDocs(s) { let n = (s.documents || []).length; (s.substages || []).forEach(x => n += (x.documents || []).length); return n; }
         function renderStageBoard(b) {
@@ -330,7 +347,7 @@
                           + `<div class="sub-docs">${(sub.documents || []).length ? sub.documents.map(bDocCard).join('') : '<div class="bempty">— нет документов —</div>'}</div></div>`;
                 });
                 if ((s.documents || []).length) {
-                    rows += `<div class="sub-r${(sub.documents || []).length ? '' : ' missing'}"><div><div class="sub-t">В этапе (без подэтапа)</div></div><div class="sub-docs">${s.documents.map(bDocCard).join('')}</div></div>`;
+                    rows += `<div class="sub-r"><div><div class="sub-t">В этапе (без подэтапа)</div></div><div class="sub-docs">${s.documents.map(bDocCard).join('')}</div></div>`;
                 }
                 html += `<section class="stg"><header class="stg-head"><div class="stg-n">${i + 1}</div>`
                       + `<div><div class="stg-tt">${escapeHtml(s.title || '')}</div><div class="stg-dd">${escapeHtml(s.description || '')}</div></div>`
@@ -392,7 +409,7 @@
             const meta = document.getElementById('pt-meta');
             if (!pid) return;
             body.innerHTML = '<div class="empty-hint">Загрузка…</div>';
-            api(`/plans/${encodeURIComponent(pid)}/schedule${prof ? '?profession=' + encodeURIComponent(prof) : ''}`)
+            api(`/plans/${encodeURIComponent(pid)}/schedule?missing_ok=true${prof ? '&profession=' + encodeURIComponent(prof) : ''}`)
                 .then(r => r.status === 404 ? null : r.json())
                 .then(sch => {
                     if (!sch) { meta.textContent = ''; renderPlanSkeleton(pid, body); return; }
@@ -422,8 +439,8 @@
                             const src = srcNames.length ? `<div class="pt-src">Источники: ${srcNames.map(escapeHtml).join(', ')}</div>` : '';
                             const mid = m.message_id || '';
                             const actions = mid ? `<div class="pt-actions" style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
-                                <button class="icon-btn" onclick="editPlanText('${escapeHtml(mid)}', this)"><i data-lucide="pencil"></i> Редактировать</button>
-                                <button class="icon-btn pt-regen" onclick="regenPlanText('${escapeHtml(mid)}', this)"><i data-lucide="refresh-cw"></i> Перегенерировать</button>
+                                <button class="icon-btn" onclick="editPlanText(${jsArg(mid)}, this)"><i data-lucide="pencil"></i> Редактировать</button>
+                                <button class="icon-btn pt-regen" onclick="regenPlanText(${jsArg(mid)}, this)"><i data-lucide="refresh-cw"></i> Перегенерировать</button>
                             </div>` : '';
                             return `<div class="pt-sub" data-mid="${escapeHtml(mid)}">
                                 <div class="pt-sub-h"><b>${escapeHtml((m.substage || {}).title || '')}</b>${kind ? ` <span class="pt-kind">${escapeHtml(kind)}</span>` : ''}${st2}</div>
@@ -493,7 +510,7 @@
                         <div class="cov-head"><span>${escapeHtml(p.title || '')}</span>
                             <span class="cov-num ${pct === 100 ? 'ok' : ''}">${p.covered} из ${p.total} подэтапов обеспечены документами</span></div>
                         <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
-                        ${p.total - p.covered ? `<div class="cov-gaps"><a href="#" onclick="showPlanGaps('${escapeHtml(p.plan_id)}'); return false;">Нет материалов для ${p.total - p.covered} ${plural(p.total - p.covered, 'подэтапа', 'подэтапов', 'подэтапов')} — показать по этапам</a></div>`
+                        ${p.total - p.covered ? `<div class="cov-gaps"><a href="#" onclick="showPlanGaps(${jsArg(p.plan_id)}); return false;">Нет материалов для ${p.total - p.covered} ${plural(p.total - p.covered, 'подэтапа', 'подэтапов', 'подэтапов')} — показать по этапам</a></div>`
                                : '<div class="cov-ok">Документов достаточно для всего плана.</div>'}
                     </div>`;
                 }).join('');
@@ -657,7 +674,7 @@
                     <div class="doc-item" style="flex-direction:column;align-items:stretch;">
                       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
                         <div class="doc-info">
-                            <div class="doc-name" title="${escapeHtml(doc.filename)}"><span class="fmt-tag ${fmt.cls}">${fmt.label}</span> ${escapeHtml(doc.filename)}</div>
+                            <div class="doc-name" title="${escapeHtml(doc.filename)}"><span class="fmt-tag ${fmt.cls}">${escapeHtml(fmt.label)}</span> ${escapeHtml(doc.filename)}</div>
                             ${folderLine}
                             ${summaryLine}
                             <div class="doc-meta">${meta}</div>
@@ -666,9 +683,12 @@
                             ${errorLine}
                         </div>
                         <div class="doc-status">
-                            <span class="status-badge ${doc.status}">${statusLabel(doc.status)}</span>
+                            <span class="status-badge ${escapeHtml(doc.status)}">${escapeHtml(statusLabel(doc.status))}</span>
                             ${doc.status === 'indexed' ? `<button class="icon-btn" title="Что ИИ нашёл в документе и к каким этапам отнёс" onclick="openSubstageMap(this.dataset.fn)" data-fn="${escapeHtml(doc.filename)}"><i data-lucide="eye"></i> Посмотреть</button>` : ''}
-                            ${canEditDoc(doc) ? `<button class="del-btn" onclick="deleteDocument('${escapeHtml(doc.filename)}')">Удалить</button>`
+                            ${canEditDoc(doc) ? `<button class="icon-btn" onclick="toggleConfidential(${jsArg(doc.filename)}, ${doc.confidential ? 'false' : 'true'})"
+                                    title="${doc.confidential ? 'Отправить документ на обычную обработку ИИ' : 'Чувствительный документ: хранится, но в ИИ не отправляется'}">
+                                    <i data-lucide="${doc.confidential ? 'lock-open' : 'lock'}"></i> ${doc.confidential ? 'Разрешить ИИ' : 'Не отправлять в ИИ'}</button>
+                               <button class="del-btn" onclick="deleteDocument(${jsArg(doc.filename)})">Удалить</button>`
                                               : '<span class="doc-meta" title="Документ суперадмина доступен всем администраторам">общий · только чтение</span>'}
                         </div>
                       </div>
@@ -725,12 +745,13 @@
             }
             const head = STAFFING_KEYS.map(f => `<th>${STAFFING_LABELS[f]}</th>`).join('') + '<th></th><th></th>';
             const rows = staffingRecords.map((r, i) =>
-                `<tr${r.exists ? ' class="row-exists" title="Уже есть в системе — будет пропущен"' : ''}>${STAFFING_KEYS.map(f =>
+                `<tr${r.exists ? ' class="row-exists" title="Уже есть в системе — будет пропущен"'
+                     : r.foreign ? ' class="row-exists" title="Другое подразделение — заводит суперадмин"' : ''}>${STAFFING_KEYS.map(f =>
                     `<td><input type="text" style="width:100%;box-sizing:border-box;" value="${escapeHtml(r[f] || '')}"
-                          oninput="staffingRecords[${i}]['${f}']=this.value"></td>`).join('')}
-                 <td style="white-space:nowrap;font-size:12px;color:#b45309;">${r.exists ? 'уже есть' : ''}</td>
+                          oninput="staffingRecords[${i}][${jsArg(f)}]=this.value"></td>`).join('')}
+                 <td style="white-space:nowrap;font-size:12px;color:#b45309;">${r.exists ? 'уже есть' : r.foreign ? 'другое подразделение' : ''}</td>
                  <td><button class="icon-btn danger" title="Убрать строку" onclick="staffingRemoveRow(${i})"><i data-lucide="x"></i></button></td></tr>`).join('');
-            const fresh = staffingRecords.filter(r => !r.exists).length;
+            const fresh = staffingRecords.filter(r => !r.exists && !r.foreign).length;
             preview.innerHTML = `
                 <div class="section-head-row" style="margin:14px 0 6px;">
                     <div class="doc-meta muted">Строки с ФИО станут профилями, без ФИО — вакансиями.</div>
@@ -760,7 +781,7 @@
             status.textContent = 'Создаём…';
             apiJson('/staffing/import', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ records: staffingRecords.map(({ exists, ...r }) => r) })
+                body: JSON.stringify({ records: staffingRecords.map(({ exists, foreign, ...r }) => r) })
             }).then(({ ok, data }) => {
                 if (!ok) { status.innerHTML = `<span class="err">${escapeHtml(data.detail || 'ошибка создания')}</span>`; return; }
                 const profiles = data.profiles || [], vacancies = data.vacancies || [], skipped = data.skipped || [];
@@ -796,6 +817,22 @@
             api(`/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' })
                 .then(() => { loadDocuments().then(loadCoverage); loadFolders(); })
                 .catch(err => alert(`Ошибка удаления: ${err.message}`));
+        }
+
+        // «Не отправлять в ИИ»: чувствительный документ хранится, но не размечается и не
+        // попадает ни в сообщения, ни в ответы. Включение удаляет уже сделанную разметку.
+        function toggleConfidential(filename, on) {
+            const text = on
+                ? `Не отправлять «${filename}» в ИИ?\n\nДокумент останется в базе, но ИИ не будет его читать: разметка удалится, `
+                  + 'сообщения и ответы, которые на него опирались, обновятся без него. Подходит для положения об оплате труда и т.п.'
+                : `Разрешить ИИ обработать «${filename}»?\n\nДокумент уйдёт на разметку (персональные данные при этом маскируются).`;
+            if (!confirm(text)) return;
+            apiJson(`/documents/${encodeURIComponent(filename)}/confidential`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confidential: on }),
+            }).then(({ ok, data }) => {
+                if (!ok) { alert(data.detail || 'Не удалось изменить'); return; }
+                loadDocuments().then(loadCoverage);
+            });
         }
 
         // Самопланирующийся опрос: чаще, пока есть незавершённые загрузки; иначе редко.
@@ -843,16 +880,19 @@
         function fillStageCatalogSelect() {
             const select = document.getElementById('stage-catalog-select');
             select.innerHTML = catalog.stages
-                .map(s => `<option value="${s.id}">${escapeHtml(s.title)}</option>`).join('')
+                .map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.title)}</option>`).join('')
                 + `<option value="__custom__">＋ Свой этап (создать)</option>`;
         }
 
+        const TEMPLATE_OPTION = '__template';
         function fillPlanSelect(plans) {
             const select = document.getElementById('plan-select');
             const current = plan.plan_id || '';
-            select.innerHTML = `<option value="">＋ Создать свой план</option>` + plans.map(p =>
-                `<option value="${escapeHtml(p.plan_id)}">${escapeHtml(p.title)}${p.role ? ' · ' + escapeHtml(p.role) : ''}</option>`
-            ).join('');
+            select.innerHTML = `<option value="">＋ Создать свой план</option>`
+                + `<option value="${TEMPLATE_OPTION}">＋ Стандартный план (все этапы, ≈3 месяца)</option>`
+                + (plans.length ? `<optgroup label="Сохранённые планы">` + plans.map(p =>
+                    `<option value="${escapeHtml(p.plan_id)}">${escapeHtml(p.title)}${p.role ? ' · ' + escapeHtml(p.role) : ''}</option>`
+                  ).join('') + '</optgroup>' : '');
             select.value = current;
         }
 
@@ -865,6 +905,7 @@
 
         function onPlanSelect() {
             const id = document.getElementById('plan-select').value;
+            if (id === TEMPLATE_OPTION) { createTemplatePlan(); return; }
             if (!id) {
                 // «Создать свой план»: пустой редактор, при сохранении создаётся новый план.
                 plan = emptyPlan();
@@ -889,18 +930,26 @@
             setStatus('');
         }
 
-        function fullTemplatePlan() {
-            const title = prompt('Название полного шаблона (единый для всех профессий):', 'Универсальный план адаптации');
-            if (title === null) return;
-            setStatus('Создаю полный шаблон…');
-            api('/plans/template' + (title.trim() ? '?title=' + encodeURIComponent(title.trim()) : ''), { method: 'POST' })
-                .then(r => r.json()).then(p => {
-                    plan = p;
-                    fillPlanMeta();
-                    renderStages();
-                    refreshPlanList().then(() => { document.getElementById('plan-select').value = p.plan_id; });
-                    setStatus('Полный шаблон создан — редактируйте под задачу');
-                });
+        // Стандартный план из всего каталога: этапы и подэтапы уже разнесены по дням.
+        // Дальше правится как обычный план.
+        function createTemplatePlan() {
+            const select = document.getElementById('plan-select');
+            if (!confirm('Создать стандартный план адаптации?\n\n'
+                + 'В нём будут все этапы и подэтапы с датами отправки — дальше его можно поправить под себя.')) {
+                select.value = plan.plan_id || '';
+                return;
+            }
+            setStatus('Создаю стандартный план…');
+            apiJson('/plans/template', { method: 'POST' }).then(({ ok, data }) => {
+                if (!ok) { setStatus(data.detail || 'Не удалось создать план'); select.value = plan.plan_id || ''; return; }
+                plan = data;
+                fillPlanMeta();
+                renderStages();
+                _planTextsLoaded = false;
+                refreshPlanList().then(() => { select.value = data.plan_id; });
+                setStatus('Стандартный план создан и сохранён — отредактируйте под задачу.');
+                renderNextStep();
+            }).catch(err => { setStatus(err.message); select.value = plan.plan_id || ''; });
         }
 
         function deletePlan() {
@@ -930,7 +979,9 @@
 
         function fillPlanMeta() {
             document.getElementById('plan-title').value = plan.title || '';
+            document.getElementById('plan-group-daily').checked = !!plan.group_daily;
             document.getElementById('plan-delete-btn').style.display = plan.plan_id ? '' : 'none';
+            document.getElementById('plan-copy-btn').style.display = plan.plan_id ? '' : 'none';
         }
 
         function planField(field, value) { plan[field] = value; }
@@ -1097,7 +1148,7 @@
                 const dayChoice = dayChoiceAllowed(stage.duration);
                 const offset = offsets[stage.uid] || 0;
                 const templateOptions = substageTemplates(stage).map(t =>
-                    `<option value="${t.id}">${escapeHtml(t.title)}</option>`).join('')
+                    `<option value="${escapeHtml(t.id)}">${escapeHtml(t.title)}</option>`).join('')
                     + `<option value="__custom__">＋ Свой подэтап (создать)</option>`;
 
                 const substagesHtml = stage.substages.map((sub, subIndex) => {
@@ -1106,7 +1157,7 @@
                     ).join('');
                     const offsetDays = offset + (dayChoice ? (sub.schedule.day || 1) - 1 : 0);
                     const kindOptions = catalog.substage_kinds.map(k =>
-                        `<option value="${k.id}" ${sub.kind === k.id ? 'selected' : ''}>${escapeHtml(k.title)}</option>`
+                        `<option value="${escapeHtml(k.id)}" ${sub.kind === k.id ? 'selected' : ''}>${escapeHtml(k.title)}</option>`
                     ).join('');
 
                     return `
@@ -1170,7 +1221,7 @@
                         <div class="stage-controls">
                             <div class="field">
                                 <label>Длительность</label>
-                                <input type="number" min="1" style="width:90px;" value="${stage.duration.value}"
+                                <input type="number" min="1" style="width:90px;" value="${escapeHtml(stage.duration.value)}"
                                        onchange="durationField(${stageIndex}, 'value', this.value)">
                             </div>
                             <div class="field">
@@ -1207,6 +1258,7 @@
         function planPayload() {
             return {
                 title: plan.title || 'План адаптации',
+                group_daily: !!plan.group_daily,
                 stages: plan.stages.map(stage => ({
                     id: stage.id || null,
                     catalog_id: stage.catalog_id,
@@ -1228,18 +1280,35 @@
             };
         }
 
-        function savePlan() {
+        // force=true — сохранить поверх чужих правок (после предупреждения о конфликте).
+        function savePlan(force) {
             if (!(plan.title || '').trim()) { setStatus('Укажите название плана'); return Promise.resolve(); }
             if (!plan.stages.some(s => s.substages.length)) { setStatus('Добавьте хотя бы один этап с подэтапом'); return Promise.resolve(); }
             setStatus('Сохранение...');
+            const body = planPayload();
+            // Оптимистичная блокировка: сервер сверит, что план не менял другой администратор.
+            if (plan.plan_id && plan.updated_at && !force) body.expected_updated_at = plan.updated_at;
             // Нет plan_id — это новый («Создать свой план»): POST, иначе правка существующего.
             return api(plan.plan_id ? `/plans/${encodeURIComponent(plan.plan_id)}` : '/plans', {
                 method: plan.plan_id ? 'PUT' : 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(planPayload()),
+                body: JSON.stringify(body),
             })
-                .then(res => res.json().then(d => { if (!res.ok) throw new Error(d.detail || 'ошибка'); return d; }))
+                .then(res => res.json().then(d => {
+                    if (res.status === 409) {
+                        const msg = (d.detail && d.detail.message) || 'План изменил другой администратор.';
+                        if (confirm(`${msg}\n\nОК — сохранить мои правки поверх (его изменения пропадут).\nОтмена — загрузить актуальную версию плана.`)) {
+                            return savePlan(true).then(() => null);
+                        }
+                        onPlanSelect();
+                        setStatus('Загружена актуальная версия плана.');
+                        return null;
+                    }
+                    if (!res.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'ошибка');
+                    return d;
+                }))
                 .then(saved => {
+                    if (!saved) return;
                     _planTextsLoaded = false;   // список планов на вкладке «Сообщения» обновится
                     const uids = plan.stages.map(s => ({ uid: s.uid, subs: s.substages.map(x => x.uid) }));
                     plan = saved;
@@ -1251,7 +1320,7 @@
                     });
                     fillPlanMeta();
                     renderStages();
-                    setStatus(`Сохранено: ${saved.title}. Дальше — вкладка «Сообщения».`);
+                    setStatus(`Сохранено: ${saved.title}. Дальше — вкладка «Документы», затем «Сообщения».`);
                     renderNextStep();
                     return refreshPlanList().then(() => {
                         document.getElementById('plan-select').value = saved.plan_id;
@@ -1298,6 +1367,11 @@
                 .then(({ ok, data }) => {
                     if (!ok) { ptSetStatus(data.detail || 'Не удалось запустить генерацию'); ptSetBusy(false); return; }
                     if (data.status === 'up_to_date') { ptSetStatus('Всё актуально — запросов к ИИ не нужно.'); ptSetBusy(false); return; }
+                    if (data.status === 'busy' || !data.job_id) {
+                        ptSetStatus('Генерация этого плана уже запускается — подождите пару секунд.');
+                        ptSetBusy(false);
+                        return;
+                    }
                     if (data.already_running) ptSetStatus('Генерация этого плана уже идёт — показываем её ход.');
                     currentGenJob = data.job_id;
                     ptPollJob(data.job_id, () => { renderPlanTexts(); loadPlanTexts(); }, prefix);
@@ -1352,7 +1426,7 @@
             ta.style.cssText = 'width:100%;min-height:140px;margin-top:6px;';
             const bar = document.createElement('div');
             bar.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
-            bar.innerHTML = `<button class="primary-btn" onclick="savePlanText('${escapeHtml(mid)}', this)"><i data-lucide="save"></i> Сохранить</button>
+            bar.innerHTML = `<button class="primary-btn" onclick="savePlanText(${jsArg(mid)}, this)"><i data-lucide="save"></i> Сохранить</button>
                              <button class="ghost-btn" onclick="renderPlanTexts()">Отмена</button>`;
             sub.querySelector('.pt-text').after(ta);
             ta.after(bar);
@@ -1384,7 +1458,7 @@
             return `${offset >= 0 ? '+' : ''}${offset} дн. (${anchor}), ${msg.schedule.time}`;
         }
 
-        function messageRows(messages, withRegenerate) {
+        function messageRows(messages) {
             return (messages || []).map(msg => `
                 <tr>
                     <td>${msg.stage.order}. ${escapeHtml(msg.stage.title)}</td>
@@ -1620,22 +1694,22 @@
         function userActions(user) {
             const id = user.id;
             const isSelf = currentUser && currentUser.id === id;
-            const buttons = [`<button class="icon-btn" onclick="showEmployeeSchedule('${id}')"><i data-lucide="calendar-days"></i> Расписание</button>`];
+            const buttons = [`<button class="icon-btn" onclick="showEmployeeSchedule(${jsArg(id)})"><i data-lucide="calendar-days"></i> Расписание</button>`];
             // Обычный администратор правит только сотрудников — админов и суперадминов трогать нельзя.
             // Роль меняет суперадмин в окне «Изменить».
             if (canManageRow(user)) {
-                buttons.push(`<button class="icon-btn" onclick="openEmployeeDialog('${id}')"><i data-lucide="pencil"></i> Изменить</button>`);
-                buttons.push(`<button class="icon-btn" onclick="openCredentialsDialog('${id}')"><i data-lucide="key-round"></i> Доступ</button>`);
+                buttons.push(`<button class="icon-btn" onclick="openEmployeeDialog(${jsArg(id)})"><i data-lucide="pencil"></i> Изменить</button>`);
+                buttons.push(`<button class="icon-btn" onclick="openCredentialsDialog(${jsArg(id)})"><i data-lucide="key-round"></i> Доступ</button>`);
                 if (user.role === 'employee' && user.plan_id) {
                     buttons.push(user.status === 'paused'
-                        ? `<button class="icon-btn" onclick="setUserPaused('${id}', false)" title="Возобновить доставку сообщений плана"><i data-lucide="play"></i> Возобновить</button>`
-                        : `<button class="icon-btn" onclick="setUserPaused('${id}', true)" title="Больничный и т.п.: сообщения плана не приходят, пока не возобновите"><i data-lucide="pause"></i> Приостановить</button>`);
+                        ? `<button class="icon-btn" onclick="setUserPaused(${jsArg(id)}, false)" title="Возобновить доставку сообщений плана"><i data-lucide="play"></i> Возобновить</button>`
+                        : `<button class="icon-btn" onclick="setUserPaused(${jsArg(id)}, true)" title="Больничный и т.п.: сообщения плана не приходят, пока не возобновите"><i data-lucide="pause"></i> Приостановить</button>`);
                 }
                 if (!isSelf) {
                     buttons.push(user.active
-                        ? `<button class="icon-btn" onclick="setUserActive('${id}', false)" title="Запретить вход в систему"><i data-lucide="ban"></i> Заблокировать</button>`
-                        : `<button class="icon-btn" onclick="setUserActive('${id}', true)"><i data-lucide="check"></i> Подтвердить</button>`);
-                    buttons.push(`<button class="icon-btn danger" onclick="deleteEmployee('${id}')"><i data-lucide="x"></i> Удалить</button>`);
+                        ? `<button class="icon-btn" onclick="setUserActive(${jsArg(id)}, false)" title="Запретить вход в систему"><i data-lucide="ban"></i> Заблокировать</button>`
+                        : `<button class="icon-btn" onclick="setUserActive(${jsArg(id)}, true)"><i data-lucide="check"></i> Подтвердить</button>`);
+                    buttons.push(`<button class="icon-btn danger" onclick="deleteEmployee(${jsArg(id)})"><i data-lucide="x"></i> Удалить</button>`);
                 }
             }
             return buttons.join(' ');
@@ -1678,7 +1752,7 @@
                     </tr></thead>
                     <tbody>${shown.map(e => `
                         <tr${e.active ? '' : ' style="background:#fffbeb;"'}>
-                            <td>${selectable.includes(e) ? `<input type="checkbox" ${selectedUsers.has(e.id) ? 'checked' : ''} onchange="toggleUser('${e.id}', this.checked)">` : ''}</td>
+                            <td>${selectable.includes(e) ? `<input type="checkbox" ${selectedUsers.has(e.id) ? 'checked' : ''} onchange="toggleUser(${jsArg(e.id)}, this.checked)">` : ''}</td>
                             <td>
                                 <strong>${escapeHtml(e.full_name)}</strong>
                                 <div class="msg-meta">${loginCell(e)}</div>
@@ -1691,7 +1765,7 @@
                                 ${e.plan_title && !e.plan_generated ? '<div class="msg-meta" style="color:#b45309;">сообщения не сгенерированы</div>' : ''}
                             </td>
                             <td style="white-space:nowrap;">${escapeHtml(e.start_date || '—')}</td>
-                            <td><span class="status-badge ${e.status}">${escapeHtml(EMPLOYEE_STATUS_TITLES[e.status] || e.status)}</span></td>
+                            <td><span class="status-badge ${escapeHtml(e.status)}">${escapeHtml(EMPLOYEE_STATUS_TITLES[e.status] || e.status)}</span></td>
                             <td>${userActions(e)}</td>
                         </tr>
                     `).join('')}</tbody>
@@ -1739,13 +1813,20 @@
         }
 
         // Карточка сотрудника — во всплывающем окне: страница не прыгает наверх к форме.
-        function openEmployeeDialog(id) {
+        // demo — показ в туре: окно не модальное, чтобы подсказки тура были поверх него.
+        function openEmployeeDialog(id, demo) {
             const employee = id ? employeesCache.find(e => e.id === id) : null;
             editingEmployeeId = employee ? id : null;
             PROFILE_FIELDS.forEach(field => {
                 document.getElementById(`emp-${field}`).value = employee ? (employee[field] || '') : '';
             });
             document.getElementById('emp-username').value = employee ? (employee.username || '') : '';
+            // Подразделение меняет только суперадмин: у обычного администратора люди заводятся
+            // в его подразделение (так решает и сервер), поле показываем только для чтения.
+            const dept = document.getElementById('emp-department');
+            dept.disabled = !isOwner;
+            dept.title = isOwner ? '' : 'Подразделение меняет суперадмин';
+            if (!isOwner && !employee && currentUser) dept.value = currentUser.department || '';
             const roleField = document.getElementById('emp-role-field');
             const showRole = isOwner && employee && !(currentUser && currentUser.id === id);
             roleField.style.display = showRole ? '' : 'none';
@@ -1753,10 +1834,16 @@
             document.getElementById('employee-form-title').textContent =
                 employee ? `Редактирование: ${employee.full_name}` : 'Новый сотрудник';
             document.getElementById('employee-status').textContent = '';
-            document.getElementById('employee-dialog').showModal();
+            const dlg = document.getElementById('employee-dialog');
+            if (demo) { dlg.classList.add('nmt-demo'); dlg.show(); } else { dlg.showModal(); }
             refreshIcons();
         }
-        function closeEmployeeDialog() { comboClose(); document.getElementById('employee-dialog').close(); }
+        function closeEmployeeDialog() {
+            comboClose();
+            const dlg = document.getElementById('employee-dialog');
+            dlg.close();
+            dlg.classList.remove('nmt-demo');
+        }
 
         const ROLE_CONFIRM = {
             owner: 'Сделать суперадмином? Полный доступ: все документы, все сотрудники, раздача прав.',
@@ -1887,7 +1974,7 @@
                     </div>
                     <table class="schedule">
                         <thead><tr><th>Этап</th><th>Подэтап</th><th>Дата и время</th><th>Сообщение</th></tr></thead>
-                        <tbody>${messageRows(data.messages, false)}</tbody>
+                        <tbody>${messageRows(data.messages)}</tbody>
                     </table>
                 `;
                 container.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1945,8 +2032,8 @@
                     <div style="margin:6px 0;"><strong><i data-lucide="help-circle"></i> ${escapeHtml(q.question)}</strong></div>
                     <div style="font-size:13px;color:#475569;">От: ${who}${contact}${q.mentor ? ' · наставник: ' + escapeHtml(q.mentor) : ''}</div>
                     ${resolved}
-                    <textarea id="ans-${q.id}" rows="3" style="width:100%;margin-top:8px;" placeholder="Ответ сотруднику (можно после консультации со специалистом)"></textarea>
-                    <button class="primary-btn" style="margin-top:6px;" onclick="resolveQuestion('${q.id}')"><i data-lucide="send-horizontal"></i> Отправить ответ</button>
+                    <textarea id="ans-${escapeHtml(q.id)}" rows="3" style="width:100%;margin-top:8px;" placeholder="Ответ сотруднику (можно после консультации со специалистом)"></textarea>
+                    <button class="primary-btn" style="margin-top:6px;" onclick="resolveQuestion(${jsArg(q.id)})"><i data-lucide="send-horizontal"></i> Отправить ответ</button>
                 </div>`;
             }).join('');
             refreshIcons();
@@ -1987,9 +2074,64 @@
                     const pane = el.closest('.tab-pane');
                     const here = step && pane && pane.id === `pane-${step[0]}`;
                     el.innerHTML = step ? `<i data-lucide="footprints"></i> <span>${escapeHtml(step[1])}</span>`
-                        + (here ? '' : ` <button class="ghost-btn" onclick="goTab('${step[0]}')">Перейти →</button>`) : '';
+                        + (here ? '' : ` <button class="ghost-btn" onclick="goTab(${jsArg(step[0])})">Перейти →</button>`) : '';
                     el.style.display = step ? '' : 'none';
                 });
                 refreshIcons();
             }).catch(() => {});
         }
+
+
+        // ==================== Интерактивный тур (static/tour.js) ====================
+        // Тур ничего не сохраняет: перед стартом снимаем состояние (вкладка, редактируемый
+        // план, раскрытые блоки, прокрутка), в конце возвращаем его как было.
+        window.NMAdminTour = {
+            goTab,
+            activeTab() { const t = document.querySelector('.tab.active'); return t ? t.dataset.tab : 'employees'; },
+            snapshot() {
+                return {
+                    tab: this.activeTab(),
+                    plan: JSON.parse(JSON.stringify(plan)),
+                    planSelect: document.getElementById('plan-select').value,
+                    staffingOpen: document.getElementById('staffing-block').style.display !== 'none',
+                    detailsOpen: document.getElementById('stage-details').open,
+                    scrollY: window.scrollY,
+                };
+            },
+            restore(snap) {
+                closeEmployeeDialog();
+                if (!snap) return;
+                plan = snap.plan;
+                fillPlanMeta();
+                renderStages();
+                setStatus('');
+                document.getElementById('plan-select').value = snap.planSelect;
+                this.setStaffingOpen(snap.staffingOpen);
+                document.getElementById('stage-details').open = snap.detailsOpen;
+                goTab(snap.tab);
+                window.scrollTo(0, snap.scrollY);
+            },
+            builderReady() { return !!catalog; },
+            demoActive() { return !!plan.__demo; },
+            dialogOpen() { return document.getElementById('employee-dialog').open; },
+            setStaffingOpen(on) { document.getElementById('staffing-block').style.display = on ? '' : 'none'; },
+            openEmployeeDemo() { openEmployeeDialog(null, true); },
+            closeEmployeeDemo() { closeEmployeeDialog(); },
+            // Демо-план в редакторе (не сохраняется): два этапа каталога с парой подэтапов.
+            showDemoPlan() {
+                if (!catalog) return;
+                const stages = (catalog.stages || []).slice(0, 2).map((st, i) => ({
+                    uid: nextUid('u'), catalog_id: st.id, title: st.title, description: st.description,
+                    anchor: st.anchor, duration: { ...st.default_duration },
+                    substages: (st.substage_templates || []).slice(0, i ? 1 : 2).map(t => ({
+                        uid: nextUid('s'), catalog_id: t.id, title: t.title, kind: t.kind, brief: t.brief,
+                        source: 'template', tags: t.tags || [], schedule: { day: 1, time: t.default_time || '09:00' },
+                    })),
+                }));
+                plan = { plan_id: null, title: '', role: '', start_date: '', group_daily: false, stages, __demo: true };
+                document.getElementById('plan-select').value = '';
+                fillPlanMeta();
+                renderStages();
+                setStatus('Демо-план для тура — не сохраняется.');
+            },
+        };

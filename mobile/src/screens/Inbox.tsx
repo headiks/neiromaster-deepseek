@@ -1,9 +1,12 @@
 // Инбокс в виде чата. scope="today" — только сегодняшние сообщения; scope="history" —
 // все предыдущие дни, сгруппированные по датам. Сообщения — входящие «пузыри» слева,
 // формат как в кабинете на сайте: «Этап — Подэтап» + текст.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+// Порядок как в мессенджере: старые сверху, новые снизу; экран держится у последнего
+// сообщения, пока человек сам не прокрутил вверх.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, ScrollView, RefreshControl, ActivityIndicator, StyleSheet,
+  NativeScrollEvent, NativeSyntheticEvent,
 } from "react-native";
 import { S, useTheme, Palette } from "../theme";
 import * as api from "../api";
@@ -17,6 +20,17 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const scroller = useRef<ScrollView>(null);
+  // true — держимся у низа ленты (новые сообщения видны сразу). Сбрасывается, когда
+  // человек прокрутил вверх читать старое; возвращается, когда он снова внизу.
+  const stickToBottom = useRef(true);
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    stickToBottom.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 48;
+  };
+  const toBottom = () => {
+    if (stickToBottom.current) scroller.current?.scrollToEnd({ animated: false });
+  };
 
   const load = useCallback(async () => {
     setErr(null);
@@ -54,7 +68,8 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
   if (scope === "today") {
     const list = asc.filter((m) => dayOf(m) === today);
     return (
-      <ScrollView style={st.wrap} contentContainerStyle={st.content}
+      <ScrollView ref={scroller} style={st.wrap} contentContainerStyle={st.content}
+        onScroll={onScroll} scrollEventThrottle={100} onContentSizeChange={toBottom}
         refreshControl={<RefreshControl refreshing={refreshing} tintColor={c.primary}
           onRefresh={() => { setRefreshing(true); load(); }} />}>
         {err ? <Text style={st.err}>{err}</Text> : null}
@@ -65,11 +80,12 @@ export default function Inbox({ scope }: { scope: "today" | "history" }) {
     );
   }
 
-  // history: всё до сегодня, группировка по дням (свежие дни сверху).
+  // history: всё до сегодня, группировка по дням — старые дни сверху, свежие снизу.
   const past = asc.filter((m) => dayOf(m) < today);
-  const days = Array.from(new Set(past.map(dayOf))).sort().reverse();
+  const days = Array.from(new Set(past.map(dayOf))).sort();
   return (
-    <ScrollView style={st.wrap} contentContainerStyle={st.content}
+    <ScrollView ref={scroller} style={st.wrap} contentContainerStyle={st.content}
+      onScroll={onScroll} scrollEventThrottle={100} onContentSizeChange={toBottom}
       refreshControl={<RefreshControl refreshing={refreshing} tintColor={c.primary}
         onRefresh={() => { setRefreshing(true); load(); }} />}>
       {err ? <Text style={st.err}>{err}</Text> : null}

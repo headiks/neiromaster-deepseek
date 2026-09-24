@@ -108,8 +108,11 @@ function Questions({ st, c }: { st: Styles; c: Palette }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const scroller = useRef<ScrollView>(null);
+  // Как в переписке: старые вопросы сверху, новые снизу.
   const load = () => api.myQuestions()
-    .then((d) => setItems(d?.questions || []))
+    .then((d) => setItems([...(d?.questions || [])].sort(
+      (a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")))))
     .catch(() => {})
     .finally(() => { setLoading(false); setRefreshing(false); });
   useEffect(() => { load(); }, []);
@@ -118,7 +121,8 @@ function Questions({ st, c }: { st: Styles; c: Palette }) {
     return <View style={st.center}><ActivityIndicator color={c.primary} size="large" /></View>;
   }
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: S.lg, paddingBottom: 40 }}
+    <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={{ padding: S.lg, paddingBottom: 40 }}
+      onContentSizeChange={() => scroller.current?.scrollToEnd({ animated: false })}
       refreshControl={<RefreshControl refreshing={refreshing} tintColor={c.primary}
         onRefresh={() => { setRefreshing(true); load(); }} />}>
       {items.length === 0 ? (

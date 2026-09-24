@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta charset="utf-8">
 <title>База планов — НейроМастер</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -89,7 +90,8 @@ pre{margin:0;padding:13px;max-height:520px;overflow:auto;background:var(--surfac
 let PLANS = [];
 let current = '';
 
-function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+function jsa(s){return esc(JSON.stringify(s==null?'':String(s)));}
+function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function api(u){return fetch(u).then(r=>{if(r.status===401){location.href='/login';throw new Error('401');}return r;});}
 function fmtTs(s){ if(!s) return '—'; const d=new Date(String(s).replace(' ','T')); return isNaN(d)?esc(s):d.toLocaleString('ru-RU',{year:'2-digit',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
 function jpre(obj){ return `<pre>${esc(JSON.stringify(obj,null,2))}</pre>`; }
@@ -99,7 +101,7 @@ function renderPlans(){
   document.getElementById('plans-count').textContent = PLANS.length?('· '+PLANS.length):'';
   if(!PLANS.length){ box.innerHTML=`<div class="msg">Планов нет.</div>`; return; }
   box.innerHTML = PLANS.map(p=>`
-    <button class="p ${current===p.plan_id?'on':''}" onclick="pick('${esc(p.plan_id)}')">
+    <button class="p ${current===p.plan_id?'on':''}" onclick="pick(${jsa(p.plan_id)})">
       <div class="n">${esc(p.title||'без названия')}</div>
       <div class="m">${p.role?esc(p.role)+' · ':''}этапов: ${p.stages||0} · подэтапов: ${p.substages||0}</div>
       <div class="id mono">${esc(p.plan_id)}</div>
