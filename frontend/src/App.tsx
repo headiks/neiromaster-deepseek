@@ -1,6 +1,6 @@
 // Маршруты сайта. Доступ проверяет и сервер (api_pages.py), и клиент: без входа — на /login,
 // с временным паролем — на /setup, админские разделы — только администраторам.
-import { Suspense, useEffect } from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from './lib/theme';
 import { MeProvider, useMe } from './lib/me';
@@ -11,32 +11,30 @@ import { installActivityLog } from './lib/activity';
 import { ConfirmProvider } from './ui/confirm';
 import { Spinner } from './ui';
 import { ErrorBoundary } from './ui/ErrorBoundary';
-import { lazyPage, preloadWhenIdle } from './lib/lazyPage';
 import { AppShell } from './blocks/AppShell';
 import { TourHost } from './tour';
 import Login from './pages/auth/Login';
 import Register from './pages/auth/Register';
 import Setup from './pages/auth/Setup';
 import Cabinet from './pages/cabinet/Cabinet';
+// Все страницы — в основной сборке: переход между разделами ничего не догружает из сети,
+// поэтому не может сорваться из-за связи, выкатки новой версии или кэша по дороге.
+import Users from './pages/admin/Users';
+import Plans from './pages/admin/Plans';
+import Documents from './pages/admin/Documents';
+import Messages from './pages/admin/Messages';
+import Questions from './pages/admin/Questions';
+import Logs from './pages/service/Logs';
+import PlansDb from './pages/service/PlansDb';
+import NotifyTest from './pages/service/NotifyTest';
+import QueueTest from './pages/service/QueueTest';
+import S3Browser from './pages/service/S3Browser';
+import DocumentsTable from './pages/service/DocumentsTable';
+import DocumentsBoard from './pages/service/DocumentsBoard';
+import DocBreakdown from './pages/service/DocBreakdown';
+import GlobalTest from './pages/service/GlobalTest';
+import MessageTest from './pages/service/MessageTest';
 
-const Users = lazyPage(() => import('./pages/admin/Users'));
-const Plans = lazyPage(() => import('./pages/admin/Plans'));
-const Documents = lazyPage(() => import('./pages/admin/Documents'));
-const Messages = lazyPage(() => import('./pages/admin/Messages'));
-const Questions = lazyPage(() => import('./pages/admin/Questions'));
-const Logs = lazyPage(() => import('./pages/service/Logs'));
-const PlansDb = lazyPage(() => import('./pages/service/PlansDb'));
-const NotifyTest = lazyPage(() => import('./pages/service/NotifyTest'));
-const QueueTest = lazyPage(() => import('./pages/service/QueueTest'));
-const S3Browser = lazyPage(() => import('./pages/service/S3Browser'));
-const DocumentsTable = lazyPage(() => import('./pages/service/DocumentsTable'));
-const DocumentsBoard = lazyPage(() => import('./pages/service/DocumentsBoard'));
-const DocBreakdown = lazyPage(() => import('./pages/service/DocBreakdown'));
-const GlobalTest = lazyPage(() => import('./pages/service/GlobalTest'));
-const MessageTest = lazyPage(() => import('./pages/service/MessageTest'));
-// Сначала — основные разделы, потом служебные.
-const ADMIN_PAGES = [Users, Plans, Documents, Messages, Questions, Logs, PlansDb, NotifyTest, QueueTest,
-  S3Browser, DocumentsTable, DocumentsBoard, DocBreakdown, GlobalTest, MessageTest];
 
 function Loading() {
   return <div className="nm-auth"><Spinner /></div>;
@@ -56,18 +54,14 @@ function Protected() {
   );
 }
 
-/** Разделы администратора: один сайдбар на все страницы, страницы грузятся по требованию. */
+/** Разделы администратора: один сайдбар на все страницы. */
 function AdminLayout() {
   const { isAdmin } = useMe();
   const { pathname } = useLocation();
-  // Разделы подгружаются заранее, в простое: переход по меню не ждёт сеть.
-  useEffect(() => { if (isAdmin) preloadWhenIdle(ADMIN_PAGES); }, [isAdmin]);
   if (!isAdmin) return <Navigate to="/" replace />;
   return (
     <AppShell>
-      <ErrorBoundary key={pathname}>
-        <Suspense fallback={<Spinner />}><Outlet /></Suspense>
-      </ErrorBoundary>
+      <ErrorBoundary key={pathname} where="admin-page"><Outlet /></ErrorBoundary>
     </AppShell>
   );
 }
@@ -82,7 +76,7 @@ export default function App() {
   useEffect(() => { installActivityLog(); }, []);
   return (
     <BrowserRouter>
-      <ErrorBoundary>
+      <ErrorBoundary where="app">
       <ThemeProvider>
         <ToastProvider>
           <ConfirmProvider>
@@ -93,7 +87,7 @@ export default function App() {
                 <Route path="/register" element={<Register />} />
                 <Route path="/setup" element={<Setup />} />
                 <Route element={<Protected />}>
-                  <Route path="/" element={<CabinetProvider><Cabinet /></CabinetProvider>} />
+                  <Route path="/" element={<ErrorBoundary where="cabinet"><CabinetProvider><Cabinet /></CabinetProvider></ErrorBoundary>} />
                   <Route path="/admin" element={<Navigate to="/admin/users" replace />} />
                   <Route element={<AdminLayout />}>
                     <Route path="/admin/users" element={<Users />} />

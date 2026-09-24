@@ -233,7 +233,18 @@ def healthz():
     from redis_conn import get_redis
     db.query("SELECT 1 AS ok", (), "one")
     r = get_redis()
-    return {"ok": True, "db": True, "redis": bool(r is not None and r.ping())}
+    return {"ok": True, "db": True, "redis": bool(r is not None and r.ping()), "build": _build_name()}
+
+
+def _build_name() -> str:
+    """Какая сборка сайта сейчас отдаётся (index-<хеш>.js). Разные ответы при повторных
+    запросах = за прокси работают разные копии приложения или кэш отдаёт старую страницу."""
+    import re
+    try:
+        m = re.search(r"assets/(index-[\w-]+\.js)", (STATIC_DIR / "app" / "index.html").read_text(encoding="utf-8"))
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
 
 
 for _module in ROUTERS:

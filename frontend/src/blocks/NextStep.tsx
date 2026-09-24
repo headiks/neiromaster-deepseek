@@ -10,9 +10,15 @@ import { Button, Callout } from '../ui';
 
 type Step = { to: string; text: string } | null;
 
+// Подсказка общая для всех разделов: при переходе между ними берём готовую, а не тянем
+// заново три списка (пользователи, планы, документы) — на больших данных это заметно.
+const FRESH_MS = 30000;
+let cache: { at: number; step: Step } | null = null;
+
 export function useNextStep() {
-  const [step, setStep] = useState<Step>(null);
+  const [step, setStep] = useState<Step>(() => cache?.step ?? null);
   const load = useCallback(async () => {
+    if (cache && Date.now() - cache.at < FRESH_MS) { setStep(cache.step); return; }
     try {
       const [p, u, d] = await Promise.all([
         api.get<{ plans: PlanSummary[] }>('/plans'),
@@ -27,10 +33,11 @@ export function useNextStep() {
       else if (!docs.length) s = { to: '/admin/documents', text: 'Шаг 3 из 4. Загрузите документы компании (регламенты, инструкции) — по ним ИИ напишет сообщения и будет отвечать на вопросы.' };
       else if (ready && !plans.some((x) => x.generated)) s = { to: '/admin/messages', text: 'Шаг 4 из 4. Сгенерируйте сообщения плана — кнопка «Обновить сообщения плана».' };
       else if (people.some((x) => !x.plan_id || !x.start_date)) s = { to: '/admin/users', text: 'Осталось: назначьте сотрудникам план и дату выхода («Изменить» у сотрудника) — с даты выхода начнут приходить сообщения.' };
+      cache = { at: Date.now(), step: s };
       setStep(s);
     } catch { /* подсказка не критична */ }
   }, []);
-  usePolling(load, 20000);
+  usePolling(load, FRESH_MS);
   return { step, reload: load };
 }
 
