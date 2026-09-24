@@ -3,8 +3,8 @@
 // ошибка уходит в «Журнал действий» (client_error). Разовую ошибку (данные пришли в
 // неудачном порядке) сначала пробуем пройти сами — повторной отрисовкой.
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { RefreshCw, RotateCcw } from 'lucide-react';
-import { describeError, reportError } from '../lib/errors';
+import { Copy, RefreshCw, RotateCcw } from 'lucide-react';
+import { errorDetails, reportError } from '../lib/errors';
 import { Button, Empty, Spinner } from './index';
 
 type Props = { children: ReactNode; where?: string };
@@ -61,7 +61,11 @@ export class ErrorBoundary extends Component<Props, State> {
         На странице произошла ошибка. Нажмите «Повторить» — если не поможет, обновите страницу.
         <details className="nm-error-details">
           <summary>Подробности для администратора</summary>
-          <code>{describeError(error)}</code>
+          <code>{errorDetails(error)}</code>
+          <Button size="sm" variant="ghost" icon={Copy}
+                  onClick={() => navigator.clipboard?.writeText(errorDetails(error)).catch(() => {})}>
+            Скопировать подробности
+          </Button>
         </details>
       </Empty>
     );

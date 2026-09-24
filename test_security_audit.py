@@ -129,6 +129,13 @@ def test_index_html_escapes_error_field():
     import re
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", index.read_text(encoding="utf-8")), \
         "inline-скрипт в frontend/index.html нарушит CSP (script-src 'self')"
+    # Подмена встроенных методов DOM (Node.prototype.removeChild и т. п.) конфликтует с
+    # антивирусами и расширениями, которые перехватывают те же методы: обёртки вызывают друг
+    # друга по кругу — «RangeError: Maximum call stack size exceeded» на каждом переходе.
+    patched = [str(p.relative_to(BASE)) for p in src.rglob("*.ts*")
+               if re.search(r"(Node|Element|HTMLElement|Document)\.prototype\.\w+\s*=[^=]",
+                            p.read_text(encoding="utf-8"))]
+    assert not patched, f"интерфейс подменяет встроенные методы DOM: {patched}"
 
 
 # ==========================================================================

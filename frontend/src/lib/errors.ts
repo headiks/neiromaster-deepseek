@@ -19,6 +19,14 @@ export function describeError(error: unknown): string {
   return clip(typeof error === 'string' ? error : JSON.stringify(error), 300);
 }
 
+/** Текст для «Подробностей»: ошибка, начало стека вызовов, страница и сборка. */
+export function errorDetails(error: unknown): string {
+  const stack = error instanceof Error && error.stack
+    ? error.stack.split('\n').slice(1, 9).map((l) => l.trim()).join('\n')
+    : '';
+  return [describeError(error), stack, `${location.pathname} · ${BUILD}`].filter(Boolean).join('\n');
+}
+
 export function reportError(error: unknown, where: string, componentStack?: string | null) {
   const message = describeError(error);
   const key = `${where}|${message}`;
