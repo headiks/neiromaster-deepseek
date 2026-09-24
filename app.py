@@ -32,6 +32,7 @@ import questions
 import messaging
 import activitylog
 import security
+import pii_key
 from deps import BASE_DIR, STATIC_DIR
 
 import api_pages
@@ -85,6 +86,8 @@ def _migrate_legacy():
         "документов из registry.json": docregistry.migrate_from_file(),
         "вопросов из pending_questions.json": questions.migrate_from_file(),
         "дат выхода к формату ГГГГ-ММ-ДД": users.migrate_start_dates(),
+        "шифрование ПДн пользователей": users.encrypt_plaintext(),
+        "шифрование ПДн в вопросах": questions.encrypt_plaintext(),
     }
     for what, n in moved.items():
         if n:
@@ -138,6 +141,9 @@ def _autoassign_plan():
 async def lifespan(app: FastAPI):
     with db.startup_lock():                  # схема и миграции — по одному воркеру за раз
         db.init_schema()                     # до первого обращения к аккаунтам
+        # Ключ шифрования ПДн: из окружения, из файла или новый. Ключ не совпал с тем,
+        # которым зашифрованы данные, — старт прерывается (иначе ПДн стали бы нечитаемы).
+        pii_key.ensure()
         docregistry.init()
         questions.init()
         _step("реестр документов", documents.init)

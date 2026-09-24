@@ -1,124 +1,88 @@
-// Одно сообщение инбокса по типу (как в кабинете на сайте, static/messages.js):
-//  message/reminder/handover — текст; checklist/system_check — пункты с отметками;
-//  survey — вопросы с вариантами; quiz — мини-тест с проверкой и пояснением.
-// Ответы сохраняются на сервере (POST /api/my/messages/{id}/answer) — видны и на сайте.
-import React, { useMemo, useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
-import { S, useTheme, Palette } from "../theme";
-import * as api from "../api";
-import { Msg, title, body, hhmm } from "../format";
+// Карточка сообщения плана (COMPONENTS.md → MessageCard): «Этап · Подэтап» + время и тело
+// по типу: текст, чек-лист, мини-тест (верно/неверно + пояснение), опрос. Ответ сохраняется
+// сразу и виден на сайте — логика общая (shared/progress.ts).
+import React from "react";
+import { Pressable, View } from "react-native";
+import type { Msg } from "../../../shared/types";
+import { msgKicker, msgTime } from "../../../shared/format";
+import { isChecklist, isQuestions, msgStats } from "../../../shared/progress";
+import { S, useTheme } from "../theme";
+import { GlassCard, Progress, Txt } from "../ui";
+import { CheckIcon } from "../icons";
 
-type Answers = Record<string, any>;
-
-export default function MessageCard({ m }: { m: Msg }) {
+export default function MessageCard({ m, onAnswer }: { m: Msg; onAnswer: (m: Msg, key: string, value: string | null) => void }) {
   const { c } = useTheme();
-  const st = useMemo(() => makeStyles(c), [c]);
-  const [answers, setAnswers] = useState<Answers>(m.answers || {});
-  const [saved, setSaved] = useState(!!m.answers && Object.keys(m.answers).length > 0);
-  const p: any = m.payload || {};
-
-  const save = (next: Answers) => {
-    setAnswers(next);
-    if (m.id) api.answer(m.id, next).then(() => setSaved(true)).catch(() => {});
-  };
-
-  let content: React.ReactNode;
-  if ((p.type === "checklist") && Array.isArray(p.items)) {
-    const done = p.items.filter((it: any) => answers[it.id]).length;
-    content = (
+  const p = m.payload, a = m.answers || {};
+  const stats = msgStats(m);
+  const intro = (p as { intro?: string } | null)?.intro;
+  let body: React.ReactNode = null;
+  if (isChecklist(p)) {
+    body = (
       <>
-        {p.intro ? <Text style={st.body}>{p.intro}</Text> : null}
-        {p.items.map((it: any) => (
-          <TouchableOpacity key={it.id} style={st.checkRow} activeOpacity={0.7}
-            onPress={() => save({ ...answers, [it.id]: !answers[it.id] })}>
-            <View style={[st.box, answers[it.id] && st.boxOn]}>
-              {answers[it.id] ? <Text style={st.tick}>✓</Text> : null}
-            </View>
-            <Text style={[st.item, answers[it.id] && st.itemDone]}>{it.text}</Text>
-          </TouchableOpacity>
-        ))}
-        <Text style={st.meta}>Выполнено: {done} из {p.items.length}</Text>
+        {intro ? <Txt>{intro}</Txt> : null}
+        {p.items.map((it) => {
+          const on = !!a[it.id];
+          return (
+            <Pressable key={it.id} accessibilityRole="checkbox" accessibilityState={{ checked: on }} onPress={() => onAnswer(m, it.id, null)}
+                       style={{ flexDirection: "row", alignItems: "center", gap: S.md, minHeight: 44, paddingVertical: 4 }}>
+              <View style={{ width: 22, height: 22, borderRadius: 7, borderWidth: 2, alignItems: "center", justifyContent: "center",
+                             borderColor: on ? c.primary : c.lineStrong, backgroundColor: on ? c.primary : "transparent" }}>
+                {on ? <CheckIcon color={c.primaryText} size={14} strokeWidth={3} /> : null}
+              </View>
+              <Txt style={{ flex: 1, textDecorationLine: on ? "line-through" : "none" }} color={on ? c.muted : c.text}>{it.text}</Txt>
+            </Pressable>
+          );
+        })}
       </>
     );
-  } else if ((p.type === "survey" || p.type === "quiz") && Array.isArray(p.questions)) {
+  } else if (isQuestions(p)) {
     const quiz = p.type === "quiz";
-    const total = p.questions.length;
-    const right = quiz ? p.questions.filter((q: any) =>
-      (q.options || []).some((o: any) => o.correct && answers[q.id] === o.id)).length : 0;
-    const answered = p.questions.filter((q: any) => answers[q.id]).length;
-    content = (
+    body = (
       <>
-        {p.intro ? <Text style={st.body}>{p.intro}</Text> : null}
-        {p.questions.map((q: any, qi: number) => {
-          const chosen = answers[q.id];
+        {intro ? <Txt>{intro}</Txt> : null}
+        {p.questions.map((q, qi) => {
+          const chosen = a[q.id] as string | undefined;
           return (
-            <View key={q.id} style={st.q}>
-              <Text style={st.qText}>{qi + 1}. {q.text}</Text>
-              {(q.options || []).map((o: any) => {
+            <View key={q.id} style={{ gap: S.sm, marginTop: qi ? S.sm : 0 }}>
+              <Txt w="600">{p.questions.length > 1 ? `${qi + 1}. ` : ""}{q.text}</Txt>
+              {(q.options || []).map((o) => {
                 const picked = chosen === o.id;
-                // Тест: после ответа подсвечиваем верный вариант и ошибку.
-                const good = quiz && chosen && o.correct;
-                const bad = quiz && picked && !o.correct;
+                const state = quiz && chosen ? (o.correct ? "right" : picked ? "wrong" : null) : null;
+                const border = state === "right" ? c.ok : state === "wrong" ? c.danger : picked ? c.primary : c.border;
+                const bg = state === "right" ? c.okSoft : state === "wrong" ? c.dangerSoft : picked ? c.soft : "transparent";
                 return (
-                  <TouchableOpacity key={o.id} activeOpacity={0.7} disabled={quiz && !!chosen}
-                    style={[st.opt, picked && st.optOn, good && st.optGood, bad && st.optBad]}
-                    onPress={() => save({ ...answers, [q.id]: o.id })}>
-                    <Text style={[st.optText, (picked || good) && st.optTextOn]}>
-                      {good ? "✓ " : bad ? "✗ " : ""}{o.text}
-                    </Text>
-                  </TouchableOpacity>
+                  <Pressable key={o.id} accessibilityRole="button" accessibilityState={{ selected: picked, disabled: quiz && !!chosen }}
+                             disabled={quiz && !!chosen} onPress={() => onAnswer(m, q.id, o.id)}
+                             style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 14, paddingVertical: 10,
+                                      borderRadius: S.rSm, borderWidth: 1.5, borderColor: border, backgroundColor: bg }}>
+                    <Txt>{o.text}</Txt>
+                  </Pressable>
                 );
               })}
-              {quiz && chosen && q.explanation ? <Text style={st.expl}>{q.explanation}</Text> : null}
+              {quiz && chosen && q.explanation ? <Txt v="small" color={c.muted}>{q.explanation}</Txt> : null}
             </View>
           );
         })}
-        <Text style={st.meta}>
-          {quiz ? (answered === total ? `Результат: ${right} из ${total}` : `Отвечено: ${answered} из ${total}`)
-                : (answered === total && saved ? "Спасибо, ответы отправлены" : `Отвечено: ${answered} из ${total}`)}
-        </Text>
       </>
     );
-  } else {
-    content = body(m) ? <Text style={st.body}>{body(m)}</Text> : null;
+  } else if (m.body) {
+    body = <Txt>{m.body}</Txt>;
   }
-
-  // Тип сообщения сотруднику не показываем — только содержимое.
-  const t = hhmm(m);
+  const ratio = stats.kind === "checklist" ? stats.done / (stats.total || 1)
+    : stats.kind === "quiz" || stats.kind === "survey" ? stats.answered / (stats.total || 1) : 0;
   return (
-    <View style={st.bubble}>
-      <Text style={st.title}>{title(m)}</Text>
-      {content}
-      {t ? <Text style={st.time}>{t}</Text> : null}
-    </View>
+    <GlassCard>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", gap: S.md }}>
+        <Txt v="small" w="600" color={c.softInk} style={{ flex: 1 }}>{msgKicker(m)}</Txt>
+        <Txt v="micro" color={c.muted}>{msgTime(m)}</Txt>
+      </View>
+      {body}
+      {stats.label ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: S.md, marginTop: 2 }}>
+          {stats.kind !== "text" ? <View style={{ width: 48 }}><Progress value={ratio} tone="ok" height={4} /></View> : null}
+          <Txt v="micro" color={c.muted}>{stats.label}</Txt>
+        </View>
+      ) : null}
+    </GlassCard>
   );
 }
-
-const makeStyles = (c: Palette) => StyleSheet.create({
-  bubble: {
-    alignSelf: "flex-start", width: "94%", backgroundColor: c.card,
-    borderRadius: S.r, borderBottomLeftRadius: S.xs, borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
-    padding: S.md, marginBottom: S.sm,
-  },
-  title: { fontSize: 14, fontWeight: "700", color: c.primary, letterSpacing: 0.2 },
-  body: { fontSize: 15, color: c.text, marginTop: S.xs, lineHeight: 21 },
-  meta: { fontSize: 12, color: c.muted, marginTop: S.sm },
-  time: { fontSize: 11, color: c.muted, marginTop: S.sm, alignSelf: "flex-end" },
-  checkRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6 },
-  box: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: c.border,
-    alignItems: "center", justifyContent: "center", marginRight: S.sm },
-  boxOn: { backgroundColor: c.primary, borderColor: c.primary },
-  tick: { color: c.primaryText, fontSize: 14, fontWeight: "800" },
-  item: { flex: 1, fontSize: 15, color: c.text },
-  itemDone: { color: c.muted, textDecorationLine: "line-through" },
-  q: { marginTop: S.md },
-  qText: { fontSize: 15, fontWeight: "600", color: c.text, marginBottom: 6 },
-  opt: { borderWidth: 1, borderColor: c.border, borderRadius: 8, paddingVertical: 9,
-    paddingHorizontal: S.md, marginBottom: 6, backgroundColor: c.inputBg },
-  optOn: { borderColor: c.primary, backgroundColor: c.chipBg },
-  optGood: { borderColor: c.ok },
-  optBad: { borderColor: c.danger },
-  optText: { fontSize: 14, color: c.text },
-  optTextOn: { fontWeight: "600" },
-  expl: { fontSize: 13, color: c.muted, marginTop: 2, lineHeight: 18 },
-});

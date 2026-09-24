@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 import db
+import pii_key
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -110,33 +111,36 @@ def normalize_username(username: str) -> str:
 
 # ---------- Шифрование ПДн в БД (at rest) ----------
 # Свободный текст профиля (ФИО, должность, контакты, наставник, руководитель,
-# заметки) шифруется в БД, ЕСЛИ задан ключ NEIROMASTER_PII_KEY (Fernet-ключ,
-# сгенерировать: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`).
-# Без ключа поведение прежнее — открытый текст. Шифртекст помечается префиксом
-# «enc:», поэтому старые открытые строки и новые зашифрованные уживаются в одной
-# таблице без миграции: расшифровка трогает только значения с префиксом.
+# заметки, временный пароль) шифруется в БД ключом Fernet. Ключ создаётся сам при
+# первом старте (pii_key.py: файл data/secrets/pii.key, права 600) или берётся из
+# NEIROMASTER_PII_KEY. Шифртекст помечается префиксом «enc:», поэтому старые
+# открытые строки и новые зашифрованные уживаются в одной таблице; оставшиеся
+# открытые строки шифрует encrypt_plaintext() на старте.
 #
-# Защищает утёкший дамп/бэкап БД (pg_dump, украденный том). Ключ лежит в
-# .env.production рядом с БД, поэтому от полной компрометации хоста не спасает —
-# для этого нужно ещё шифрование диска (LUKS). Логин/поиск не затрагиваются:
-# username/role/id остаются открытыми, сортировка по ФИО идёт уже по расшифрованным
-# значениям в Python (list_users), не в SQL.
+# Защищает утёкший дамп/бэкап БД (pg_dump, украденный том): ключ лежит отдельно от
+# базы. От полной компрометации хоста не спасает — для этого нужно ещё шифрование
+# диска (LUKS). Логин/поиск не затрагиваются: username/role/id остаются открытыми,
+# сортировка по ФИО идёт уже по расшифрованным значениям в Python (list_users).
 _ENCRYPTED_COLUMNS = ("full_name", "position", "department", "contact", "mentor", "manager", "notes",
                       "phone", "email", "temp_password")
 _PII_PREFIX = "enc:"
+_fernet_cache: dict = {}
 
 
 def _fernet():
-    key = os.environ.get("NEIROMASTER_PII_KEY")
+    key = pii_key.current()
     if not key:
-        return None                       # ключ не задан — шифрование выключено
-    from cryptography.fernet import Fernet
-    return Fernet(key.encode())
+        return None                       # шифрование выключено явно (NEIROMASTER_PII_KEY=off)
+    f = _fernet_cache.get(key)
+    if f is None:
+        from cryptography.fernet import Fernet
+        f = _fernet_cache[key] = Fernet(key.encode())
+    return f
 
 
 def _encrypt_field(value):
     f = _fernet()
-    if f is None or not value:
+    if f is None or not value or not isinstance(value, str) or value.startswith(_PII_PREFIX):
         return value
     return _PII_PREFIX + f.encrypt(value.encode("utf-8")).decode("ascii")
 
@@ -152,6 +156,24 @@ def _decrypt_field(value):
         return f.decrypt(value[len(_PII_PREFIX):].encode("ascii")).decode("utf-8")
     except InvalidToken:
         return value
+
+
+def encrypt_plaintext_rows(table: str, columns, key_col: str = "id") -> int:
+    """Шифрует строки, оставшиеся открытым текстом (данные, записанные до появления
+    ключа). Идемпотентно: зашифрованные значения (с префиксом) не трогает."""
+    if _fernet() is None:
+        return 0
+    cond = " OR ".join(f"({c} <> '' AND {c} NOT LIKE 'enc:%%')" for c in columns)
+    rows = db.query(f"SELECT {key_col}, {', '.join(columns)} FROM {table} WHERE {cond}", (), "all") or []
+    for r in rows:
+        db.execute(f"UPDATE {table} SET {', '.join(c + ' = %s' for c in columns)} WHERE {key_col} = %s",
+                   [_encrypt_field(r[c]) for c in columns] + [r[key_col]])
+    return len(rows)
+
+
+def encrypt_plaintext() -> int:
+    """Открытые ПДн в users -> зашифрованные (разово после появления ключа)."""
+    return encrypt_plaintext_rows("users", _ENCRYPTED_COLUMNS)
 
 
 # ---------- Хранилище (PostgreSQL) ----------
@@ -811,14 +833,17 @@ def migrate_legacy_employees() -> int:
 if __name__ == "__main__":
     # Проверка шифрования ПДн без БД: round-trip, префикс, обратная совместимость.
     from cryptography.fernet import Fernet as _F
-    os.environ["NEIROMASTER_PII_KEY"] = _F.generate_key().decode()
+    _key = _F.generate_key().decode()
+    os.environ["NEIROMASTER_PII_KEY"] = _key
     _ct = _encrypt_field("Иванов Иван")
     assert _ct.startswith(_PII_PREFIX) and _ct != "Иванов Иван"
     assert _decrypt_field(_ct) == "Иванов Иван"
     assert _decrypt_field("открытый текст") == "открытый текст"   # старое поле не трогаем
     assert _encrypt_field("") == "" and _decrypt_field("") == ""  # пустое не шифруем
-    os.environ.pop("NEIROMASTER_PII_KEY")
+    assert _encrypt_field(_ct) == _ct        # повторно не шифруем
+    os.environ["NEIROMASTER_PII_KEY"] = "off"
     assert _decrypt_field(_ct) == _ct        # без ключа не падаем, отдаём шифртекст
+    os.environ["NEIROMASTER_PII_KEY"] = _key
     print("OK: шифрование ПДн — round-trip, префикс, совместимость со старыми строками")
 
     # Папки хранилища и видимость по отделу

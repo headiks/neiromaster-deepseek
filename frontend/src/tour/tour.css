@@ -1,0 +1,75 @@
+/* Тур «Как пользоваться» в стиле Glass: затемнение с «окном» вокруг элемента, стеклянная
+   карточка с пояснением и курсор-симулятор. Только переменные --nm-*. */
+.nmt-root { position: fixed; inset: 0; z-index: 2147483600; font-family: var(--nm-font); color: var(--nm-text); }
+.nmt-root[hidden] { display: none; }
+.nmt-blocker { position: fixed; inset: 0; background: transparent; }
+.nmt-spot { position: fixed; border-radius: var(--nm-r-s); pointer-events: none;
+            box-shadow: 0 0 0 3px var(--nm-accent), 0 0 0 200vmax var(--nm-backdrop);
+            transition: left .45s var(--nm-ease), top .45s var(--nm-ease), width .45s var(--nm-ease), height .45s var(--nm-ease), opacity .3s ease; }
+.nmt-spot.nmt-none { left: 50% !important; top: 50% !important; width: 0 !important; height: 0 !important; box-shadow: 0 0 0 200vmax var(--nm-backdrop); }
+.nmt-spot::after { content: ""; position: absolute; inset: -6px; border-radius: 20px; border: 2px solid var(--nm-accent);
+                   opacity: .6; animation: nmt-pulse 1.8s ease-out infinite; }
+.nmt-spot.nmt-none::after { display: none; }
+@keyframes nmt-pulse { 0% { opacity: .8; transform: scale(1); } 100% { opacity: 0; transform: scale(1.06); } }
+
+.nmt-card { position: fixed; width: min(380px, calc(100vw - 24px)); border-radius: var(--nm-r); padding: 18px 18px 14px;
+            background: var(--nm-glass-solid); border: 1px solid var(--nm-line); box-shadow: var(--nm-shadow-float);
+            transition: left .45s var(--nm-ease), top .45s var(--nm-ease), opacity .25s ease; opacity: 0; outline: none; }
+.nmt-card.nmt-in { opacity: 1; }
+.nmt-chapter { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--nm-soft-ink); }
+.nmt-chapter .nmt-count { margin-left: auto; color: var(--nm-muted); font-weight: 500; }
+.nmt-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; margin: 6px 0; line-height: 1.25; }
+.nmt-text { font-size: 14.5px; line-height: 1.5; color: var(--nm-text); }
+.nmt-progress { height: 4px; background: var(--nm-fill); border-radius: 999px; margin: 14px 0 12px; overflow: hidden; }
+.nmt-progress > div { height: 100%; width: 0; background: var(--nm-accent); border-radius: inherit; }
+.nmt-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nmt-controls .nmt-spacer { flex: 1; }
+.nmt-extra { margin-top: 10px; }
+.nmt-btn { height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--nm-line); background: var(--nm-surface);
+           color: var(--nm-text); font: 600 13px/1 var(--nm-font); cursor: pointer; }
+.nmt-btn:hover { background: var(--nm-fill); }
+.nmt-btn:disabled { opacity: .45; cursor: default; }
+.nmt-btn.nmt-primary { background: var(--nm-accent); border-color: var(--nm-accent); color: var(--nm-on-accent); }
+.nmt-btn.nmt-icon { width: 34px; padding: 0; }
+.nmt-btn:focus-visible { outline: 2px solid var(--nm-accent); outline-offset: 2px; }
+.nmt-dots { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 12px; }
+.nmt-dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--nm-line-strong); }
+.nmt-dots span.nmt-done { background: var(--nm-soft-ink); opacity: .5; }
+.nmt-dots span.nmt-cur { background: var(--nm-accent); transform: scale(1.35); }
+
+/* Курсор-«симулятор»: подлетает к элементу и «нажимает» его. */
+.nmt-cursor { position: fixed; width: 26px; height: 26px; pointer-events: none; left: 50%; top: 50%;
+              transition: left .7s cubic-bezier(.3, .7, .2, 1), top .7s cubic-bezier(.3, .7, .2, 1);
+              filter: drop-shadow(var(--nm-cursor-shadow)); overflow: visible; }
+.nmt-cursor-path { fill: var(--nm-knob); stroke: var(--nm-text); }
+.nmt-cursor.nmt-hidden { opacity: 0; }
+.nmt-cursor.nmt-click { animation: nmt-press .35s ease-out; }
+@keyframes nmt-press { 50% { transform: scale(.82); } }
+
+/* Демо-окно (карточка сотрудника) во время тура — не модальное, чтобы тур был поверх. */
+dialog.nmt-demo { position: fixed !important; top: 50% !important; left: 50% !important; transform: translate(-50%, -50%);
+                  margin: 0 !important; z-index: 2147483500; }
+
+/* Предложение пройти тур при первом входе. */
+.nmt-offer { position: fixed; right: 16px; bottom: 16px; z-index: 2147483000; width: min(340px, calc(100vw - 32px));
+             padding: 16px 18px; border-radius: var(--nm-r); background: var(--nm-glass-solid); border: 1px solid var(--nm-line);
+             box-shadow: var(--nm-shadow-float); font-family: var(--nm-font); color: var(--nm-text); animation: nmt-rise .35s ease-out; }
+.nmt-offer b { display: block; font-size: 15.5px; margin-bottom: 4px; }
+.nmt-offer p { margin: 0 0 12px; font-size: 14px; color: var(--nm-muted); line-height: 1.45; }
+.nmt-offer .nmt-controls { justify-content: flex-end; }
+@keyframes nmt-rise { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Телефон: карточка — нижняя «шторка», поверх подсвеченного элемента не ложится. */
+@media (max-width: 640px) {
+  .nmt-card { left: 8px !important; right: 8px; width: auto; top: auto !important; bottom: calc(8px + env(safe-area-inset-bottom)); }
+  .nmt-card.nmt-top { top: calc(8px + env(safe-area-inset-top)) !important; bottom: auto; }
+  .nmt-title { font-size: 16.5px; }
+  .nmt-text { font-size: 14px; }
+  .nmt-btn .nmt-label { display: none; }
+  .nmt-cursor { display: none; }
+  .nmt-offer { bottom: calc(100px + env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nmt-spot, .nmt-card, .nmt-cursor { transition: none; }
+  .nmt-spot::after, .nmt-offer, .nmt-cursor.nmt-click { animation: none; }
+}

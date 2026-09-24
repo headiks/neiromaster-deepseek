@@ -1,9 +1,10 @@
 """
 HTML-страницы приложения. Логики нет — только проверка доступа и отдача файла.
 
-У всех админских страниц проверка одна и та же (вошёл -> прошёл первичную
-настройку -> администратор), поэтому она вынесена в deps.page_for_admin, а не
-скопирована в каждый обработчик.
+Сайт — одностраничное приложение (frontend/, собирается в static/app/): каждая страница
+отдаёт один и тот же static/app/index.html, дальше маршрут разбирает React Router.
+Проверки доступа остаются на сервере: без входа — /login, с временным паролем — /setup,
+админские страницы — только администраторам (deps.page_for_admin).
 """
 
 from fastapi import APIRouter, Request
@@ -11,109 +12,70 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 import auth
 import users
-from deps import STATIC_DIR, _read_static, page_for_admin
+from deps import STATIC_DIR, page_for_admin, spa_html
 
 router = APIRouter()
+
+# Разделы админки (/admin/<раздел>) и служебные страницы — все внутри SPA.
+ADMIN_SECTIONS = ("users", "plans", "documents", "messages", "questions")
+SERVICE_PAGES = ("/s3", "/documents-board", "/documents-table", "/logs", "/plans-db", "/notify-test",
+                 "/doc-breakdown", "/queue-test", "/globaltest", "/message-test")
 
 
 @router.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    """Личный кабинет сотрудника: чат с ассистентом и свой план адаптации."""
+    """Личный кабинет сотрудника: сообщения плана, прогресс, ассистент."""
     user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
     if user is None:
         return RedirectResponse(url="/login", status_code=303)
     if user.get("must_change_credentials"):
         return RedirectResponse(url="/setup", status_code=303)
-    return HTMLResponse(_read_static("index.html"))
+    return spa_html()
 
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return _read_static("login.html")
+    return spa_html()
 
 
 @router.get("/register", response_class=HTMLResponse)
 async def register_page():
-    return _read_static("register.html")
+    return spa_html()
 
 
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request):
-    """Первичная настройка: замена выданных логина и пароля своими."""
+    """Первичная настройка: замена выданного пароля своим."""
     user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
     if user is None:
         return RedirectResponse(url="/login", status_code=303)
     if not user.get("must_change_credentials"):
         return RedirectResponse(url="/admin" if users.is_admin(user) else "/", status_code=303)
-    return HTMLResponse(_read_static("setup.html"))
+    return spa_html()
 
 
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
-    """Админка: база знаний, конструктор плана, пользователи."""
-    return page_for_admin(request, "admin.html")
+    """Админка: пользователи, планы, документы, сообщения, вопросы."""
+    return page_for_admin(request)
 
 
-@router.get("/s3", response_class=HTMLResponse)
-async def s3_page(request: Request):
-    """Обозреватель S3-хранилища оригиналов (только чтение, для админа)."""
-    return page_for_admin(request, "s3_browser.html")
+@router.get("/admin/{section}", response_class=HTMLResponse)
+async def admin_section(section: str, request: Request):
+    if section not in ADMIN_SECTIONS:
+        return RedirectResponse(url="/admin", status_code=303)
+    return page_for_admin(request)
 
 
-@router.get("/documents-board", response_class=HTMLResponse)
-async def documents_board_page(request: Request):
-    """Экран «этапы ↔ документы»: какие документы закреплены за этапами и подэтапами."""
-    return page_for_admin(request, "documents_board.html")
+def _service_page(path: str):
+    async def page(request: Request):
+        return page_for_admin(request)
+    page.__name__ = "page_" + path.strip("/").replace("-", "_")
+    router.add_api_route(path, page, methods=["GET"], response_class=HTMLResponse)
 
 
-@router.get("/documents-table", response_class=HTMLResponse)
-async def documents_table_page(request: Request):
-    """Табличный просмотр метаданных обработанных файлов (реестр documents)."""
-    return page_for_admin(request, "documents_table.html")
-
-
-@router.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request):
-    """Журнал действий по пользователям (суперадмин — все, администратор — свой отдел)."""
-    return page_for_admin(request, "logs.html")
-
-
-@router.get("/plans-db", response_class=HTMLResponse)
-async def plans_db_page(request: Request):
-    """Просмотр БД планов адаптации: структура (plans) и расписания (plan_schedules) в JSONB."""
-    return page_for_admin(request, "plans_db.html")
-
-
-@router.get("/notify-test", response_class=HTMLResponse)
-async def notify_test_page(request: Request):
-    """Тестировщик уведомлений: отправка сообщений пользователю и предпросмотр очереди."""
-    return page_for_admin(request, "notify_test.html")
-
-
-@router.get("/doc-breakdown", response_class=HTMLResponse)
-async def doc_breakdown_page(request: Request):
-    """Страница просмотра разбора документа (блоки → чанки, метки, обоснования)."""
-    return page_for_admin(request, "doc_breakdown.html")
-
-
-@router.get("/queue-test", response_class=HTMLResponse)
-async def queue_test_page(request: Request):
-    """Диагностика очередей (RQ/Redis): статус воркеров, длина очереди, тест-задача."""
-    return page_for_admin(request, "queue_test.html")
-
-
-@router.get("/globaltest", response_class=HTMLResponse)
-async def globaltest_page(request: Request):
-    """Хаб тестирования и диагностики: все служебные инструменты в одном месте
-    (реестр/доска документов, разбор, S3, база планов, тест уведомлений, очереди, журнал)."""
-    return page_for_admin(request, "globaltest.html")
-
-
-@router.get("/message-test", response_class=HTMLResponse)
-async def message_test_page(request: Request):
-    """Настраиваемые тестовые сообщения пользователю (все типы). Ссылок на страницу нет —
-    открывается только вводом адреса."""
-    return page_for_admin(request, "message_test.html")
+for _path in SERVICE_PAGES:
+    _service_page(_path)
 
 
 @router.get("/favicon.ico", include_in_schema=False)

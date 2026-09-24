@@ -1,87 +1,37 @@
-// Клиент API: базовый URL + Bearer-токен из хранилища. Один вход для всех экранов.
+// API приложения: общий клиент сотрудника (shared/api.ts) поверх Bearer-токена из
+// защищённого хранилища. Вход сохраняет токен, выход — удаляет.
+import { createClient, ApiError, answerText, SUGGESTIONS } from "../../shared/api";
 import { API_BASE } from "./config";
 import { getToken, setToken, clearToken } from "./storage";
 
-export class ApiError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+let onUnauthorized: (() => void) | null = null;
+/** Что делать, если сервер ответил 401 (сессию отозвали) — вернуть на экран входа. */
+export function setUnauthorizedHandler(fn: (() => void) | null) { onUnauthorized = fn; }
 
-async function request<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const token = await getToken();
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(opts.headers as Record<string, string> | undefined),
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+export const api = createClient({
+  base: API_BASE,
+  token: getToken,
+  credentials: "omit",
+  onUnauthorized: () => { clearToken().finally(() => onUnauthorized?.()); },
+});
 
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
-  } catch (e: any) {
-    throw new ApiError(0, "Нет связи с сервером");
-  }
-  const text = await res.text();
-  const data = text ? safeJson(text) : null;
-  if (!res.ok) {
-    const detail = (data && (data.detail || data.message)) || `Ошибка ${res.status}`;
-    throw new ApiError(res.status, typeof detail === "string" ? detail : "Ошибка запроса");
-  }
-  return data as T;
-}
-
-function safeJson(text: string): any {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { raw: text };
-  }
-}
-
-// ---- Методы ----
 export async function login(username: string, password: string) {
-  const data = await request<{ token: string; username: string; role: string; must_change_credentials: boolean }>(
-    "/api/login",
-    { method: "POST", body: JSON.stringify({ username, password }) }
-  );
+  const data = await api.login(username, password);
   if (data?.token) await setToken(data.token);
   return data;
 }
 
 export async function logout() {
-  try {
-    await request("/api/logout", { method: "POST" });
-  } catch {
-    // сервер мог уже погасить сессию — всё равно чистим токен локально
-  }
+  try { await api.logout(); } catch { /* сервер мог уже погасить сессию */ }
   await clearToken();
 }
 
-export const me = () => request("/api/me");
-export const mySchedule = () => request("/api/my/schedule");
-export const myMessages = () => request<{ messages: any[]; unread: number }>("/api/my/messages");
-export const myQuestions = () => request<{ questions: any[] }>("/api/my/questions");
-export const markRead = (id: string) =>
-  request(`/api/my/messages/${encodeURIComponent(id)}/read`, { method: "POST" });
-// Ответы на чек-лист/опрос/тест — хранятся на сервере (видны и в кабинете на сайте).
-export const answer = (id: string, answers: Record<string, any>) =>
-  request(`/api/my/messages/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify({ answers }) });
-export const ask = (question: string, session_id?: string | null) =>
-  request("/ask", { method: "POST", body: JSON.stringify({ question, session_id }) });
-// Больничный: пауза приостанавливает доставку сообщений плана на сервере.
-export const setSick = (sick: boolean) =>
-  request<{ status: string; sick: boolean }>("/api/my/status", {
-    method: "POST", body: JSON.stringify({ sick }),
-  });
+/** Первый вход: заменить временный пароль своим. Сессии сбрасываются — после этого
+ *  входим заново уже с новым паролем. */
+export async function setupPassword(username: string, password: string) {
+  await api.post("/api/setup-credentials", { password });
+  await clearToken();
+  return login(username, password);
+}
 
-// Push: регистрация/отвязка токена устройства (Expo). Требуют авторизации (Bearer),
-// поэтому removePushToken вызывается ДО logout, пока токен сессии ещё жив.
-export const registerPushToken = (token: string, platform: string) =>
-  request("/api/my/push-token", { method: "POST", body: JSON.stringify({ token, platform }) });
-export const removePushToken = (token: string) =>
-  request("/api/my/push-token", { method: "DELETE", body: JSON.stringify({ token }) });
-
-export { getToken };
+export { ApiError, answerText, SUGGESTIONS, getToken };

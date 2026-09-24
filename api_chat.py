@@ -42,6 +42,7 @@ class QuestionResponse(BaseModel):
     top_fragments: list
     answer: str | None = None
     escalated: bool = False                 # вопрос без ответа передан администратору
+    sources: list[str] = []                 # названия документов, по которым дан ответ
     elapsed_time: float
     error: str | None = None
 
@@ -171,6 +172,15 @@ def _route_to_human(result: dict, user: dict) -> dict:
     return result
 
 
+def _source_names(sources) -> list:
+    names = []
+    for s in sources or []:
+        name = s.get("source") if isinstance(s, dict) else s
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    return names[:3]
+
+
 # Синхронный def (не async): handle_question ходит в DeepSeek синхронными
 # requests на секунды-минуты. В async-обработчике это заблокировало бы весь event loop
 # uvicorn-воркера — «зависли» бы все параллельные запросы. Обычный def FastAPI выполняет
@@ -199,6 +209,9 @@ def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_set
         result["elapsed_time"] = time.time() - start
         result["session_id"] = session_id
         append_history(session_id, question, result.get("answer"), owner_id=user["id"])
+        # Под ответом — названия документов-источников (без содержимого); у передачи
+        # специалисту источников нет.
+        result["sources"] = [] if result.get("escalated") else _source_names(result.get("sources"))
         if not users.is_admin(user):
             # Сырые фрагменты регламентов сотруднику не нужны (он видит ответ): не раздаём
             # документы целиком через API. Администратору — для отладки ответа.

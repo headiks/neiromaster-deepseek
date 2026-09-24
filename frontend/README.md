@@ -1,54 +1,42 @@
-# НейроМастер — фронтенд (React + Vite + TypeScript)
+# НейроМастер — сайт (React + Vite + TypeScript, дизайн Glass)
 
-Полный перепис прежнего `static/*.html` (vanilla JS) на React. Поведение и все
-API-вызовы сохранены 1:1; авторизация прежняя — session-cookie (на 401 — переброс на `/login`).
+Весь веб-интерфейс: вход, кабинет сотрудника, админка и служебные страницы. Одностраничное
+приложение; сборка лежит в `static/app/` и коммитится — на сервере нужен только `git pull`
+и перезапуск, Node.js там не нужен.
 
 ## Запуск (разработка)
 
 ```bash
 cd frontend
-npm install
-npm run dev        # http://localhost:3000
+npm ci
+npm run dev        # http://localhost:3000, API проксируется на FastAPI (:8000)
 ```
 
-Dev-сервер проксирует API-пути (`/api`, `/ask`, `/documents`, `/folders`, `/plans`,
-`/catalog`, `/jobs`, `/chunks`, `/users`, `/questions`, `/staffing`, `/session`, `/sse`)
-на FastAPI. Цель по умолчанию `http://localhost:8000`, меняется переменной `NM_API_TARGET`.
+Цель прокси — `NM_API_TARGET` (по умолчанию `http://localhost:8000`).
 
 ## Сборка
 
 ```bash
-npm run build      # tsc (typecheck) + vite build → dist/
+npm run build      # проверка типов + сборка в ../static/app
 ```
 
-## Прод-раздача
+После правок интерфейса пересоберите и закоммитьте `static/app/` вместе с исходниками.
 
-Это SPA. Бэкенд/nginx должны:
-1. отдавать `index.html` для клиентских маршрутов (`/`, `/admin`, `/login`, `/register`,
-   `/setup`, `/logs`, `/plans-db`, `/queue-test`, `/s3`, `/documents-table`,
-   `/documents-board`, `/doc-breakdown`, `/notify-test`) — SPA-fallback;
-2. проксировать API-пути (см. выше) на приложение.
+## Как устроено
 
-## Структура
+| Папка | Что внутри |
+|---|---|
+| `src/styles/glass.css` | Токены и базовые классы Glass (`.nm-*`), светлая и тёмная темы |
+| `src/styles/app.css` | Раскладки экранов, диалоги, уведомления, таб-бар |
+| `src/ui/` | Примитивы: кнопка, бейдж, карточка, поля, сегмент, чип, прогресс, переключатель, диалог, меню, комбобокс, таблица |
+| `src/blocks/` | Блоки: оболочка с сайдбаром, карточка сообщения, прогресс адаптации, ассистент, вопросы, подсказка «что дальше» |
+| `src/pages/` | Экраны: `auth/` (вход, регистрация, первый вход), `cabinet/`, `admin/` (пользователи, планы, документы, сообщения, вопросы), `service/` |
+| `src/tour/` | Тур «Как пользоваться»: движок и сценарии (элементы ищутся по `data-tour`) |
+| `../shared/` | Общий с приложением код: типы, API сотрудника, даты, прогресс, статусы, токены |
 
-```
-src/
-  main.tsx, App.tsx            точка входа + роутинг
-  styles/                      app.css + admin.css (перенесены как есть) + pages.css
-  lib/       api, useMe, jobs (поллинг), notify, activity, types
-  components/ Header, PasswordDialog, Logo, Combobox, Dropzone
-  pages/     Login, Register, Setup, Employee, Admin, Logs, PlansDb,
-             QueueTest, S3Browser, DocumentsTable, DocumentsBoard, DocBreakdown, NotifyTest
-  pages/admin/ Staffing, PlanBuilder, PlanTexts, Knowledge, Questions, Accounts
-```
+Кабинет сотрудника на узком экране (≤ 760 px) выглядит как мобильное приложение: крупный
+заголовок и плавающий таб-бар «Чат / История / Вопрос / Настройки».
 
-## Заметки по дизайну
-
-- Основные экраны (вход, кабинет, админка) сохраняют дизайн-систему Industry —
-  `app.css`/`admin.css` перенесены дословно, стили не переписаны.
-- Иконки — `lucide-react` вместо UMD-скрипта Lucide + MutationObserver.
-- Вспомогательные страницы (журнал, база планов, реестр/доска документов, разбор,
-  S3, очереди, тест уведомлений) в оригинале имели ОТДЕЛЬНУЮ тёмную тему (Manrope).
-  Здесь они унифицированы под дизайн-систему проекта (app.css) — так консистентнее и
-  без конфликтов глобальных стилей; вся логика и API сохранены.
-```
+Правила: цвета — только из переменных `--nm-*`; никаких inline-скриптов и
+`dangerouslySetInnerHTML` (CSP сайта: `script-src 'self'`); шрифт Manrope — локально
+(`@fontsource-variable/manrope`).

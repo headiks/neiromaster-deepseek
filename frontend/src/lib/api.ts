@@ -1,48 +1,43 @@
-// Тонкая обёртка над fetch. Session-cookie авторизация (как в исходном фронте):
-// на 401 — единая переброска на форму входа. Прокси Vite/nginx отдаёт эти пути
-// на FastAPI с того же origin, поэтому cookie ходит сама.
+// Клиент API сайта: общий клиент (shared/api.ts) поверх сессионной куки.
+// 401 на любой странице, кроме входа, — сессия истекла: на форму входа.
+import { ApiError, createClient, errorText } from '@shared/api';
 
-export async function api(url: string, options?: RequestInit): Promise<Response> {
-  const res = await fetch(url, options);
-  if (res.status === 401) {
-    if (window.location.pathname !== '/login') window.location.href = '/login';
-    throw new Error('Сессия истекла');
-  }
-  return res;
+const PUBLIC = ['/login', '/register'];
+
+export const api = createClient({
+  base: '',
+  credentials: 'same-origin',
+  onUnauthorized: () => {
+    if (!PUBLIC.includes(location.pathname)) location.assign('/login');
+  },
+});
+
+export { ApiError };
+
+/** Загрузка файла (multipart). Возвращает данные ответа; ошибка — ApiError со status и data. */
+export async function upload<T = any>(path: string, file: File, query: Record<string, string | boolean | undefined> = {}): Promise<T> {
+  const params = new URLSearchParams();
+  Object.entries(query).forEach(([k, v]) => { if (v !== undefined && v !== false && v !== '') params.set(k, String(v)); });
+  const body = new FormData();
+  body.append('file', file);
+  return api.request<T>(path + (params.toString() ? `?${params}` : ''), { method: 'POST', body });
 }
 
-export interface JsonResult<T = any> {
-  ok: boolean;
-  data: T;
+/** Скачивание файла по ссылке (Excel с паролями, выгрузки) — браузер сам сохранит. */
+export function download(href: string, name?: string) {
+  const a = document.createElement('a');
+  a.href = href;
+  if (name) a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
-export async function apiJson<T = any>(url: string, options?: RequestInit): Promise<JsonResult<T>> {
-  const res = await api(url, options);
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, data };
+/** Текст ошибки для показа человеку. */
+export function messageOf(e: unknown): string {
+  if (e instanceof ApiError) return e.message;
+  if (e instanceof Error) return e.message;
+  return errorText(null, 0);
 }
 
-/** GET → распарсенный JSON (или бросает на !ok). */
-export async function getJson<T = any>(url: string): Promise<T> {
-  const res = await api(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-const jsonHeaders = { 'Content-Type': 'application/json' };
-
-export function postJson<T = any>(url: string, body?: unknown): Promise<JsonResult<T>> {
-  return apiJson<T>(url, {
-    method: 'POST',
-    headers: body === undefined ? undefined : jsonHeaders,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
-
-export function putJson<T = any>(url: string, body: unknown): Promise<JsonResult<T>> {
-  return apiJson<T>(url, { method: 'PUT', headers: jsonHeaders, body: JSON.stringify(body) });
-}
-
-export function del<T = any>(url: string): Promise<JsonResult<T>> {
-  return apiJson<T>(url, { method: 'DELETE' });
-}
+export const enc = encodeURIComponent;

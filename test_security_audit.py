@@ -117,15 +117,18 @@ def test_lockout_not_bypassable_per_ip():
 
 
 # ==========================================================================
-# 4. СРЕДНЕ (XSS): в личном кабинете поле data.error подставляется в innerHTML
-#    без экранирования. Сервер кладёт в error строку исключения (str(e)),
-#    куда может попасть пользовательский ввод -> reflected/self-XSS.
+# 4. СРЕДНЕ (XSS): интерфейс не должен вставлять данные сервера как HTML. React экранирует
+#    текст сам; опасны только dangerouslySetInnerHTML и inline-скрипты (их запрещает CSP).
 # ==========================================================================
 def test_index_html_escapes_error_field():
-    html = (BASE / "static" / "index.html").read_text(encoding="utf-8")
-    assert "${data.error}" not in html, (
-        "static/index.html подставляет data.error в innerHTML без escapeHtml() — XSS"
-    )
+    src = BASE / "frontend" / "src"
+    offenders = [str(p.relative_to(BASE)) for p in src.rglob("*.tsx")
+                 if "dangerouslySetInnerHTML" in p.read_text(encoding="utf-8")]
+    assert not offenders, f"dangerouslySetInnerHTML в интерфейсе — риск XSS: {offenders}"
+    index = BASE / "frontend" / "index.html"
+    import re
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", index.read_text(encoding="utf-8")), \
+        "inline-скрипт в frontend/index.html нарушит CSP (script-src 'self')"
 
 
 # ==========================================================================
@@ -155,7 +158,7 @@ TESTS = [
     ("plan_id -> корень каталога планов (снос всех планов)", test_plan_id_traversal_to_root),
     ("префильтр приветствий глотает реальные/тревожные сообщения", test_greeting_prefilter_does_not_swallow_real_messages),
     ("лок-аут обходится сменой IP (распределённый перебор)", test_lockout_not_bypassable_per_ip),
-    ("XSS через data.error в static/index.html", test_index_html_escapes_error_field),
+    ("интерфейс без HTML-вставок и inline-скриптов (XSS)", test_index_html_escapes_error_field),
     ("cookie сессии без Secure", test_session_cookie_is_secure),
 ]
 

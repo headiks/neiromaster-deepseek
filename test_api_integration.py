@@ -30,7 +30,9 @@ os.environ.update({
     "REDIS_URL": "",                          # всё в памяти процесса — тест самодостаточен
     "DEEPSEEK_API_KEY": "",
     "NEIROMASTER_ADMIN_PASSWORD": "owner-initial-pass",
+    # Ключа нет — приложение создаёт его само (как на свежем сервере), во временной папке.
     "NEIROMASTER_PII_KEY": "",
+    "NEIROMASTER_PII_KEY_FILE": os.path.join(tempfile.mkdtemp(), "secrets", "pii.key"),
 })
 
 try:
@@ -112,10 +114,34 @@ def test_security_headers_and_healthz(env):
     assert "unpkg" not in h["content-security-policy"]
 
 
-def test_static_pages_have_no_external_scripts(env):
-    for name in ("admin.html", "index.html", "login.html", "setup.html", "register.html"):
-        text = (BASE / "static" / name).read_text(encoding="utf-8")
-        assert "unpkg.com" not in text and "googleapis" not in text, name
+def test_spa_pages_and_access(env):
+    """Все страницы — одно SPA (static/app) без внешних и inline-скриптов; доступ проверяет сервер."""
+    import re
+    c = env["client"]
+    c.cookies.clear()
+    r = c.get("/login")
+    assert r.status_code == 200 and '<div id="root">' in r.text
+    assert "unpkg.com" not in r.text and "googleapis" not in r.text
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", r.text), "inline-скрипт в SPA нарушит CSP"
+    assert "script-src 'self';" in r.headers["content-security-policy"]
+    for path in ("/", "/admin", "/admin/users", "/logs", "/queue-test"):
+        r = c.get(path, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login", path
+    asset = re.search(r'src="(/static/app/assets/[^"]+\.js)"', c.get("/login").text).group(1)
+    assert c.get(asset).status_code == 200
+
+
+def test_spa_admin_pages_for_admin_only(env, owner):
+    import users
+    c = _as_owner(env, owner)
+    assert c.get("/admin/plans").status_code == 200
+    assert c.get("/admin/nope", follow_redirects=False).headers["location"] == "/admin"
+    emp = c.post("/users", headers=ORIGIN, json={"full_name": "Страницын Пётр Петрович"}).json()
+    users.set_credentials(emp["id"], None, "employee-pass-1")
+    _login(c, emp["username"], "employee-pass-1")
+    r = c.get("/admin/users", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert c.get("/").status_code == 200
 
 
 def test_cross_site_post_with_cookie_rejected(env, owner):
@@ -353,6 +379,47 @@ def test_answers_size_limit(env, owner):
     c = _as_owner(env, owner)
     r = c.post("/api/my/messages/x/answer", json={"answers": {"a": "x" * 40000}}, headers=ORIGIN)
     assert r.status_code == 413
+
+
+def test_pii_key_generated_and_data_encrypted(env, owner):
+    """Ключ ПДн создан на старте, в БД — шифртекст и отпечаток ключа; открытые строки,
+    записанные до появления ключа, шифруются на старте; чужой ключ не принимается."""
+    import db
+    import users
+    import questions
+    import pii_key
+    key_file = Path(os.environ["NEIROMASTER_PII_KEY_FILE"])
+    assert key_file.exists() and os.environ["NEIROMASTER_PII_KEY"] == key_file.read_text().strip()
+    fp = db.query("SELECT value FROM app_settings WHERE key = 'pii_key_fingerprint'", (), "one")["value"]
+    assert fp == pii_key.fingerprint(os.environ["NEIROMASTER_PII_KEY"])
+
+    c = _as_owner(env, owner)
+    emp = c.post("/users", headers=ORIGIN, json={"full_name": "Шифров Семён Петрович",
+                                                 "phone": "+7 900 111-22-33"}).json()
+    raw = db.query("SELECT full_name, phone FROM users WHERE id = %s", (emp["id"],), "one")
+    assert raw["full_name"].startswith("enc:") and "Шифров" not in raw["full_name"]
+    assert c.get("/users").json()  # список расшифровывается
+    assert users.get_user(emp["id"])["full_name"] == "Шифров Семён Петрович"
+
+    # Строки открытым текстом (данные до появления ключа) -> шифруются миграцией.
+    db.execute("UPDATE users SET notes = %s WHERE id = %s", ("открытая заметка 50%", emp["id"]))
+    q = questions.record(users.get_user(emp["id"]), "Где столовая?", None, "no_answer")
+    db.execute("UPDATE questions SET question = %s WHERE id = %s", ("Где столовая?", q["id"]))
+    assert users.encrypt_plaintext() >= 1 and questions.encrypt_plaintext() == 1
+    assert users.encrypt_plaintext() == 0 and questions.encrypt_plaintext() == 0   # идемпотентно
+    raw = db.query("SELECT notes FROM users WHERE id = %s", (emp["id"],), "one")
+    assert raw["notes"].startswith("enc:")
+    assert users.get_user(emp["id"])["notes"] == "открытая заметка 50%"
+    assert questions.get(q["id"])["question"] == "Где столовая?"
+
+    from cryptography.fernet import Fernet
+    good = os.environ["NEIROMASTER_PII_KEY"]
+    os.environ["NEIROMASTER_PII_KEY"] = Fernet.generate_key().decode()
+    try:
+        with pytest.raises(pii_key.KeyMismatch):
+            pii_key.ensure()
+    finally:
+        os.environ["NEIROMASTER_PII_KEY"] = good
 
 
 if __name__ == "__main__":
