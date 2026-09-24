@@ -136,17 +136,18 @@ def _autoassign_plan():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.init_schema()                         # до первого обращения к аккаунтам
-    docregistry.init()
-    questions.init()
-    _step("реестр документов", documents.init)
-    _step("посев структуры знаний", _seed_knowledge)
-    _step("пайплайн разметки docpipe", _init_docpipe)
-    _step("миграция старых данных", _migrate_legacy)
-    _announce_owner()
-    _step("очистка осиротевших меток docpipe", _prune_orphans)
-    _requeue_without_redis()
-    _step("автоназначение плана", _autoassign_plan)
+    with db.startup_lock():                  # схема и миграции — по одному воркеру за раз
+        db.init_schema()                     # до первого обращения к аккаунтам
+        docregistry.init()
+        questions.init()
+        _step("реестр документов", documents.init)
+        _step("посев структуры знаний", _seed_knowledge)
+        _step("пайплайн разметки docpipe", _init_docpipe)
+        _step("миграция старых данных", _migrate_legacy)
+        _announce_owner()
+        _step("очистка осиротевших меток docpipe", _prune_orphans)
+        _requeue_without_redis()
+        _step("автоназначение плана", _autoassign_plan)
     # Фоновый планировщик доставки сообщений плана. NEIROMASTER_SCHEDULER=0 — выключить
     # (когда доставку гоняют внешним cron: python dispatch_messages.py).
     messaging.start_scheduler()

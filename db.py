@@ -284,6 +284,17 @@ def configure(dsn: str):
         DSN = dsn
 
 
+@contextlib.contextmanager
+def startup_lock():
+    """Старт приложения по одному процессу: воркеры gunicorn поднимаются одновременно, и
+    параллельные CREATE TABLE/INDEX IF NOT EXISTS падают на pg_class (UniqueViolation) —
+    воркер не загружается. Блокировка сессионная, снимается и при обрыве соединения."""
+    import psycopg
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        conn.execute("SELECT pg_advisory_lock(hashtext('neiromaster.startup'))")
+        yield
+
+
 def init_schema():
     """Создаёт таблицы и индексы, если их ещё нет (в текущей схеме, см. use_schema)."""
     with _get_pool().connection() as conn:
