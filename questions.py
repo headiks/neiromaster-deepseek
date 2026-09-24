@@ -12,7 +12,7 @@
 
 Хранилище — таблица questions в PostgreSQL (индексы под очередь и «мои вопросы»).
 Текст вопроса, ответ и контакты сотрудника шифруются так же, как ПДн пользователей
-(users._encrypt_field, при заданном NEIROMASTER_PII_KEY). Прежний
+(users._encrypt_field, ключ — pii_key.py). Прежний
 data/pending_questions.json переносится в БД один раз при старте (migrate_from_file).
 """
 
@@ -153,6 +153,11 @@ def init():
     db.execute(CREATE_TABLE)
     for stmt in CREATE_INDEXES:
         db.execute(stmt)
+
+
+def encrypt_plaintext() -> int:
+    """Открытые ПДн в вопросах -> зашифрованные (разово после появления ключа)."""
+    return users.encrypt_plaintext_rows("questions", _ENCRYPTED)
 
 
 def migrate_from_file(path: Optional[Path] = None) -> int:
