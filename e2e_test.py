@@ -157,8 +157,12 @@ def main():
         for nav, heading in (("nav-users", "Пользователи"), ("nav-plans", "Планы адаптации"), ("nav-documents", "Документы"),
                              ("nav-messages", "Сообщения сотрудникам"), ("nav-questions", "Вопросы сотрудников")):
             page.click(f"[data-tour={nav}]")
-            page.wait_for_timeout(900)
-            check(page.get_by_role("heading", name=heading).count() >= 1, f"раздел «{heading}» открывается")
+            try:        # переход по меню — без перезагрузки вкладки, страница появляется сама
+                page.get_by_role("heading", name=heading).first.wait_for(timeout=8000)
+            except Exception:
+                pass
+            page.wait_for_timeout(500)
+            check(page.get_by_role("heading", name=heading).count() >= 1, f"раздел «{heading}» открывается по клику в меню")
             shot(page, f"admin-{nav}")
         worst = max(requests.values()) if requests else 0
         check(worst < 15, f"нет циклов запросов (максимум {worst} одинаковых запросов за обход разделов)")
@@ -213,6 +217,21 @@ def main():
         page.keyboard.press("Escape")
         page.wait_for_function("() => document.querySelector('.nmt-root').hidden", timeout=5000)
         check(True, "Esc закрывает тур")
+
+        print("Меню настроек")
+        gear = page.locator("[data-tour=profile-menu]")
+        check(gear.get_attribute("aria-label") == "Настройки", "у профиля — кнопка «Настройки» (шестерёнка)")
+        gear.click()
+        page.wait_for_selector(".nm-menu")
+        mb = page.locator(".nm-menu").bounding_box()
+        pb = page.locator(".nm-profile").bounding_box()
+        check(mb["x"] >= 0 and mb["y"] >= 0 and mb["x"] + mb["width"] <= 1366 and mb["y"] + mb["height"] <= 860,
+              "меню настроек целиком в окне")
+        check(mb["y"] + mb["height"] <= pb["y"] + 1, "меню открывается над карточкой профиля, не перекрывая её")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        check(page.locator(".nm-menu").count() == 0 and page.evaluate("document.activeElement.dataset.tour") == "profile-menu",
+              "Esc закрывает меню, фокус — на кнопке")
 
         print("Тема")
         page.click("[data-tour=profile-menu]")
@@ -277,9 +296,11 @@ def main():
         mp.click("[data-tour=tab-chat]")
         mp.wait_for_timeout(500)
         check(mp.locator(".nm-banner").count() == 1, "на «Чате» — баннер больничного")
+        check("Пауза" in mp.inner_text("[data-tour=progress]"), "на больничном прогресс показывает паузу плана")
         mp.get_by_role("button", name="Снять больничный").click()
         mp.wait_for_timeout(900)
         check(mp.locator(".nm-banner").count() == 0, "больничный снят")
+        check("Пауза" not in mp.inner_text("[data-tour=progress]"), "после выхода план снова идёт")
 
         print("Тур по кабинету (телефон)")
         mp.click("[data-tour=tab-settings]")
@@ -309,6 +330,22 @@ def main():
         check(dp.locator("[data-tour=progress]").is_visible(), "карточка прогресса адаптации")
         check("День 1 из" in dp.inner_text("[data-tour=progress]"), "прогресс: «День 1 из N» в день выхода")
         check(dp.locator("[data-tour=assistant] #nm-question").is_visible(), "ассистент со строкой вопроса")
+        pending = []
+        dp.route("**/ask", lambda route: pending.append(route))      # ответ «думает», пока не отпустим
+        dp.fill("#nm-question", "Что положено из спецодежды?")
+        dp.keyboard.press("Enter")
+        dp.wait_for_selector(".nm-typing")
+        jumps = 0
+        for _ in range(20):
+            jumps += dp.evaluate("(() => { const l = document.querySelector('.nm-chat-log');"
+                                 " return l.scrollHeight > l.clientHeight || l.scrollWidth > l.clientWidth ? 1 : 0; })()")
+            dp.wait_for_timeout(50)
+        check(jumps == 0, "пока ассистент ищет ответ, полоса прокрутки не мигает")
+        for route in pending:
+            route.fulfill(status=200, json={"question": "Что положено из спецодежды?", "session_id": "e2e", "route": "rag",
+                                            "answer": "Спецодежду выдают в первый день.", "sources": []})
+        dp.wait_for_selector("text=Спецодежду выдают в первый день.")
+        dp.unroute("**/ask")
         check(dp.locator("[data-tour=admin-nav]").count() == 0, "сотруднику не видны разделы администратора")
         r = dp.goto(BASE + "/admin/users")
         dp.wait_for_timeout(500)

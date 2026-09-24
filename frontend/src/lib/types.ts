@@ -123,7 +123,7 @@ export type ScheduleMessage = {
   message_id: string;
   stage: { id: string; title: string; order: number };
   substage: { id: string; title: string; order: number; kind?: string; brief?: string };
-  schedule: { anchor?: string; offset_days: number; time: string; send_at: string | null };
+  schedule: { anchor?: string; offset_days: number; time: string; send_at: string | null; planned_at?: string };
   content: { text?: string };
   status?: string;
   error?: string | null;

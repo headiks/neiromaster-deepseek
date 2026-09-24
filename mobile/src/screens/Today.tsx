@@ -2,7 +2,8 @@
 // (/api/my/schedule), баннер больничного и сообщения за сегодня (старые сверху).
 import React, { useEffect, useMemo, useState } from "react";
 import { View } from "react-native";
-import { firstName, fromYmd, greeting, longDate, msgDay, plural, ruDate, shortWhen, ymd } from "../../../shared/format";
+import { firstName, greeting, longDate, msgDay, ruDate, ymd } from "../../../shared/format";
+import { nextLine, progressTitle } from "../../../shared/progress";
 import { useData } from "../data";
 import { S, useTheme } from "../theme";
 import { Button, Glass, GlassCard, Progress, ScreenTitle, Txt } from "../ui";
@@ -28,12 +29,8 @@ export function ProgressCard() {
     );
   }
   if (!progress || !schedule) return null;
-  const start = fromYmd(schedule.start_date);
-  const daysLeft = start ? Math.ceil((start.getTime() - Date.now()) / 86400000) : 0;
-  const title = !progress.started ? (daysLeft > 0 ? `До выхода ${daysLeft} ${plural(daysLeft, "день", "дня", "дней")}` : "Скоро старт")
-    : progress.finished ? "План пройден" : `День ${progress.day} из ${progress.total}`;
-  const next = progress.next ? `Дальше: ${progress.next.substage || progress.next.title} — ${shortWhen(progress.next.at)}`
-    : `План «${schedule.plan_title || "адаптации"}» · выход ${ruDate(schedule.start_date)}`;
+  const title = progressTitle(progress, schedule);
+  const next = nextLine(progress) || `План «${schedule.plan_title || "адаптации"}» · выход ${ruDate(schedule.start_date)}`;
   return (
     <GlassCard>
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", gap: S.md }}>
@@ -55,7 +52,7 @@ export function SickBanner() {
     <Glass fill={c.warnSoft} radius={S.rSm}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: S.md, padding: S.md }}>
         <ThermometerIcon color={c.warn} />
-        <Txt v="small" style={{ flex: 1 }}>Вы на больничном — сообщения плана на паузе.</Txt>
+        <Txt v="small" style={{ flex: 1 }}>Вы на больничном — план на паузе. После выхода он продолжится с того же места.</Txt>
         <Button title="Снять" variant="secondary" loading={busy}
                 onPress={async () => { setBusy(true); try { const r = await api.setSick(false); setMe({ ...me, status: r.status }); } finally { setBusy(false); } }} />
       </View>

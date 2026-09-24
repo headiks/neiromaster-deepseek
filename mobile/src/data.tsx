@@ -63,13 +63,20 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     api.me().then(setMe).catch(() => {});
-    api.mySchedule().then(setSchedule).catch((e) => setMissing(e instanceof ApiError && e.status === 404 ? e.message : "Не удалось загрузить план."));
     reload();
     reloadQuestions();
     const id = setInterval(() => { if (AppState.currentState === "active") reload(); }, 30000);
     const sub = AppState.addEventListener("change", (s) => { if (s === "active") { reload(); reloadQuestions(); } });
     return () => { clearInterval(id); sub.remove(); };
   }, [reload, reloadQuestions]);
+
+  // Больничный поставили или сняли — даты плана сдвигаются, расписание берём заново.
+  const status = me?.status;
+  useEffect(() => {
+    if (status === undefined) return;
+    api.mySchedule().then((s) => { setSchedule(s); setMissing(null); })
+      .catch((e) => setMissing(e instanceof ApiError && e.status === 404 ? e.message : "Не удалось загрузить план."));
+  }, [status]);
 
   const answer = useCallback((m: Msg, key: string, value: string | null) => {
     const next = applyAnswer(m, key, value);

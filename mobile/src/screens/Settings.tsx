@@ -74,7 +74,7 @@ export default function Settings({ onLoggedOut, onHelp }: { onLoggedOut: () => v
       <GlassCard>
         <Row title="Тёмная тема" sub="Светлое или тёмное оформление" value={dark} onChange={toggle} />
         {Platform.OS !== "web" ? <Row title="Уведомления" sub="Сообщать о новых сообщениях плана" value={push} onChange={setPushOn} /> : null}
-        <Row title="Я на больничном" sub="Сообщения плана не приходят, наставник получит уведомление. Выключите после выхода — накопившееся придёт."
+        <Row title="Я на больничном" sub="План на паузе, наставник получит уведомление. После выхода план продолжится с того места, где вы остановились."
              value={sick} onChange={setSick} disabled={sickBusy} />
       </GlassCard>
       <Button title="Как пользоваться" variant="secondary" icon={<HelpIcon color={c.text} size={19} />} onPress={onHelp} />

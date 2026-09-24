@@ -67,7 +67,8 @@ export type ScheduleItem = {
   message_id: string;
   stage: { id: string; title: string; order: number };
   substage: { id: string; title: string; order: number; kind?: string; brief?: string };
-  schedule: { stage_day?: number; time?: string; offset_days: number; send_at: string | null };
+  // send_at — с учётом больничных; planned_at — исходное время по плану (если сдвинуто).
+  schedule: { stage_day?: number; time?: string; offset_days: number; send_at: string | null; planned_at?: string };
   content?: { text?: string };
   status?: string;
 };
@@ -78,6 +79,8 @@ export type MySchedule = {
   start_date: string;
   timezone?: string;
   plan_generated?: boolean;
+  paused?: boolean;                               // сейчас на больничном: план стоит
+  pauses?: { start: string; end: string | null }[]; // больничные (UTC), у идущего end = null
   employee?: { status?: string; mentor?: string; manager?: string };
   messages: ScheduleItem[];
 };
