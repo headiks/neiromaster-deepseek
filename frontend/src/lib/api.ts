@@ -2,7 +2,7 @@
 // 401 на любой странице, кроме входа, — сессия истекла: на форму входа.
 import { ApiError, createClient, errorText } from '@shared/api';
 
-const PUBLIC = ['/login', '/register'];
+const PUBLIC = ['/login', '/register', '/app'];
 
 export const api = createClient({
   base: '',

@@ -4,7 +4,7 @@ import { useCallback, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   Activity, CalendarRange, ClipboardList, Database, FileText, FlaskConical, GraduationCap, House, KeyRound, LogOut,
-  MessageCircleQuestion, MessagesSquare, Moon, Send, Settings, Sun, Users,
+  MessageCircleQuestion, MessagesSquare, Moon, Send, Settings, Smartphone, Sun, Users,
 } from 'lucide-react';
 import { initials } from '@shared/format';
 import { ROLE } from '@shared/status';
@@ -57,6 +57,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="nm-nav-label">Сотрудник</div>
             <NavLink to="/" end className="nm-nav-item" data-tour="nav-cabinet">
               <span><House aria-hidden />Мой кабинет</span><Count n={unread} />
+            </NavLink>
+            <NavLink to="/app" className="nm-nav-item" data-tour="nav-app">
+              <span><Smartphone aria-hidden />Приложение</span>
             </NavLink>
           </div>
           {isAdmin && (

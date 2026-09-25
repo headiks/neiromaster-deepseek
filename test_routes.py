@@ -17,7 +17,8 @@ import sys
 
 # Публичные маршруты: вход, регистрация и статика — им проверка доступа не нужна.
 PUBLIC = {"/login", "/register", "/api/login", "/api/register", "/api/logout", "/api/config",
-          "/healthz", "/favicon.ico", "/static"}
+          "/healthz", "/favicon.ico", "/static",
+          "/app", "/api/app/android", "/app/android.apk"}      # скачать приложение можно до входа
 # Служебные маршруты самого FastAPI (схема и Swagger). ВНИМАНИЕ: они открыты
 # анонимам и показывают полный список ручек; чтобы закрыть — FastAPI(docs_url=None,
 # redoc_url=None, openapi_url=None) в app.py.

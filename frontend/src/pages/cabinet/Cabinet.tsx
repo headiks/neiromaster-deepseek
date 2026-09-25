@@ -3,7 +3,7 @@
 // крупный заголовок и плавающий таб-бар «Чат / История / Вопрос / Настройки».
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { CircleHelp, GraduationCap, History, LogOut, MessageCircle, Settings2, ShieldCheck, ThermometerSun } from 'lucide-react';
+import { CircleHelp, GraduationCap, History, LogOut, MessageCircle, Settings2, ShieldCheck, Smartphone, ThermometerSun } from 'lucide-react';
 import { firstName, greeting, initials, longDate, ruDate } from '@shared/format';
 import { useMe } from '../../lib/me';
 import { useInbox } from '../../lib/inbox';
@@ -168,6 +168,7 @@ function Mobile() {
         </Card>
         <Card style={{ paddingBlock: 6 }}><SettingsToggles withTheme={{ dark, toggle }} /></Card>
         <div className="nm-stack">
+          <Button icon={Smartphone} onClick={() => navigate('/app')}>Приложение для Android</Button>
           <Button icon={GraduationCap} onClick={() => startTour()}>Как пользоваться</Button>
           {isAdmin && <Button icon={ShieldCheck} onClick={() => navigate('/admin')}>Админка</Button>}
           <Button variant="danger" icon={LogOut} onClick={logout}>Выйти</Button>
