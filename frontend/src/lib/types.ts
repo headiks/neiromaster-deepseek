@@ -124,7 +124,7 @@ export type ScheduleMessage = {
   stage: { id: string; title: string; order: number };
   substage: { id: string; title: string; order: number; kind?: string; brief?: string };
   schedule: { anchor?: string; offset_days: number; time: string; send_at: string | null; planned_at?: string };
-  content: { text?: string };
+  content: { text?: string; hr_note?: string };
   status?: string;
   error?: string | null;
   sources?: ({ source?: string; filename?: string; title?: string } | string)[];
