@@ -30,7 +30,8 @@ export default function Login() {
   return (
     <AuthLayout title="НейроМастер" subtitle="Ассистент адаптации: план, сообщения и ответы на вопросы новичка"
                 onSubmit={submit}
-                footer={registration ? <Link to="/register">Нет учётной записи? Зарегистрироваться</Link> : null}>
+                footer={<>{registration && <Link to="/register">Нет учётной записи? Зарегистрироваться</Link>}
+                        <Link to="/app">Скачать приложение для Android</Link></>}>
       {error && <Callout tone="danger">{error}</Callout>}
       <Field label="Логин">
         <Input autoComplete="username" autoFocus value={username} onChange={(e) => setUsername(e.target.value)} placeholder="ivanov.i" />

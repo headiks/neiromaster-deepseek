@@ -17,6 +17,7 @@ import Login from './pages/auth/Login';
 import Register from './pages/auth/Register';
 import Setup from './pages/auth/Setup';
 import Cabinet from './pages/cabinet/Cabinet';
+import AndroidApp from './pages/cabinet/AndroidApp';
 // Все страницы — в основной сборке: переход между разделами ничего не догружает из сети,
 // поэтому не может сорваться из-за связи, выкатки новой версии или кэша по дороге.
 import Users from './pages/admin/Users';
@@ -86,6 +87,7 @@ export default function App() {
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
                 <Route path="/setup" element={<Setup />} />
+                <Route path="/app" element={<ErrorBoundary where="app-download"><AndroidApp /></ErrorBoundary>} />
                 <Route element={<Protected />}>
                   <Route path="/" element={<ErrorBoundary where="cabinet"><CabinetProvider><Cabinet /></CabinetProvider></ErrorBoundary>} />
                   <Route path="/admin" element={<Navigate to="/admin/users" replace />} />

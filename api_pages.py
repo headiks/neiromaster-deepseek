@@ -7,12 +7,16 @@ HTML-страницы приложения. Логики нет — только
 админские страницы — только администраторам (deps.page_for_admin).
 """
 
-from fastapi import APIRouter, Request
+import os
+import time
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 import auth
 import users
-from deps import STATIC_DIR, page_for_admin, spa_html
+from deps import BASE_DIR, STATIC_DIR, page_for_admin, spa_html
 
 router = APIRouter()
 
@@ -83,3 +87,34 @@ def favicon():
     """Браузеры просят /favicon.ico сами — отдаём логотип, а не 404 в консоли."""
     return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml",
                         headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------- Приложение для Android ----------
+# APK кладётся на сервер при выкатке (в git не хранится). Страница и файл открыты без входа:
+# сотрудник скачивает приложение прямо на телефон, а войти можно уже в самом приложении.
+def _apk_path() -> Path:
+    return Path(os.environ.get("NEIROMASTER_APK") or BASE_DIR / "data" / "app" / "NeiroMaster.apk")
+
+
+@router.get("/app", response_class=HTMLResponse)
+def app_page():
+    return spa_html()
+
+
+@router.get("/api/app/android")
+def android_app_info():
+    """Есть ли APK, размер и дата сборки — для страницы «Приложение»."""
+    try:
+        st = _apk_path().stat()
+    except FileNotFoundError:
+        return {"available": False}
+    return {"available": True, "url": "/app/android.apk", "size": st.st_size,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(st.st_mtime))}
+
+
+@router.get("/app/android.apk", include_in_schema=False)
+def android_apk():
+    path = _apk_path()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Приложение пока не загружено на сервер")
+    return FileResponse(path, media_type="application/vnd.android.package-archive", filename="NeiroMaster.apk")
