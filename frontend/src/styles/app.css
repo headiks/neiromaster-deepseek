@@ -433,3 +433,8 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 /* Меню действий в строке не должно обрезаться краем таблицы */
 .nm-table { overflow: visible; }
 .nm-table-body .nm-table-row:last-child { border-bottom-left-radius: var(--nm-r); border-bottom-right-radius: var(--nm-r); }
+
+/* QR на странице «Приложение»: сам код всегда чёрный на белом (см. Qr в AndroidApp.tsx). */
+.nm-qr-card { flex-direction: row; align-items: center; gap: 20px; flex-wrap: wrap; }
+.nm-qr { flex: none; border-radius: var(--nm-r-s); }
+.nm-qr-card > .nm-stack { flex: 1; min-width: 220px; }
