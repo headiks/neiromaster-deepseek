@@ -143,10 +143,9 @@ def _current_stage_ids(user: dict) -> list:
 
 
 # ---------- RAG-вопросы ----------
-ESCALATE_REPLY = ("⚠️ Вопрос требует внимания специалиста — передал его ответственному. "
-                  "Ответ придёт в личный кабинет.")
-NO_ANSWER_REPLY = ("В регламентах точного ответа не нашлось — передал вопрос ответственному. "
-                   "Ответ придёт в личный кабинет.")
+# Без подробностей устройства системы (кабинет, документы) — только что происходит дальше.
+ESCALATE_REPLY = "⚠️ Вопрос требует внимания специалиста — передал его ответственному, он скоро ответит."
+NO_ANSWER_REPLY = "Точного ответа у меня пока нет — передал вопрос специалисту, он скоро ответит."
 
 
 def _route_to_human(result: dict, user: dict) -> dict:
@@ -209,12 +208,11 @@ def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_set
         result["elapsed_time"] = time.time() - start
         result["session_id"] = session_id
         append_history(session_id, question, result.get("answer"), owner_id=user["id"])
-        # Под ответом — названия документов-источников (без содержимого); у передачи
-        # специалисту источников нет.
+        # Документы, по которым дан ответ, — только администратору (отладка). Сотруднику
+        # не показываем ни названий, ни фрагментов: ему нужен ответ, а не устройство базы.
         result["sources"] = [] if result.get("escalated") else _source_names(result.get("sources"))
         if not users.is_admin(user):
-            # Сырые фрагменты регламентов сотруднику не нужны (он видит ответ): не раздаём
-            # документы целиком через API. Администратору — для отладки ответа.
+            result["sources"] = []
             result["top_fragments"] = []
             result["candidates"] = []
         return QuestionResponse(**result)

@@ -1,8 +1,7 @@
 // Ассистент: диалог (AnswerTurn), подсказки-чипы, композер «пилюля» с круглой кнопкой.
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, FileText, RotateCcw, TriangleAlert, UserRound } from 'lucide-react';
+import { ArrowUp, RotateCcw, TriangleAlert, UserRound } from 'lucide-react';
 import { SUGGESTIONS } from '@shared/api';
-import { sourceLabel } from '@shared/format';
 import { useCabinet, type Turn } from '../lib/cabinet';
 import { Badge, Button, Chip } from '../ui';
 
@@ -11,7 +10,7 @@ function AnswerTurn({ t, onRetry }: { t: Turn; onRetry: () => void }) {
     <>
       <div className="nm-bubble-me">{t.q}</div>
       <div className="nm-answer" aria-live="polite">
-        {t.status === 'pending' && <span className="nm-typing"><span className="nm-spin" aria-hidden />Ищу ответ в регламентах…</span>}
+        {t.status === 'pending' && <span className="nm-typing"><span className="nm-spin" aria-hidden />Ищу ответ…</span>}
         {t.status === 'error' && (
           <>
             <Badge tone="danger" icon={TriangleAlert}>Ошибка</Badge>
@@ -22,9 +21,7 @@ function AnswerTurn({ t, onRetry }: { t: Turn; onRetry: () => void }) {
         {t.status === 'done' && (
           <>
             <div className="nm-pre">{t.a}</div>
-            {t.escalated
-              ? <Badge tone="warn" icon={UserRound}>Передано специалисту</Badge>
-              : (t.sources || []).map((s) => <span key={s} className="nm-source"><FileText aria-hidden style={{ width: 13, height: 13, verticalAlign: '-2px', marginRight: 4 }} />{sourceLabel(s)}</span>)}
+            {t.escalated && <Badge tone="warn" icon={UserRound}>Передано специалисту</Badge>}
           </>
         )}
       </div>
@@ -56,7 +53,7 @@ export function Assistant({ compact }: { compact?: boolean }) {
     <div className="nm-chat">
       <div className="nm-chat-log" ref={log} style={compact ? { maxHeight: 'none', overflow: 'visible' } : undefined}>
         {turns.length ? turns.map((t) => <AnswerTurn key={t.id} t={t} onRetry={() => retry(t)} />)
-          : <div className="nm-chat-hello">Спросите про адаптацию, регламенты или процессы компании. Если ответа нет в документах — вопрос уйдёт специалисту.</div>}
+          : <div className="nm-chat-hello">Спросите про работу, адаптацию или порядки в компании. Если я не знаю ответа — передам вопрос специалисту.</div>}
       </div>
       {!turns.length && (
         <div className="nm-chips" aria-label="Подсказки">

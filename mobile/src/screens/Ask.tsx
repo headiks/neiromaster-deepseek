@@ -1,16 +1,16 @@
 // «Вопрос»: сегмент «Диалог / Мои вопросы · N». Диалог — вопрос справа (акцентный пузырь),
-// ответ текстом с источником или бейджем «Передано специалисту», подсказки-чипы и
+// ответ текстом (без источников) или бейджем «Передано специалисту», подсказки-чипы и
 // композер-пилюля с круглой кнопкой ↑ над таб-баром.
 import React, { useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { QUESTION_STATUS } from "../../../shared/status";
-import { ago, sourceLabel } from "../../../shared/format";
+import { ago } from "../../../shared/format";
 import { SUGGESTIONS } from "../api";
 import { useData, type Turn } from "../data";
 import { font, S, useTheme } from "../theme";
 import { Badge, Button, Chip, Glass, GlassCard, ScreenTitle, Segmented, Txt } from "../ui";
-import { ArrowUpIcon, FileIcon, RetryIcon } from "../icons";
+import { ArrowUpIcon, RetryIcon } from "../icons";
 import { Screen, TABBAR_SPACE } from "./Screen";
 
 function AnswerTurn({ t, onRetry }: { t: Turn; onRetry: () => void }) {
@@ -24,7 +24,7 @@ function AnswerTurn({ t, onRetry }: { t: Turn; onRetry: () => void }) {
       <View style={{ alignSelf: "flex-start", maxWidth: "92%", gap: S.sm }}>
         {t.status === "pending" ? (
           <View style={{ flexDirection: "row", gap: S.sm, alignItems: "center" }}>
-            <ActivityIndicator color={c.primary} /><Txt v="small" color={c.muted}>Ищу ответ в регламентах…</Txt>
+            <ActivityIndicator color={c.primary} /><Txt v="small" color={c.muted}>Ищу ответ…</Txt>
           </View>
         ) : t.status === "error" ? (
           <>
@@ -35,12 +35,7 @@ function AnswerTurn({ t, onRetry }: { t: Turn; onRetry: () => void }) {
         ) : (
           <>
             <Txt>{t.a}</Txt>
-            {t.escalated ? <Badge tone="warn">Передано специалисту</Badge> : (t.sources || []).map((s) => (
-              <View key={s} style={{ flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", backgroundColor: c.fill,
-                                     borderRadius: S.pill, paddingHorizontal: 10, paddingVertical: 4 }}>
-                <FileIcon color={c.muted} size={13} /><Txt v="micro" color={c.muted}>{sourceLabel(s)}</Txt>
-              </View>
-            ))}
+            {t.escalated ? <Badge tone="warn">Передано специалисту</Badge> : null}
           </>
         )}
       </View>
@@ -106,7 +101,7 @@ export default function Ask() {
           <>
             {!turns.length ? (
               <>
-                <Txt v="small" color={c.muted}>Спросите про адаптацию, регламенты или процессы компании. Если ответа нет в документах — вопрос уйдёт специалисту.</Txt>
+                <Txt v="small" color={c.muted}>Спросите про работу, адаптацию или порядки в компании. Если я не знаю ответа — передам вопрос специалисту.</Txt>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: S.sm }}>
                   {SUGGESTIONS.map((s) => <Chip key={s} label={s} onPress={() => ask(s)} disabled={asking} />)}
                 </View>

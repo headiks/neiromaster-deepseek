@@ -22,6 +22,9 @@ from collections import OrderedDict
 from redis_conn import get_redis
 
 TTL = 7 * 24 * 3600
+# Версия формата ответа: меняли промпт ответа (rag.GENERATE_SYSTEM) — увеличьте, и старые
+# ответы из кэша больше не выдаются. 2 — без ссылок на документы и устройство системы.
+ANSWER_FORMAT = 2
 _MEM_MAX = 2000
 _mem: "OrderedDict[str, str]" = OrderedDict()
 _mem_ver = 0
@@ -64,7 +67,7 @@ def _key(question: str, position: str = "") -> str:
     if not norm:
         return ""
     h = hashlib.sha256(f"{norm}|{(position or '').strip().lower()}".encode("utf-8")).hexdigest()
-    return f"nm:qa:{_version()}:{h}"
+    return f"nm:qa:{ANSWER_FORMAT}.{_version()}:{h}"
 
 
 def get(question: str, position: str = ""):
