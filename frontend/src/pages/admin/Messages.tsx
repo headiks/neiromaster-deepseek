@@ -50,6 +50,7 @@ function MessageEditor({ m, kind, onSave, onRegen }: { m: ScheduleMessage; kind:
       ) : (
         <div className="nm-msg-admin-text">{cur || <span className="nm-muted">— текст пуст —</span>}</div>
       )}
+      {!editing && m.content?.hr_note && <div className="nm-small nm-warn-text" title="Служебная пометка — сотрудник её не видит">{m.content.hr_note}</div>}
       {(m.status === 'skipped' || m.status === 'error') && m.error && <div className="nm-small nm-warn-text">{m.error}</div>}
       {sources.length > 0 && <div className="nm-micro nm-muted">Источники: {sources.map(sourceLabel).join(', ')}</div>}
       {!editing && m.message_id && (

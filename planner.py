@@ -828,8 +828,10 @@ PICK_TOPICS_SYSTEM = """
 # Что дополнительно требуется в унифицированном сообщении под конкретный тип подэтапа.
 # Общий envelope один; здесь — акцент, какие интерактивные поля заполнять.
 KIND_GEN_HINT = {
-    "message": "Обычное сообщение. Заполни intro, body, key_points, outro. questions и checklist оставь пустыми.",
-    "reminder": "Короткое напоминание. Сделай body в 1–3 предложения, key_points минимально, без questions и checklist.",
+    "message": "Обычное сообщение. Заполни intro, body, outro. key_points — ТОЛЬКО факты, которых нет в body "
+               "(перечень, шаги, суммы); пересказывать body списком нельзя — тогда key_points пустой. "
+               "questions и checklist оставь пустыми.",
+    "reminder": "Короткое напоминание. Сделай body в 1–3 предложения, key_points пустой, без questions и checklist.",
     "checklist": "Чек-лист. Заполни checklist проверяемыми пунктами (действие в каждом). questions оставь пустым.",
     "survey": "Опрос. Заполни questions (2–5 вопросов, type single/multi/open, варианты БЕЗ поля correct — мнение, а не проверка).",
     "quiz": "Тест. Заполни questions (1–3 вопроса), к каждому 3 варианта, у верных options.correct=true, добавь explanation.",
@@ -846,7 +848,7 @@ GENERATE_SYSTEM = """
   "title": "краткий заголовок подэтапа",
   "intro": "короткая дружелюбная обвязка-приветствие (1 предложение)",
   "body": "основной текст: только суть по теме, КРАТКО, по структуре подэтапа (см. «В фокусе»)",
-  "key_points": ["важный факт", "..."],
+  "key_points": ["факт, которого НЕТ в body", "..."],
   "questions": [
     {"text": "вопрос", "type": "single|multi|open|bool",
      "options": [{"text": "вариант", "correct": true}], "explanation": "пояснение"}
@@ -881,7 +883,8 @@ GENERATE_SYSTEM = """
 ФОРМАТ И КРАТКОСТЬ (главное — это НЕ пересказ документа, а короткое человеческое сообщение):
 - Соблюдай структуру и объём из блока «В фокусе» (число блоков/пунктов, тон). Если он задаёт
   «5–7 блоков, 1–2 предложения на блок» — не превышай. По умолчанию: коротко, без «простыни».
-- Один пункт = 1–2 предложения. Не дублируй один смысл дважды (абзац + те же маркеры = брак).
+- Один пункт = 1–2 предложения. Не дублируй один смысл дважды: body и key_points не должны
+  повторять друг друга (абзац + те же маркеры = брак), outro не повторяет intro.
 - Не тащи юридическую обвязку: оглавление, стороны и сферу действия договора, комиссии,
   «порядок применения» ЛНА — если это прямо не тема подэтапа.
 - Не смешивай документы разных юрлиц/компаний в одном ответе — бери актуальный ЛНА площадки
@@ -1026,7 +1029,7 @@ NO_DOC_REASON ="Нет документа, отнесённого к этому 
 
 # Версия промптов генерации. Входит в отпечаток сообщения: поменяли GENERATE_SYSTEM /
 # KIND_GEN_HINT так, что старые тексты надо переписать, — увеличьте, иначе не трогайте.
-GEN_PROMPT_VERSION = "2"   # 2: без ссылок на документы-источники и устройства системы
+GEN_PROMPT_VERSION = "3"   # 2: без ссылок на документы; 3: key_points без пересказа body
 KEEP_STATUSES = ("generated", "edited")   # готовые тексты: без изменений входов не трогаем
 
 
@@ -1475,6 +1478,40 @@ def regenerate_one(plan: dict, message_id: str, profession: str = "") -> Optiona
     return next((m for m in schedule["messages"] if m["message_id"] == message_id), None)
 
 
+def rerender_saved_texts() -> int:
+    """Пересобрать тексты уже сохранённых сообщений по текущим правилам msgconvert (без
+    повторов абзаца списком, без служебной hr_note) — без обращения к модели. Запускать
+    после изменения сборки текста. -> число обновлённых сообщений."""
+    import msgconvert
+    changed = 0
+    for p in list_plans():
+        pid, touched = p["plan_id"], False
+        for prof in [""] + [x["profession"] for x in list_schedule_professions(pid)]:
+            sch = _load_exact(pid, prof)
+            if not sch:
+                continue
+            dirty = False
+            for msg in sch.get("messages") or []:
+                content = msg.get("content") or {}
+                if content.get("format") != "unified/1":
+                    continue
+                if msg.get("status") == "edited":
+                    content["key_points"] = []          # правка админа — это весь текст целиком
+                kind = (msg.get("substage") or {}).get("kind") or content.get("kind") or "message"
+                text, conv = msgconvert.to_text(content), msgconvert.convert(content, kind)
+                if text != content.get("text") or conv != content.get("converted"):
+                    content["text"], content["converted"] = text, conv
+                    msg["content"] = content
+                    dirty = True
+                    changed += 1
+            if dirty:
+                save_schedule(pid, sch, profession=prof)
+                touched = True
+        if touched:
+            _refresh_inboxes(pid)
+    return changed
+
+
 def edit_message_text(plan_id: str, message_id: str, text: str, profession: str = "") -> Optional[dict]:
     """Ручная правка текста одного сообщения в расписании нужной профессии.
     Возвращает обновлённое сообщение или None, если сообщения нет."""
@@ -1491,6 +1528,7 @@ def edit_message_text(plan_id: str, message_id: str, text: str, profession: str 
             content["body"] = text
             content["intro"] = ""
             content["outro"] = ""
+            content["key_points"] = []   # админ правил весь текст целиком — старые пункты не дописываем
             content["text"] = text
             kind = (msg.get("substage") or {}).get("kind") or content.get("kind") or "message"
             content["kind"] = kind

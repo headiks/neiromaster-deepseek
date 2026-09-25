@@ -9,14 +9,14 @@
       "title": str,            # краткий заголовок
       "intro": str,            # дружелюбная краткая обвязка (приветствие)
       "body":  str,            # основной текст: факты из документов, без сокращений
-      "key_points": [str],     # важные факты списком
+      "key_points": [str],     # факты списком — только те, которых нет в body
       "questions": [           # для опроса/теста
          {"text": str, "type": "single|multi|bool|open",
           "options": [{"text": str, "correct": bool}], "explanation": str}
       ],
       "checklist": [str],      # для чек-листа
       "outro": str,            # краткое завершение / к кому обратиться
-      "hr_note": str           # "Уточнить у HR: ..." или ""
+      "hr_note": str           # "Уточнить у HR: ..." или "" — только для админки
     }
 
 Отсюда бэкенд конвертирует его в нужный интерактивный формат: опрос (survey),
@@ -24,6 +24,7 @@
 много представлений, без повторной генерации.
 """
 
+import re
 from typing import Optional
 
 # Типы подэтапов -> целевой формат конвертации.
@@ -46,16 +47,32 @@ def _list(value) -> list:
     return value if isinstance(value, list) else []
 
 
+def _stems(text: str) -> set:
+    """Значимые слова по основе (первые 5 букв): «помогу/помогаю», «вопросы/вопросами» совпадут."""
+    return {w[:5] for w in re.findall(r"[а-яёa-z0-9]+", text.lower().replace("ё", "е")) if len(w) > 3}
+
+
+def fresh_points(text: str, points) -> list:
+    """Пункты, которых ещё нет в тексте. Модель любит пересказать абзац теми же словами
+    списком — это тавтология: пункт, чьи значимые слова в основном (≥60%) уже есть в тексте,
+    выбрасываем. ponytail: совпадение основ слов, без морфологии — перефраз синонимами пройдёт."""
+    seen = _stems(text)
+    out = []
+    for p in (_s(x) for x in _list(points)):
+        words = _stems(p)
+        if p and (not words or len(words & seen) / len(words) < 0.6):
+            out.append(p)
+            seen |= words
+    return out
+
+
 def to_text(content: dict) -> str:
-    """Собирает читабельный текст сообщения из унифицированного envelope.
-    Порядок: обвязка -> основной текст -> важные факты -> завершение -> заметка HR."""
+    """Собирает текст сообщения ДЛЯ СОТРУДНИКА из унифицированного envelope.
+    Порядок: обвязка -> основной текст -> новые факты списком -> чек-лист -> завершение.
+    hr_note — служебная пометка для HR, сотруднику не показывается (админка — отдельно)."""
     c = content or {}
-    parts = []
-    if _s(c.get("intro")):
-        parts.append(_s(c["intro"]))
-    if _s(c.get("body")):
-        parts.append(_s(c["body"]))
-    points = [_s(p) for p in _list(c.get("key_points")) if _s(p)]
+    parts = [_s(c.get(k)) for k in ("intro", "body") if _s(c.get(k))]
+    points = fresh_points("\n".join(parts), c.get("key_points"))
     if points:
         parts.append("\n".join(f"• {p}" for p in points))
     checklist = [_s(p) for p in _list(c.get("checklist")) if _s(p)]
@@ -63,8 +80,6 @@ def to_text(content: dict) -> str:
         parts.append("\n".join(f"☐ {p}" for p in checklist))
     if _s(c.get("outro")):
         parts.append(_s(c["outro"]))
-    if _s(c.get("hr_note")):
-        parts.append(_s(c["hr_note"]))
     return "\n\n".join(parts).strip()
 
 
