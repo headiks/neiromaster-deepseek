@@ -12,13 +12,49 @@ import { useToast } from '../../lib/toast';
 import type { Board, Catalog, Coverage, Plan, PlanSummary, Stage, Substage } from '../../lib/types';
 import { useTourHooks } from '../../tour';
 import {
-  Button, Callout, Card, Checkbox, Empty, Field, Help, Input, PageHeader, Progress, Select, Spinner, StatusBadge, Textarea,
+  Button, Callout, Card, Checkbox, Empty, Field, Help, Input, PageHeader, Progress, Select, Spinner, StatusBadge, Textarea, useDismiss,
 } from '../../ui';
 import { useConfirm } from '../../ui/confirm';
 import { NextStep } from '../../blocks/NextStep';
 
 const NEW = '';
 const TEMPLATE = '__template';
+
+/** Выбор плана: как выпадающий список, но у каждого сохранённого плана — «Удалить». */
+function PlanPicker({ value, plans, onOpen, onDelete }: {
+  value: string; plans: PlanSummary[]; onOpen: (id: string) => void; onDelete: (p: PlanSummary) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useDismiss(open, close, ref);
+  const name = (p: PlanSummary) => `${p.title}${p.role ? ` · ${p.role}` : ''}`;
+  const cur = plans.find((p) => p.plan_id === value);
+  const pick = (id: string) => { setOpen(false); onOpen(id); };
+  return (
+    <div className="nm-combo" ref={ref}>
+      <button type="button" className="nm-input nm-combo-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <span className="nm-grow">{cur ? name(cur) : '＋ Создать свой план'}</span><ChevronDown aria-hidden />
+      </button>
+      {open && (
+        <div className="nm-combo-panel">
+          <ul className="nm-combo-list" role="listbox" aria-label="Планы">
+            <li role="option" aria-selected={value === NEW}><button type="button" className="nm-combo-pick" autoFocus onClick={() => pick(NEW)}>＋ Создать свой план</button></li>
+            <li role="option" aria-selected={false}><button type="button" className="nm-combo-pick" onClick={() => pick(TEMPLATE)}>＋ Стандартный план (все этапы, ≈3 месяца)</button></li>
+            {plans.length > 0 && <li className="nm-combo-note">Сохранённые планы</li>}
+            {plans.map((p) => (
+              <li key={p.plan_id} role="option" aria-selected={p.plan_id === value}>
+                <button type="button" className="nm-combo-pick" onClick={() => pick(p.plan_id)}>{name(p)}</button>
+                <button type="button" className="nm-combo-del" title="Удалить план" aria-label={`Удалить план «${p.title}»`}
+                        onClick={() => { setOpen(false); onDelete(p); }}><Trash2 style={{ width: 15, height: 15 }} /></button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 const CUSTOM = '__custom__';
 const UNIT_TITLES = { hours: 'часы', days: 'дни', weeks: 'недели', months: 'месяцы' } as const;
 const UNIT_DAYS = { hours: 0, days: 1, weeks: 7, months: 30 } as const;
@@ -241,14 +277,17 @@ export default function Plans() {
     } catch (e) { toast.error(messageOf(e)); }
   };
 
-  const remove = async () => {
-    if (!plan.plan_id) { setPlan(emptyPlan()); return; }
-    if (!(await confirm({ title: 'Удалить план?', text: `«${plan.title}» будет удалён вместе с его сообщениями. Сотрудники с этим планом останутся без плана.`, ok: 'Удалить', danger: true }))) return;
+  const removePlan = async (p: { plan_id?: string | null; title: string }) => {
+    if (!p.plan_id) { setPlan(emptyPlan()); return; }
+    if (!(await confirm({ title: 'Удалить план?', text: `«${p.title}» будет удалён вместе с его сообщениями. Сотрудники с этим планом останутся без плана.`, ok: 'Удалить', danger: true }))) return;
     try {
-      await api.del(`/plans/${enc(plan.plan_id)}`);
-      setPlan(emptyPlan()); setSelected(NEW); await refreshPlans(); setStatus('План удалён');
+      await api.del(`/plans/${enc(p.plan_id)}`);
+      if (p.plan_id === planRef.current.plan_id) { setPlan(emptyPlan()); setSelected(NEW); }
+      await refreshPlans();
+      setStatus(`План «${p.title}» удалён`);
     } catch (e) { toast.error(messageOf(e)); }
   };
+  const remove = () => removePlan(plan);
 
   const duplicate = async () => {
     if (!plan.plan_id) return;
@@ -341,13 +380,7 @@ export default function Plans() {
         <div className="nm-field-row">
           <div data-tour="plan-select">
             <Field label="План">
-              <Select value={selected} onChange={(e) => open(e.target.value)}>
-                <option value={NEW}>＋ Создать свой план</option>
-                <option value={TEMPLATE}>＋ Стандартный план (все этапы, ≈3 месяца)</option>
-                {plans.length > 0 && <optgroup label="Сохранённые планы">
-                  {plans.map((p) => <option key={p.plan_id} value={p.plan_id}>{p.title}{p.role ? ` · ${p.role}` : ''}</option>)}
-                </optgroup>}
-              </Select>
+              <PlanPicker value={selected} plans={plans} onOpen={open} onDelete={removePlan} />
             </Field>
           </div>
           <div data-tour="plan-title">

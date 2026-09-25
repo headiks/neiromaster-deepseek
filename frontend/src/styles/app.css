@@ -164,6 +164,8 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 
 /* Комбобокс с поиском */
 .nm-combo { position: relative; }
+/* Стеклянные карточки — отдельные слои (backdrop-filter): открытая панель иначе уходит под соседнюю карточку. */
+:is(.nm-card, .nm-glass):has(.nm-combo-panel) { position: relative; z-index: 60; }
 .nm-combo-panel { position: absolute; z-index: 70; left: 0; right: 0; top: calc(100% + 6px); padding: 6px; border-radius: var(--nm-r-s);
                   background: var(--nm-glass-solid); border: 1px solid var(--nm-line); box-shadow: var(--nm-shadow-float); }
 .nm-combo-panel .nm-input { height: 40px; font-size: 14px; }
@@ -172,6 +174,9 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .nm-combo-list li:hover, .nm-combo-list li[aria-selected="true"] { background: var(--nm-fill); }
 .nm-combo-list li.nm-combo-note { color: var(--nm-muted); cursor: default; }
 .nm-combo-list li.nm-combo-add { color: var(--nm-soft-ink); font-weight: 600; }
+.nm-combo-trigger { display: flex; align-items: center; gap: 8px; text-align: left; cursor: pointer; }
+.nm-combo-trigger svg { flex: none; width: 16px; height: 16px; color: var(--nm-muted); }
+.nm-combo-list .nm-combo-pick { flex: 1; min-width: 0; text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: 0; cursor: pointer; }
 .nm-combo-list .nm-combo-del { margin-left: auto; border: 0; background: none; color: var(--nm-danger); cursor: pointer; padding: 2px 6px; border-radius: 8px; }
 
 /* ---------- Зона загрузки ---------- */
