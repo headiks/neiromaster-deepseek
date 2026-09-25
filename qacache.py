@@ -23,8 +23,8 @@ from redis_conn import get_redis
 
 TTL = 7 * 24 * 3600
 # Версия формата ответа: меняли промпт ответа (rag.GENERATE_SYSTEM) — увеличьте, и старые
-# ответы из кэша больше не выдаются. 2 — без ссылок на документы и устройство системы.
-ANSWER_FORMAT = 2
+# ответы из кэша больше не выдаются. 3 — без ссылок на документы и устройство системы.
+ANSWER_FORMAT = 3
 _MEM_MAX = 2000
 _mem: "OrderedDict[str, str]" = OrderedDict()
 _mem_ver = 0
