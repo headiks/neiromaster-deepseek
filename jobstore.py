@@ -28,8 +28,10 @@ def _key(ns: str, job_id: str) -> str:
     return f"nmjob:{ns}:{job_id}"
 
 
-def set_job(ns: str, job_id: str, **fields) -> dict:
-    """Создаёт/обновляет задачу (слияние полей). Возвращает полный текущий снимок."""
+def set_job(ns: str, job_id: str, /, **fields) -> dict:
+    """Создаёт/обновляет задачу (слияние полей). Возвращает полный текущий снимок.
+    ns и job_id — только позиционно: поле с именем job_id (замок генерации плана хранит
+    в нём id задачи) уходит в fields, а не конфликтует с ключом (раньше — TypeError)."""
     r = get_redis()
     if r is None:
         with _mem_lock:
