@@ -376,6 +376,7 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .nm-doc { display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; }
 .nm-doc + .nm-doc { border-top: 1px solid var(--nm-line); }
 .nm-doc-main { display: flex; gap: 14px; align-items: flex-start; }
+.nm-doc-check { flex: none; width: 18px; height: 18px; margin: 9px 0 0; accent-color: var(--nm-accent); cursor: pointer; }
 .nm-fmt { width: 42px; height: 42px; flex: none; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center;
           font-size: 10.5px; font-weight: 800; letter-spacing: .02em; background: var(--nm-soft); color: var(--nm-soft-ink); }
 .nm-fmt[data-kind="pdf"] { background: var(--nm-danger-soft); color: var(--nm-danger); }

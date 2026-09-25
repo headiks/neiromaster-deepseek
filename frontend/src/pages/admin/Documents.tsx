@@ -44,8 +44,9 @@ function DocProgress({ d }: { d: Doc }) {
   );
 }
 
-function DocRow({ d, canEdit, folderName, onView, onToggle, onDelete }: {
+function DocRow({ d, canEdit, folderName, onView, onToggle, onDelete, selected, onSelect }: {
   d: Doc; canEdit: boolean; folderName: (s: string) => string; onView: () => void; onToggle: () => void; onDelete: () => void;
+  selected: boolean; onSelect: (on: boolean) => void;
 }) {
   const fmt = docFormat(d);
   const meta = [formatSize(d.size_bytes), d.chunks ? `${d.chunks} ${plural(d.chunks, 'блок', 'блока', 'блоков')}` : '', d.uploaded_at ? ruDateTime(d.uploaded_at) : ''].filter(Boolean).join(' · ');
@@ -53,6 +54,8 @@ function DocRow({ d, canEdit, folderName, onView, onToggle, onDelete }: {
   return (
     <div className="nm-doc">
       <div className="nm-doc-main">
+        {canEdit && <input type="checkbox" className="nm-doc-check" aria-label={`Отметить ${d.filename}`} checked={selected}
+                           onChange={(e) => onSelect(e.target.checked)} />}
         <span className="nm-fmt" data-kind={fmt.kind}>{fmt.label}</span>
         <div className="nm-grow">
           <div className="nm-row-between">
@@ -159,6 +162,7 @@ export default function Documents() {
   const [labels, setLabels] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const pending = useRef(new Set<string>());
   const boardRef = useRef<HTMLDetailsElement>(null);
 
@@ -273,6 +277,26 @@ export default function Documents() {
   }, [shown, isOwner]);
   const folderName = (slug: string) => folders.find((f) => f.slug === slug)?.name || slug;
   const canEdit = (d: Doc) => isOwner || d.uploaded_by === me?.id;
+  const selectable = shown.filter(canEdit);
+  const allOn = selectable.length > 0 && selectable.every((d) => selected.has(d.filename));
+  useEffect(() => {   // фильтр/поиск/удаление: отметки только у видимых документов
+    setSelected((cur) => { const n = [...cur].filter((f) => shown.some((d) => d.filename === f)); return n.length === cur.size ? cur : new Set(n); });
+  }, [shown]);
+  const select = (f: string, on: boolean) => setSelected((cur) => { const n = new Set(cur); if (on) n.add(f); else n.delete(f); return n; });
+  const bulkRemove = async () => {
+    const names = [...selected];
+    if (!names.length) return;
+    const preview = names.slice(0, 10).map((n) => `«${n}»`).join('\n') + (names.length > 10 ? `\n…и ещё ${names.length - 10}` : '');
+    if (!(await confirm({ title: `Удалить ${names.length} ${plural(names.length, 'документ', 'документа', 'документов')}?`,
+      text: `${preview}\n\nСообщения, написанные по ним, обновятся автоматически.`, ok: 'Удалить', danger: true }))) return;
+    try {
+      const r = await api.post<{ deleted: number; skipped?: { filename: string; reason: string }[] }>('/documents/bulk-delete', { filenames: names });
+      const skipped = (r.skipped || []).map((x) => `«${x.filename}» — ${x.reason}`).join('\n');
+      toast.push({ tone: skipped ? 'warn' : 'ok', text: `Удалено: ${r.deleted}.${skipped ? `\nНе удалены:\n${skipped}` : ''}` });
+      setSelected(new Set());
+      loadDocs(); loadCoverage();
+    } catch (e) { toast.error(messageOf(e)); }
+  };
 
   return (
     <div className="nm-page">
@@ -341,6 +365,15 @@ export default function Documents() {
             ))}
           </div>
         </div>
+        {selectable.length > 0 && (
+          <div className="nm-row" style={{ gap: 12 }}>
+            <label className="nm-row nm-small" style={{ gap: 8, cursor: 'pointer' }}>
+              <input type="checkbox" checked={allOn} onChange={(e) => setSelected(e.target.checked ? new Set(selectable.map((d) => d.filename)) : new Set())} />
+              {allOn ? 'Снять отметки' : `Выбрать все${query || filter !== 'all' ? ' найденные' : ''} (${selectable.length})`}
+            </label>
+            {selected.size > 0 && <Button size="sm" variant="danger" icon={Trash2} onClick={bulkRemove}>Удалить отмеченные ({selected.size})</Button>}
+          </div>
+        )}
         {docs === null ? <Spinner /> : !list.length ? (
           <Card pad={false}><Empty icon={FileText}>{isOwner ? 'Пока никто из администраторов не загрузил документы.' : 'Пока нет ваших документов — добавьте первый регламент выше.'}</Empty></Card>
         ) : !shown.length ? <Card pad={false}><Empty icon={Search}>Ничего не найдено.</Empty></Card> : (
@@ -351,7 +384,8 @@ export default function Documents() {
                   {items.find((d) => d.department)?.department ? ` · ${items.find((d) => d.department)!.department}` : ''}<span className="nm-grow" />{items.length} док.</div>}
                 {items.map((d) => (
                   <DocRow key={d.filename} d={d} canEdit={canEdit(d)} folderName={folderName}
-                          onView={() => setLabels(d.filename)} onToggle={() => toggleConfidential(d)} onDelete={() => remove(d)} />
+                          onView={() => setLabels(d.filename)} onToggle={() => toggleConfidential(d)} onDelete={() => remove(d)}
+                          selected={selected.has(d.filename)} onSelect={(on) => select(d.filename, on)} />
                 ))}
               </div>
             ))}

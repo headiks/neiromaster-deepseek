@@ -243,21 +243,47 @@ def get_document_labels(filename: str, user: dict = Depends(require_admin)):
     return data
 
 
-@router.delete("/documents/{filename}")
-def remove_document(filename: str, user: dict = Depends(require_admin)):
-    """Удаляет документ: разметку docpipe (PostgreSQL), оригинал (диск + S3), кэш docling."""
+def _delete_one(user: dict, filename: str):
+    """Удаляет документ: разметку docpipe (PostgreSQL), оригинал (диск + S3), кэш docling.
+    HTTPException — нет прав (403) или документа (404)."""
     ensure_doc_access(user, filename, write=True)
-    existed = indexing.delete_document(filename)
-    if not existed:
+    if not indexing.delete_document(filename):
         raise HTTPException(status_code=404, detail="Документ не найден")
     try:
         documents.remove_by_filename(filename)
     except Exception:
         pass
+
+
+@router.delete("/documents/{filename}")
+def remove_document(filename: str, user: dict = Depends(require_admin)):
+    _delete_one(user, filename)
     _bg(indexing.docs_changed)   # тексты, опиравшиеся на документ, обновятся (только они)
     activitylog.log("action", user=user, path=f"/documents/{filename}",
                     detail={"action": "document_delete", "filename": filename})
     return {"filename": filename, "deleted": True}
+
+
+class FilenamesRequest(BaseModel):
+    filenames: list[str] = Field(default_factory=list, max_length=1000)
+
+
+@router.post("/documents/bulk-delete")
+def bulk_delete_documents(req: FilenamesRequest, user: dict = Depends(require_admin)):
+    """Удаление отмеченных документов. Права — как у одиночного удаления; чужие и уже
+    удалённые — в skipped с причиной. Пересчёт сообщений — один раз на всю пачку."""
+    deleted, skipped = [], []
+    for name in dict.fromkeys(req.filenames):
+        try:
+            _delete_one(user, name)
+            deleted.append(name)
+        except HTTPException as e:
+            skipped.append({"filename": name, "reason": e.detail})
+    if deleted:
+        _bg(indexing.docs_changed)
+    activitylog.log("action", user=user, path="/documents/bulk-delete",
+                    detail={"action": "documents_bulk_delete", "deleted": deleted})
+    return {"deleted": len(deleted), "skipped": skipped}
 
 
 # ---------- Смысловые папки (логические категории; ими управляет человек) ----------
