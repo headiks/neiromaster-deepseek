@@ -95,15 +95,10 @@ def get_document_substage_map(filename: str, user: dict = Depends(require_admin)
 
 @router.post("/documents/{filename}/reindex")
 def reindex_document(filename: str, user: dict = Depends(require_admin)):
-    """Переразметка документа (docling-кэш переиспользуется) — синхронно. Сообщения планов,
-    опиравшиеся на документ, обновятся фоном (только затронутые подэтапы)."""
-    _require_known(filename)
-    ensure_doc_access(user, filename, write=True)
-    result = indexing.reanalyze_document(filename)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    _bg(indexing.docs_changed)
-    return result
+    """То же, что /reanalyze (этот адрес зовёт служебная таблица документов): переразметка
+    в worker'е. Раньше шла синхронно в web — docling и DeepSeek держали поток web-процесса,
+    а в Docker образ web собран без docling."""
+    return reanalyze_one(filename, user)
 
 
 @router.post("/documents/upload")

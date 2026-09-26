@@ -13,6 +13,7 @@ import planner
 import employees as adaptation
 import messaging
 import activitylog
+import rawdb
 from config import MAX_UPLOAD_BYTES
 from deps import require_admin, require_owner, admin_only, owner_only
 
@@ -42,6 +43,7 @@ def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413,
                             detail=f"Файл превышает лимит {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ")
+    rawdb.put_staffing(file.filename, content, actor.get("id"))   # исходник — в raw-БД
     try:
         result = staffing.parse_file(content, file.filename)
     except Exception as e:

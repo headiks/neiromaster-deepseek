@@ -148,7 +148,17 @@ PostgreSQL (sections + section_labels) — источник правды.
 берёт размеченные ими секции. Векторов/эмбеддингов нет.
 ```
 
-## Установка (Linux-сервер)
+## Запуск в Docker (рекомендуется)
+
+```bash
+docker compose up -d
+```
+
+Одна команда поднимает всё: сайт за HTTPS (Caddy), web, worker'ы, две PostgreSQL (исходники
+`db-raw` и обработанное `db-processed`) и Redis. Настройки, бэкапы, закрытый контур —
+[docs/docker.md](docs/docker.md).
+
+## Установка (Linux-сервер без Docker)
 
 Скопируйте папку `project/` на сервер, зайдите в неё по SSH и запустите:
 

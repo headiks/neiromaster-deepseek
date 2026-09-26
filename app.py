@@ -35,6 +35,7 @@ import messaging
 import activitylog
 import security
 import pii_key
+import rawdb
 from deps import BASE_DIR, STATIC_DIR
 
 import api_pages
@@ -143,6 +144,7 @@ def _autoassign_plan():
 async def lifespan(app: FastAPI):
     with db.startup_lock():                  # схема и миграции — по одному воркеру за раз
         db.init_schema()                     # до первого обращения к аккаунтам
+        rawdb.init_schema()                  # отдельная БД исходников (если задана)
         # Ключ шифрования ПДн: из окружения, из файла или новый. Ключ не совпал с тем,
         # которым зашифрованы данные, — старт прерывается (иначе ПДн стали бы нечитаемы).
         pii_key.ensure()

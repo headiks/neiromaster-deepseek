@@ -513,8 +513,10 @@ def reanalyze_document(filename: str) -> dict:
     try:
         import docpipe
         fp = DOCS_DIR / filename
-        if not fp.exists():
-            raise FileNotFoundError(f"нет оригинала {filename} в data/documents")
+        # Локальный кэш мог потеряться (новый контейнер/сервер) — берём оригинал из
+        # хранилища исходников (raw-БД, S3), как и при первичном разборе.
+        if not storage.pull(fp, (docregistry.get(filename) or {}).get("s3_key") or ""):
+            raise FileNotFoundError(f"нет оригинала {filename} ни в data/documents, ни в хранилище")
         res = docpipe.ingest(str(fp), filename=filename, force=True,
                              progress_cb=_docpipe_progress_cb(filename))
         sections = res.get("sections") or 0

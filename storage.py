@@ -1,10 +1,10 @@
 """
 storage.py — durable-хранилище ОРИГИНАЛОВ документов.
 
-Модель: если настроен S3 (config.S3_ENABLED), каждый оригинал дублируется в бакет,
-а локальный data/documents/ работает как кэш — его можно потерять/очистить и
-восстановить из S3 (pull). Так конвейер docling остаётся на локальных путях без
-переписывания: перед обработкой файл при необходимости подтягивается из S3.
+Модель: оригинал сохраняется в raw-БД (rawdb, отдельная PostgreSQL исходников) и, если
+настроен S3 (config.S3_ENABLED), дублируется в бакет. Локальный data/documents/ работает
+как кэш — его можно потерять/очистить и восстановить (pull: сначала raw-БД, потом S3).
+Так конвейер docling остаётся на локальных путях без переписывания.
 
 Производные (converted/, processed/) НЕ хранятся в S3 — они регенерируются из
 оригинала, и держать их локально на каждом инстансе дешевле и проще.
@@ -16,6 +16,7 @@ boto3 импортируется лениво — нужен только при
 from pathlib import Path
 
 import config
+import rawdb
 
 _client = None
 
@@ -57,9 +58,12 @@ def doc_key(filename: str, owner_slug: str = "", admin_slug: str = "") -> str:
 
 
 def put(filename: str, content: bytes, key: str = ""):
-    """Залить оригинал в S3. No-op, если S3 выключен. key — готовый ключ из doc_key."""
+    """Сохранить оригинал в raw-БД и S3 (каждое — no-op, если не настроено).
+    key — готовый ключ из doc_key."""
+    key = key or _key(filename)
+    rawdb.put_document(key, Path(filename).name, content)
     if config.S3_ENABLED:
-        _s3().put_object(Bucket=config.S3_BUCKET, Key=key or _key(filename), Body=content)
+        _s3().put_object(Bucket=config.S3_BUCKET, Key=key, Body=content)
 
 
 def pull(filepath, key: str = "") -> bool:
@@ -70,17 +74,25 @@ def pull(filepath, key: str = "") -> bool:
     filepath = Path(filepath)
     if filepath.exists():
         return True
+    key = key or _key(filepath.name)
+    content = rawdb.get_document(key)
+    if content is not None:
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_bytes(content)
+        return True
     if not config.S3_ENABLED:
         return False
     filepath.parent.mkdir(parents=True, exist_ok=True)
-    _s3().download_file(config.S3_BUCKET, key or _key(filepath.name), str(filepath))
+    _s3().download_file(config.S3_BUCKET, key, str(filepath))
     return True
 
 
 def delete(filename: str, key: str = ""):
-    """Удалить оригинал из S3. No-op, если S3 выключен."""
+    """Удалить оригинал из raw-БД и S3 (каждое — no-op, если не настроено)."""
+    key = key or _key(filename)
+    rawdb.delete_document(key)
     if config.S3_ENABLED:
-        _s3().delete_object(Bucket=config.S3_BUCKET, Key=key or _key(filename))
+        _s3().delete_object(Bucket=config.S3_BUCKET, Key=key)
 
 
 def list_objects(prefix: str = "", delimiter: str = "/", max_keys: int = 1000) -> dict:

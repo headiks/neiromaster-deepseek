@@ -44,6 +44,8 @@ def main():
     # Схема БД и docpipe должны существовать до обработки задач.
     import db
     db.init_schema()
+    import rawdb
+    rawdb.init_schema()
     try:
         import docpipe
         docpipe.init_schema()
