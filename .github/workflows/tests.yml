@@ -54,3 +54,11 @@ jobs:
         working-directory: mobile
       - run: npx tsc --noEmit
         working-directory: mobile
+
+  docker:
+    # Конфиг compose валиден и образ web собирается (worker с docling — долго, не каждый push).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker build --target web -t neiromaster-web:ci .
