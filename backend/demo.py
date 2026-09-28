@@ -41,6 +41,12 @@ def password() -> str:
     return os.environ.get("NEIROMASTER_DEMO_PASSWORD") or "demo12345"
 
 
+def protected(user: dict | None) -> bool:
+    """Общая демо-учётка: её нельзя удалить, заблокировать, сменить ей роль или пароль —
+    иначе один посетитель сломает демо остальным."""
+    return enabled() and bool(user) and user.get("username") in {a[1] for a in ACCOUNTS}
+
+
 def accounts() -> list:
     """Учётки для страницы входа демо (пароль общий — это витрина, не данные клиентов)."""
     if not enabled():

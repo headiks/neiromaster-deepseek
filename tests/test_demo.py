@@ -50,3 +50,13 @@ def test_overdue_rest_follows_without_burst():
         assert out[7]["send_at"] - out[5]["send_at"] == timedelta(hours=2)
     finally:
         os.environ.pop("NEIROMASTER_DEMO", None)
+
+
+def test_shared_accounts_protected_only_in_demo():
+    assert not demo.protected({"username": "demo"})                        # не демо — обычный логин
+    os.environ["NEIROMASTER_DEMO"] = "1"
+    try:
+        assert demo.protected({"username": "demo-employee"})
+        assert not demo.protected({"username": "ivanov_i_i"}) and not demo.protected(None)
+    finally:
+        os.environ.pop("NEIROMASTER_DEMO", None)

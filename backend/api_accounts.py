@@ -152,6 +152,9 @@ def api_change_password(req: PasswordChangeRequest, response: Response,
                         user: dict = Depends(current_user)):
     if user.get("role") == users.ROLE_EMPLOYEE:
         raise HTTPException(status_code=403, detail="Пароль сотрудника меняет администратор")
+    import demo
+    if demo.protected(user):
+        raise HTTPException(status_code=403, detail="Это общая демо-учётка — пароль не меняется")
     try:
         auth.change_own_password(user, req.old_password, req.new_password)
     except ValueError as e:

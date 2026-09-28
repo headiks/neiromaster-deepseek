@@ -13,6 +13,7 @@ import planner
 import employees as adaptation
 import messaging
 import activitylog
+import demo
 import rawdb
 from config import MAX_UPLOAD_BYTES
 from deps import require_admin, require_owner, admin_only, owner_only, globaltest_only
@@ -92,9 +93,17 @@ def _delete_denied(actor: dict, target: dict) -> str:
     подразделения; админ компании — кураторов и сотрудников (users.can_manage)."""
     if target.get("id") == actor.get("id"):
         return "нельзя удалить себя"
+    if demo.protected(target):
+        return "общую демо-учётку удалить нельзя"
     if not users.can_manage(actor, target):
         return "недостаточно прав"
     return ""
+
+
+def _not_demo(target: dict):
+    """Общие демо-учётки не блокируются и не получают новую роль или пароль (demo.protected)."""
+    if demo.protected(target):
+        raise HTTPException(status_code=403, detail="Это общая демо-учётка — её роль, пароль и доступ не меняются")
 
 
 @router.post("/users/bulk-delete")
@@ -272,6 +281,7 @@ def remove_user(user_id: str, actor: dict = Depends(require_admin)):
     if reason:
         raise HTTPException(status_code=400 if target.get("id") == actor.get("id") else 403,
                             detail="Нельзя удалить самого себя" if target.get("id") == actor.get("id")
+                            else "Общую демо-учётку удалить нельзя" if demo.protected(target)
                             else "Недостаточно прав: куратор удаляет только сотрудников своего отдела")
     try:
         deleted = users.delete_user(user_id)
@@ -292,6 +302,7 @@ def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends(requi
     if user_id == actor["id"]:
         raise HTTPException(status_code=400, detail="Нельзя изменить собственную роль")
     target = _target_user(user_id, actor)
+    _not_demo(target)
     allowed = users.assignable_roles(actor)
     if not users.is_full_access(actor) or req.role not in allowed or target.get("role") not in allowed:
         raise HTTPException(status_code=403, detail="Недостаточно прав для такой смены роли")
@@ -314,7 +325,7 @@ def change_user_active(user_id: str, req: ActiveRequest, actor: dict = Depends(r
     Подтверждение регистрации и блокировка доступа. Администратор может
     активировать и блокировать сотрудников, главный администратор — кого угодно.
     """
-    _target_user(user_id, actor)
+    _not_demo(_target_user(user_id, actor))
     if user_id == actor["id"]:
         raise HTTPException(status_code=400, detail="Нельзя заблокировать самого себя")
     try:
@@ -334,6 +345,7 @@ def set_user_credentials(user_id: str, req: TargetCredentialsRequest,
     нет (профиль-вакансия), он выдаётся один раз из ФИО. Сотрудник при входе задаст свой пароль.
     """
     target = _target_user(user_id, actor)
+    _not_demo(target)
     password = req.password or staffing.temp_password()
     try:
         if not target.get("username"):
