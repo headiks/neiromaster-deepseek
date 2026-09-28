@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from test_stubs import superadmin_hash
 
 TEST_DSN = (os.environ.get("NEIROMASTER_TEST_DSN")
             or "postgresql://neiromaster:neiromaster@localhost:5432/neiromaster_test")
@@ -29,7 +30,7 @@ os.environ.update({
     "NEIROMASTER_SCHEDULER": "0",
     "REDIS_URL": "",                          # всё в памяти процесса — тест самодостаточен
     "DEEPSEEK_API_KEY": "",
-    "NEIROMASTER_ADMIN_PASSWORD": "owner-initial-pass",
+    "NEIROMASTER_SUPERADMIN_HASH": superadmin_hash("owner-strong-pass"),
     # Ключа нет — приложение создаёт его само (как на свежем сервере), во временной папке.
     "NEIROMASTER_PII_KEY": "",
     "NEIROMASTER_PII_KEY_FILE": os.path.join(tempfile.mkdtemp(), "secrets", "pii.key"),
@@ -58,7 +59,6 @@ def env():
     import indexing
     import config
     users.DATA_DIR = tmp
-    users.INITIAL_CREDENTIALS_PATH = tmp / "owner_initial_credentials.txt"
     users.USERS_PATH = tmp / "users.json"
     users.LEGACY_EMPLOYEES_PATH = tmp / "employees.json"
     config.DOCS_DIR = tmp / "documents"          # config.docs_dir() берёт его в момент вызова
@@ -86,16 +86,12 @@ def _login(client, username, password):
 
 @pytest.fixture(scope="module")
 def owner(env):
-    """Владелец: вход по начальному паролю -> свой пароль -> новая сессия."""
+    """Суперадмин: логин и пароль заданы в коде (в тестах — хэш из NEIROMASTER_SUPERADMIN_HASH)."""
     import users
     c = env["client"]
     own = users.get_owner()
-    first = _login(c, own["username"], "owner-initial-pass")
-    assert first["must_change_credentials"]
-    assert c.get("/admin", follow_redirects=False).headers["location"] == "/setup"
-    r = c.post("/api/setup-credentials", json={"password": "owner-strong-pass"}, headers=ORIGIN)
-    assert r.status_code == 200, r.text
-    _login(c, own["username"], "owner-strong-pass")
+    assert own["username"] == users.SUPERADMIN_USERNAME
+    assert not _login(c, own["username"], "owner-strong-pass")["must_change_credentials"]
     return {"username": own["username"], "password": "owner-strong-pass", "id": own["id"]}
 
 

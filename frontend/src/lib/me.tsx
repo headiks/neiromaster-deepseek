@@ -1,7 +1,7 @@
 // Текущий пользователь (/api/me) — один запрос на всё приложение.
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Me } from '@shared/types';
-import { api, ApiError } from './api';
+import { api, ApiError, setDemoMode } from './api';
 
 type Ctx = {
   me: Me | null;
@@ -10,6 +10,8 @@ type Ctx = {
   isAdmin: boolean;   // есть админ-панель: суперадмин, админ компании, куратор
   isFull: boolean;    // вся своя компания, а не только отдел: админ компании (суперадмин — в общей)
   isOwner: boolean;   // суперадмин: компании, сводка, журнал всех компаний
+  inCompany: boolean; // суперадмин открыл компанию — работает в ней как её админ
+  demo: boolean;      // демо-сайт: только просмотр, тур, песочница
   reload: () => Promise<void>;
   setMe: (m: Me) => void;
 };
@@ -20,6 +22,10 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [demo, setDemo] = useState(false);
+  useEffect(() => {
+    api.get<{ demo?: boolean }>('/api/config').then((c) => { setDemo(!!c.demo); setDemoMode(!!c.demo); }).catch(() => {});
+  }, []);
   const reload = useCallback(async () => {
     // На входе и регистрации сессии нет — не спрашиваем (иначе 401 в консоли).
     if (['/login', '/register'].includes(location.pathname)) { setLoading(false); return; }
@@ -36,7 +42,8 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const isOwner = me?.role === 'owner';
   const isFull = isOwner || me?.role === 'admin';
   const isAdmin = isFull || me?.role === 'curator';
-  return <MeCtx.Provider value={{ me, loading, error, isAdmin, isFull, isOwner, reload, setMe }}>{children}</MeCtx.Provider>;
+  const inCompany = isOwner && !!me?.company;
+  return <MeCtx.Provider value={{ me, loading, error, isAdmin, isFull, isOwner, inCompany, demo, reload, setMe }}>{children}</MeCtx.Provider>;
 }
 
 export function useMe(): Ctx {

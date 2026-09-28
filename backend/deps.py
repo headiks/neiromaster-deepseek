@@ -67,7 +67,11 @@ def _session_token(request: Request) -> str | None:
 
 
 def current_user(request: Request) -> dict:
-    """Любой вошедший пользователь. Без валидной сессии — 401."""
+    """Любой вошедший пользователь. Без валидной сессии — 401. Суперадмин в открытой компании
+    (кука nm_company, TenantMiddleware проверил его сессию в общей схеме) — as_owner."""
+    owner = getattr(request.state, "as_owner", None)
+    if owner:
+        return owner
     user = auth.get_session_user(_session_token(request))
     if user is None:
         raise HTTPException(status_code=401, detail="Требуется вход")

@@ -124,40 +124,61 @@ def test_dir_slug_is_safe_path_segment():
     assert "/" not in users.dir_slug({"id": "x/y"})
 
 
-# ---------- Несколько суперадминов ----------
-def test_multiple_owners_promote_and_last_guard():
-    """Админа можно повысить сразу до owner; последнего owner снять/удалить нельзя."""
+# ---------- Суперадмин один, последний админ компании ----------
+def test_owner_role_not_assignable_and_superadmin_fixed():
+    """Роль owner никому не выдаётся; учётка superadmin из кода не меняется."""
     saved = {}
-    orig_get, orig_save, orig_cnt = users.get_user, users._save_user, users.count_owners
+    orig_get, orig_save = users.get_user, users._save_user
     try:
         users._save_user = lambda u: saved.update(u)
-
-        # повышение админа до суперадмина (owner) напрямую — при 1 существующем owner
         users.get_user = lambda uid: {"id": uid, "role": "admin", "hash": "x", "active": True}
-        users.count_owners = lambda active_only=False: 1
-        assert users.set_role("a", "owner")["role"] == "owner"
-
-        # понижение owner, когда он НЕ последний — можно
-        users.get_user = lambda uid: {"id": uid, "role": "owner", "hash": "x", "active": True}
-        users.count_owners = lambda active_only=False: 2
-        assert users.set_role("o2", "admin")["role"] == "admin"
-
-        # последнего owner снять нельзя
-        users.count_owners = lambda active_only=False: 1
         try:
-            users.set_role("o1", "admin")
-            assert False, "последний owner не должен сниматься"
-        except ValueError as e:
-            assert "последний" in str(e).lower()
-
-        # и удалить последнего owner нельзя
-        try:
-            users.delete_user("o1")
-            assert False, "последний owner не должен удаляться"
-        except ValueError as e:
-            assert "последний" in str(e).lower()
+            users.set_role("a", "owner")
+            assert False, "роль owner не выдаётся"
+        except ValueError:
+            pass
+        users.get_user = lambda uid: {"id": uid, "role": "owner", "username": users.SUPERADMIN_USERNAME,
+                                      "hash": "x", "active": True}
+        for change in (lambda: users.set_role("s", "admin"), lambda: users.delete_user("s"),
+                       lambda: users.set_password("s", "long-enough-1")):
+            try:
+                change()
+                assert False, "суперадмин не меняется"
+            except ValueError as e:
+                assert "суперадмин" in str(e).lower()
+        assert not saved
     finally:
-        users.get_user, users._save_user, users.count_owners = orig_get, orig_save, orig_cnt
+        users.get_user, users._save_user = orig_get, orig_save
+
+
+def test_last_company_admin_guard():
+    """В компании последнего активного админа не понизить и не удалить; второго — можно."""
+    saved = {}
+    orig = users.get_user, users._save_user, _db.current_schema, _db.query
+    try:
+        users._save_user = lambda u: saved.update(u)
+        users.get_user = lambda uid: {"id": uid, "role": "admin", "hash": "x", "active": True}
+        _db.current_schema = lambda: "cab_x"
+        _db.query = lambda *a, **k: {"n": 0}                  # других админов нет
+        try:
+            users.set_role("a1", "curator")
+            assert False, "последний админ компании не понижается"
+        except ValueError as e:
+            assert "последний" in str(e).lower()
+        _db.query = lambda *a, **k: {"n": 1}                  # есть ещё один
+        assert users.set_role("a1", "curator")["role"] == "curator"
+    finally:
+        users.get_user, users._save_user, _db.current_schema, _db.query = orig
+
+
+def test_role_rules():
+    """Админ заводит админов, кураторов, сотрудников; куратор — кураторов и сотрудников отдела."""
+    adm = {"id": "c", "role": "admin", "department": ""}
+    assert users.assignable_roles(adm) == ("admin", "curator", "employee")
+    assert users.assignable_roles(CUR_LOG) == ("curator", "employee")
+    assert users.can_manage(adm, {"id": "c2", "role": "admin"}) and not users.can_manage(adm, OWNER)
+    assert users.can_manage(CUR_LOG, {"id": "c3", "role": "curator", "department": "Логистика"})
+    assert not users.can_manage(CUR_LOG, CUR_SVAR) and not users.can_manage(CUR_LOG, adm)
 
 
 if __name__ == "__main__":

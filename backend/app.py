@@ -54,7 +54,7 @@ import api_queue
 import api_companies
 
 ROUTERS = (api_pages, api_accounts, api_chat, api_documents,
-           api_knowledge, api_plans, api_people, api_activity, api_queue, api_companies)
+           api_knowledge, api_plans, api_people, api_activity, api_queue, api_companies, demo)
 
 
 def _step(name: str, fn):
@@ -101,18 +101,6 @@ def _migrate_legacy():
     for what, n in moved.items():
         if n:
             print(f"Миграция: перенесено/исправлено {what}: {n}")
-
-
-def _announce_owner():
-    initial = users.ensure_owner()
-    if initial:
-        print("=" * 70)
-        print("Создана учётная запись главного администратора.")
-        print(f"  Логин:  {initial['username']}")
-        print(f"  Пароль: {initial['password']}")
-        print(f"  Дубль записан в {users.INITIAL_CREDENTIALS_PATH}")
-        print("  При первом входе система попросит задать свой пароль.")
-        print("=" * 70)
 
 
 def _prune_orphans():
@@ -162,7 +150,7 @@ async def lifespan(app: FastAPI):
         _step("посев структуры знаний", _seed_knowledge)
         _step("пайплайн разметки docpipe", _init_docpipe)
         _step("миграция старых данных", _migrate_legacy)
-        _announce_owner()
+        _step("учётка суперадмина", users.ensure_owner)
         _step("очистка осиротевших меток docpipe", _prune_orphans)
         _requeue_without_redis()
         _step("автоназначение плана", _autoassign_plan)
@@ -176,6 +164,9 @@ async def lifespan(app: FastAPI):
                 _step(f"компания {schema}: автоназначение плана", _autoassign_plan)
         # Демо-экземпляр (NEIROMASTER_DEMO=1): демо-компания с учётками и документами.
         _step("демо-компания", demo.ensure_seeded)
+        if not demo.enabled():
+            import leads
+            _step("роль для заявок с демо", leads.ensure_writer)
     # Фоновый планировщик доставки сообщений плана. NEIROMASTER_SCHEDULER=0 — выключить
     # (когда доставку гоняют внешним cron: python dispatch_messages.py).
     messaging.start_scheduler()
@@ -263,6 +254,15 @@ class TenantMiddleware:
             token = header[7:].strip() if header.lower().startswith("bearer ") \
                 else conn.cookies.get(auth.COOKIE_NAME)
             schema = auth.schema_of_token(token)
+            # Суперадмин (сессия общей схемы) с кукой nm_company открывает компанию: запрос
+            # идёт в её схеме, а сам он — в scope["state"]["as_owner"] (deps.current_user).
+            # Кука без живой сессии суперадмина ничего не даёт.
+            company = conn.cookies.get(auth.COMPANY_COOKIE)
+            if not schema and token and company and provisioning.is_company(company):
+                owner = await run_in_threadpool(auth.get_session_user, token)
+                if users.is_owner(owner):
+                    schema = company
+                    scope.setdefault("state", {})["as_owner"] = {**owner, "company": company}
         if schema:
             with db.use_schema(schema):
                 await self.app(scope, receive, send)
@@ -270,6 +270,8 @@ class TenantMiddleware:
             await self.app(scope, receive, send)
 
 
+if demo.enabled():
+    app.add_middleware(demo.Guard)       # внутри TenantMiddleware: схема уже выбрана
 app.add_middleware(TenantMiddleware)
 
 

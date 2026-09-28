@@ -89,6 +89,11 @@ def list_companies() -> list:
                     "ORDER BY created_at") or []
 
 
+def company_name(schema: str) -> str:
+    row = db.query("SELECT company FROM public.cabinets WHERE schema_name = %s", (schema,), "one")
+    return (row or {}).get("company") or ""
+
+
 def tenant_key(name: str) -> str:
     """Ключ Redis/кэша, свой у каждой компании: общие имена не пересекаются между ними."""
     schema = db.current_schema()

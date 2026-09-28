@@ -39,15 +39,19 @@ BASE_DIR = Path(__file__).resolve().parents[1]   # корень проекта (
 DATA_DIR = BASE_DIR / "data"
 USERS_PATH = DATA_DIR / "users.json"          # старое хранилище — источник разовой миграции
 LEGACY_EMPLOYEES_PATH = DATA_DIR / "employees.json"
-INITIAL_CREDENTIALS_PATH = DATA_DIR / "owner_initial_credentials.txt"
-
 # Роли (сверху вниз):
-#   owner    — суперадмин разработчика, один на систему, живёт в public: компании, статистика,
-#              журнал всех компаний. Внутри своей (общей) схемы видит всё.
-#   admin    — администратор компании, один на компанию (выдаёт суперадмин): вся компания,
-#              заводит кураторов и сотрудников.
-#   curator  — куратор отдела (заводит админ): только свой отдел, заводит только сотрудников.
+#   owner    — суперадмин разработчика, один на систему (учётка superadmin), живёт в public:
+#              компании, статистика, заявки, журнал всех компаний; открывает любую компанию.
+#   admin    — администратор компании: вся компания, заводит админов, кураторов, сотрудников.
+#   curator  — куратор отдела: только свой отдел, заводит кураторов и сотрудников отдела.
 #   employee — сотрудник: свой кабинет.
+
+# Суперадмин: логин и пароль заданы жёстко, в коде — только scrypt-хэш «соль:хэш» пароля.
+# Сменить пароль — посчитать новый хэш (hash_password) и заменить строку. Через интерфейс
+# пароль, логин и роль суперадмина не меняются. NEIROMASTER_SUPERADMIN_HASH — замена хэша
+# для тестов и стендов разработки.
+SUPERADMIN_USERNAME = "superadmin"
+SUPERADMIN_HASH = "f5433e89ab3860d5230b947bbe679536:3e7d4e91f9abed9543cde7f83158751079413d6efcdf74d48f34bf4e62c0df69"
 ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
 ROLE_CURATOR = "curator"
@@ -325,14 +329,6 @@ def get_owner() -> Optional[dict]:
     return _row_to_user(row) if row else None
 
 
-def count_owners(active_only: bool = False) -> int:
-    """Сколько суперадминов (опц. только активных). Нужно, чтобы не снести последнего."""
-    q = "SELECT COUNT(*) AS n FROM users WHERE role = %s"
-    if active_only:
-        q += " AND active = TRUE"
-    return db.query(q, (ROLE_OWNER,), "one")["n"]
-
-
 def count_users() -> int:
     return db.query("SELECT COUNT(*) AS n FROM users", (), "one")["n"]
 
@@ -366,12 +362,12 @@ def is_curator(user: dict) -> bool:
 
 
 def assignable_roles(actor: dict) -> tuple:
-    """Какие роли актор вправе выдавать. Админ компании — кураторов и сотрудников, куратор —
-    только сотрудников. Админов компаний заводит суперадмин вместе с компанией."""
+    """Какие роли актор вправе выдавать. Админ компании (и суперадмин) — админов, кураторов и
+    сотрудников; куратор — кураторов и сотрудников своего отдела. Роль owner не выдаётся."""
     if is_full_access(actor):
-        return (ROLE_CURATOR, ROLE_EMPLOYEE)
+        return (ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
     if is_curator(actor):
-        return (ROLE_EMPLOYEE,)
+        return (ROLE_CURATOR, ROLE_EMPLOYEE)
     return ()
 
 
@@ -435,23 +431,23 @@ def visible_users(actor: dict, all_users: list) -> list:
 
 def can_manage(actor: dict, target: dict) -> bool:
     """
-    Кого актор вправе редактировать. Суперадмин в общей схеме — всех. Админ компании —
-    себя, кураторов и сотрудников. Куратор — себя и сотрудников СВОЕГО отдела: иначе он мог
-    бы сбросить пароль админу или куратору и обойти ограничения.
+    Кого актор вправе редактировать. Суперадмин — всех, кроме себя-учётки из кода (её
+    защищает _fixed). Админ компании — себя, админов, кураторов и сотрудников. Куратор — себя,
+    кураторов и сотрудников СВОЕГО отдела: админа он не тронет.
     """
     if not is_admin(actor) or not target:
         return False
     if is_owner(actor) or target.get("id") == actor.get("id"):
         return True
     if is_full_access(actor):
-        return target.get("role") in (ROLE_CURATOR, ROLE_EMPLOYEE)
-    return target.get("role") == ROLE_EMPLOYEE and same_department(actor, target)
+        return target.get("role") in (ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
+    return target.get("role") in (ROLE_CURATOR, ROLE_EMPLOYEE) and same_department(actor, target)
 
 
 def ensure_can_manage(actor: dict, target: dict):
     if not can_manage(actor, target):
         raise PermissionError(
-            "Недостаточно прав: куратор работает только с сотрудниками своего отдела, "
+            "Недостаточно прав: куратор работает только с кураторами и сотрудниками своего отдела, "
             "остальное — у администратора компании")
 
 
@@ -580,6 +576,7 @@ def set_username(user_id: str, username: str) -> dict:
         user = get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден")
+        _fixed(user)
         if _username_taken(username, exclude_id=user_id):
             raise ValueError(f"Логин «{username}» уже занят")
         user["username"] = username
@@ -598,6 +595,7 @@ def set_password(user_id: str, password: str, must_change: bool = False,
         user = get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден")
+        _fixed(user)
         user["salt"] = salt_hex
         user["hash"] = hash_hex
         user["password_changed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -692,6 +690,7 @@ def set_credentials(user_id: str, username: Optional[str], password: str) -> dic
         user = get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден")
+        _fixed(user)
         username = normalize_username(username) if username else user.get("username")
         if not username:
             raise ValueError("У пользователя нет логина — обратитесь к администратору")
@@ -702,8 +701,6 @@ def set_credentials(user_id: str, username: Optional[str], password: str) -> dic
                      "must_change_credentials": False, "temp_password": "",
                      "password_changed_at": now, "updated_at": now})
         _save_user(user)
-        # Первичная подсказка с логином и паролем больше не нужна
-        INITIAL_CREDENTIALS_PATH.unlink(missing_ok=True)
     return dict(user)
 
 
@@ -737,8 +734,7 @@ def set_active(user_id: str, active: bool) -> Optional[dict]:
         user = get_user(user_id)
         if not user:
             return None
-        if user["role"] == ROLE_OWNER and not active and count_owners(active_only=True) <= 1:
-            raise ValueError("Это последний активный суперадмин — нельзя деактивировать")
+        _fixed(user)
         user["active"] = bool(active)
         user["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         _save_user(user)
@@ -747,50 +743,25 @@ def set_active(user_id: str, active: bool) -> Optional[dict]:
 
 def set_role(user_id: str, role: str) -> dict:
     """
-    Смена роли. Кто какую роль вправе выдать, решает API (assignable_roles): админ
-    компании — куратора/сотрудника, куратор — никому. Здесь — инварианты: последнего
-    суперадмина не снять, роль с админ-панелью требует заданного пароля.
+    Смена роли. Кто какую роль вправе выдать, решает API (assignable_roles). Здесь —
+    инварианты: суперадмин один (роль owner не выдаётся и не снимается), последнего админа
+    компании не понизить, роль с админ-панелью требует заданного пароля.
     """
-    if role not in ROLES:
+    if role not in ROLES or role == ROLE_OWNER:
         raise ValueError("Недопустимая роль")
     with _lock:
         user = get_user(user_id)
         if not user:
             raise ValueError("Пользователь не найден")
+        _fixed(user)
         if role in ADMIN_ROLES and not user.get("hash"):
             raise ValueError("У пользователя нет пароля — сначала выдайте ему логин и пароль")
-        if user["role"] == ROLE_OWNER and role != ROLE_OWNER and count_owners() <= 1:
-            raise ValueError("Это последний суперадмин — сначала назначьте другого суперадмина")
+        if user["role"] == ROLE_ADMIN and role != ROLE_ADMIN and _last_admin(user):
+            raise ValueError("Это последний администратор компании — сначала назначьте другого")
         user["role"] = role
         user["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         _save_user(user)
     return dict(user)
-
-
-def transfer_ownership(current_owner_id: str, new_owner_id: str) -> dict:
-    """Передача роли суперадмина. Прежний становится куратором (роль с панелью, без полного доступа)."""
-    with _lock:
-        current = get_user(current_owner_id)
-        new_owner = get_user(new_owner_id)
-        if not current or current["role"] != ROLE_OWNER:
-            raise ValueError("Передать права может только действующий главный администратор")
-        if not new_owner:
-            raise ValueError("Пользователь не найден")
-        if new_owner["id"] == current["id"]:
-            raise ValueError("Это и есть текущий главный администратор")
-        if not new_owner.get("hash"):
-            raise ValueError("У пользователя нет пароля — сначала выдайте ему логин и пароль")
-        if not new_owner.get("active"):
-            raise ValueError("Нельзя передать права неактивному пользователю")
-
-        now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        new_owner["role"] = ROLE_OWNER
-        new_owner["updated_at"] = now
-        current["role"] = ROLE_CURATOR
-        current["updated_at"] = now
-        _save_user(new_owner)
-        _save_user(current)
-    return dict(new_owner)
 
 
 def delete_user(user_id: str) -> bool:
@@ -798,11 +769,32 @@ def delete_user(user_id: str) -> bool:
         user = get_user(user_id)
         if not user:
             return False
-        if user["role"] == ROLE_OWNER and count_owners() <= 1:
-            raise ValueError("Это последний суперадмин — сначала назначьте другого")
+        _fixed(user)
+        if user["role"] == ROLE_ADMIN and _last_admin(user):
+            raise ValueError("Это последний администратор компании — сначала назначьте другого")
         db.execute("DELETE FROM users WHERE id = %s", (user_id,))
         provisioning.drop_login(user_id)
     return True
+
+
+def is_superadmin(user: Optional[dict]) -> bool:
+    return bool(user) and user.get("role") == ROLE_OWNER and user.get("username") == SUPERADMIN_USERNAME
+
+
+def _fixed(user: dict):
+    """Учётка суперадмина задана в коде: логин, пароль, роль и доступ через интерфейс не меняются."""
+    if is_superadmin(user):
+        raise ValueError("Учётная запись суперадмина задана на сервере и не меняется")
+
+
+def _last_admin(user: dict) -> bool:
+    """Последний активный администратор компании (без него компанией некому управлять).
+    В общей схеме админы — наследие до компаний, там суперадмин и так есть."""
+    if not db.current_schema():
+        return False
+    row = db.query("SELECT count(*) AS n FROM users WHERE role = %s AND active AND id <> %s",
+                   (ROLE_ADMIN, user["id"]), "one")
+    return not (row or {}).get("n")
 
 
 # ---------- Регистрация сотрудника ----------
@@ -821,40 +813,32 @@ def register_employee(username: str, password: str, full_name: str,
     )
 
 
-# ---------- Первый запуск ----------
-def ensure_owner() -> Optional[dict]:
+# ---------- Суперадмин ----------
+def superadmin_hash() -> tuple:
+    salt, _, digest = (os.environ.get("NEIROMASTER_SUPERADMIN_HASH") or SUPERADMIN_HASH).partition(":")
+    return salt, digest
+
+
+def ensure_owner() -> dict:
     """
-    Создаёт главного администратора при первом запуске со сгенерированными
-    логином и паролем. Возвращает их один раз — чтобы напечатать в консоли сервера.
+    Учётка суперадмина в общей схеме — на каждом старте приводится к заданной в коде:
+    логин superadmin, хэш пароля SUPERADMIN_HASH, активна, без смены пароля при входе.
+    Прочие владельцы (до появления суперадмина владелец был у каждой установки) становятся
+    администраторами: данные общей схемы остаются под их управлением.
     """
+    salt, digest = superadmin_hash()
     with _lock:
-        if count_users() > 0:
-            return None
-
-        username = f"admin-{secrets.token_hex(3)}"
-        # Пароль можно задать заранее (автоматический деплой): NEIROMASTER_ADMIN_PASSWORD.
-        # Короче минимума — игнорируем и генерируем: слабый пароль владельца хуже случайного.
-        preset = os.environ.get("NEIROMASTER_ADMIN_PASSWORD") or ""
-        password = preset if len(preset) >= MIN_PASSWORD_LENGTH else secrets.token_urlsafe(12)
-        create_user(
-            {"username": username, "password": password, "full_name": "Главный администратор"},
-            role=ROLE_OWNER,
-            active=True,
-            must_change_credentials=True,
-        )
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    INITIAL_CREDENTIALS_PATH.write_text(
-        f"Логин: {username}\nПароль: {password}\n\n"
-        "Одноразовые данные для первого входа. После входа система попросит задать\n"
-        "свой логин и пароль, и этот файл будет удалён автоматически.\n",
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(INITIAL_CREDENTIALS_PATH, 0o600)
-    except OSError:
-        pass  # на Windows права не выставить — не критично
-    return {"username": username, "password": password}
+        user = get_by_username(SUPERADMIN_USERNAME)
+        if user is None:
+            user = _blank_user(role=ROLE_OWNER, active=True, username=SUPERADMIN_USERNAME)
+            user["full_name"] = "Суперадмин"
+            _insert(user)
+        user.update({"role": ROLE_OWNER, "active": True, "salt": salt, "hash": digest,
+                     "must_change_credentials": False, "temp_password": ""})
+        _save_user(user)
+        db.execute("UPDATE users SET role = %s WHERE role = %s AND id <> %s",
+                   (ROLE_ADMIN, ROLE_OWNER, user["id"]))
+    return dict(user)
 
 
 # ---------- Миграции со старых форматов ----------
@@ -882,8 +866,13 @@ def _import_records(records) -> int:
 
 def migrate_admins_to_curators() -> int:
     """До разделения на компании «администратор» был админом ОТДЕЛА. Теперь это куратор, а
-    admin — администратор компании (живёт в её схеме). Только общая схема; идемпотентно."""
+    admin — администратор компании. Только общая схема и один раз (метка в app_settings):
+    потом админы в общей схеме законны — ими становятся прежние владельцы (ensure_owner)."""
     if db.current_schema():
+        return 0
+    done = db.query("INSERT INTO app_settings (key, value) VALUES ('migrated_admins_to_curators', '1') "
+                    "ON CONFLICT (key) DO NOTHING RETURNING key", (), "one")
+    if not done:
         return 0
     rows = db.query("UPDATE users SET role = %s WHERE role = %s RETURNING id",
                     (ROLE_CURATOR, ROLE_ADMIN)) or []
@@ -978,16 +967,28 @@ if __name__ == "__main__":
     assert len(visible_users(_owner, _all)) == 5
     assert {u["id"] for u in visible_users(_adm, _all)} == {"a", "e1"}   # свой отдел + сам
     assert {u["id"] for u in visible_users({"id": "a2", "role": ROLE_CURATOR, "department": ""}, _all)} == set()
-    # управление: свой отдел — да, чужой отдел и другой админ — нет, себя — да
+    # управление: свой отдел (сотрудники и кураторы) — да, чужой отдел и админ — нет, себя — да
     assert can_manage(_adm, _all[2]) and not can_manage(_adm, _all[3])
-    assert not can_manage(_adm, {"id": "a9", "role": ROLE_CURATOR, "department": "Логистика"})
+    assert can_manage(_adm, {"id": "a9", "role": ROLE_CURATOR, "department": "Логистика"})
+    assert not can_manage(_adm, {"id": "a8", "role": ROLE_CURATOR, "department": "Сварка"})
+    assert not can_manage(_adm, {"id": "a7", "role": ROLE_ADMIN, "department": "Логистика"})
     assert can_manage(_adm, _adm) and can_manage(_owner, _all[3])
     # админ компании: вся компания; кураторы и сотрудники — да, суперадмин — нет
     _cadm = {"id": "c", "role": ROLE_ADMIN, "department": ""}
     assert len(visible_users(_cadm, _all)) == 5
     assert can_manage(_cadm, _adm) and can_manage(_cadm, _all[3]) and not can_manage(_cadm, _owner)
-    assert assignable_roles(_cadm) == (ROLE_CURATOR, ROLE_EMPLOYEE)
-    assert assignable_roles(_adm) == (ROLE_EMPLOYEE,) and assignable_roles(_all[2]) == ()
+    assert can_manage(_cadm, {"id": "c2", "role": ROLE_ADMIN})
+    assert assignable_roles(_cadm) == (ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
+    assert assignable_roles(_adm) == (ROLE_CURATOR, ROLE_EMPLOYEE) and assignable_roles(_all[2]) == ()
+    # суперадмин из кода: хэш разбирается, учётку через интерфейс не поменять
+    assert all(len(x) in (32, 64) for x in superadmin_hash())
+    _sa = {"id": "s", "role": ROLE_OWNER, "username": SUPERADMIN_USERNAME}
+    assert is_superadmin(_sa) and not is_superadmin(_owner)
+    try:
+        _fixed(_sa)
+        assert False
+    except ValueError:
+        pass
     # документы: свои — да, чужие и «ничьи» — только суперадмину
     _docs = [{"filename": "own.pdf", "uploaded_by": "a"},
              {"filename": "alien.pdf", "uploaded_by": "a2"},

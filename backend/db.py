@@ -121,6 +121,20 @@ PUBLIC_STATEMENTS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_logins_user ON public.logins(schema_name, user_id)",
+    # Заявки с демо-сайта («оставить контакты»), раздел суперадмина «Заявки» (leads.py).
+    """
+    CREATE TABLE IF NOT EXISTS public.leads (
+        id          TEXT PRIMARY KEY,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        name        TEXT NOT NULL DEFAULT '',
+        company     TEXT NOT NULL DEFAULT '',
+        contact     TEXT NOT NULL DEFAULT '',
+        comment     TEXT NOT NULL DEFAULT '',
+        source      TEXT NOT NULL DEFAULT 'demo',
+        status      TEXT NOT NULL DEFAULT 'new',
+        handled_at  TIMESTAMPTZ
+    )
+    """,
 )
 
 SCHEMA_STATEMENTS = (
@@ -252,6 +266,9 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'message'",
     "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS payload JSONB",
     "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS answers JSONB",
+    # Вовлечённость (stats.py): первый показ на экране и суммарное время на экране, мс.
+    "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS first_view_at TIMESTAMPTZ",
+    "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS view_ms INT NOT NULL DEFAULT 0",
     # Push-токены устройств сотрудника (Expo Push): одно устройство = один токен.
     # По ним шлём пуш при доставке сообщения плана. token — PK (при переустановке
     # приложения приходит новый; старый протухнет и будет вычищен по ответу Expo).

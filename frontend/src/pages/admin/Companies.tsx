@@ -1,7 +1,7 @@
 // Суперадмин: компании-клиенты (у каждой своя схема БД и свой администратор), сводка по ним
 // и баланс DeepSeek. Логин и пароль администратора новой компании показываются один раз.
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Copy, Plus, RefreshCw, Wallet } from 'lucide-react';
+import { Building2, Copy, DoorOpen, Plus, RefreshCw, UserCog, Wallet } from 'lucide-react';
 import { api, messageOf } from '../../lib/api';
 import { useToast } from '../../lib/toast';
 import { Button, Callout, Card, Empty, Field, Input, PageHeader, Progress, SectionLabel, Spinner } from '../../ui';
@@ -58,7 +58,7 @@ function CreateDialog({ open, onClose, onCreated }: { open: boolean; onClose: ()
   };
   return (
     <Dialog open={open} onClose={onClose} title="Новая компания"
-            subtitle="Своя изолированная база данных и один администратор. Он заводит кураторов и сотрудников."
+            subtitle="Своя изолированная база данных и первый администратор. Он заводит админов, кураторов и сотрудников."
             footer={<><Button variant="ghost" onClick={onClose}>Отмена</Button><Button variant="primary" loading={busy} onClick={save}>Создать</Button></>}>
       <form className="nm-stack" style={{ gap: 14 }} onSubmit={(e) => { e.preventDefault(); save(); }}>
         {error && <Callout tone="danger">{error}</Callout>}
@@ -91,12 +91,50 @@ function CreatedDialog({ created, onClose }: { created: Created | null; onClose:
   );
 }
 
+type Admin = { id: string; full_name: string; username: string };
+
+/** Открыть компанию: дальше разделы панели — в ней, с правами её администратора. */
+async function enter(slug: string) {
+  await api.post(`/api/companies/${encodeURIComponent(slug)}/enter`);
+  location.assign('/admin/users');
+}
+
+/** Войти как администратор компании — документы компании загружаются только так. */
+async function loginAs(slug: string, id: string) {
+  await api.post(`/api/companies/${encodeURIComponent(slug)}/login-as/${encodeURIComponent(id)}`);
+  location.assign('/admin/documents');
+}
+
+function AdminsDialog({ pick, onClose }: { pick: { slug: string; company: string; admins: Admin[] } | null; onClose: () => void }) {
+  if (!pick) return null;
+  return (
+    <Dialog open onClose={onClose} title={`Войти как администратор · ${pick.company}`}
+            subtitle="Действия — от его имени. Вернуться к суперадмину — кнопкой в плашке вверху."
+            footer={<Button variant="ghost" onClick={onClose}>Отмена</Button>}>
+      <div className="nm-stack" style={{ gap: 8 }}>
+        {pick.admins.map((a) => (
+          <Button key={a.id} block icon={UserCog} onClick={() => loginAs(pick.slug, a.id)}>{a.full_name} · {a.username}</Button>
+        ))}
+      </div>
+    </Dialog>
+  );
+}
+
 export default function Companies() {
   const toast = useToast();
   const [items, setItems] = useState<Company[] | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<Created | null>(null);
+  const [pick, setPick] = useState<{ slug: string; company: string; admins: Admin[] } | null>(null);
+  const asAdmin = async (c: Company) => {
+    try {
+      const { admins } = await api.get<{ admins: Admin[] }>(`/api/companies/${encodeURIComponent(c.slug)}/admins`);
+      if (!admins.length) toast.warn('В компании нет действующего администратора с логином');
+      else if (admins.length === 1) await loginAs(c.slug, admins[0].id);
+      else setPick({ slug: c.slug, company: c.company, admins });
+    } catch (e) { toast.error(messageOf(e)); }
+  };
   const load = useCallback(() => {
     setItems(null);
     api.get<{ companies: Company[] }>('/api/companies').then((d) => setItems(d.companies || [])).catch((e) => { toast.error(messageOf(e)); setItems([]); });
@@ -106,7 +144,7 @@ export default function Companies() {
 
   return (
     <div className="nm-page">
-      <PageHeader title="Компании" subtitle="Клиенты: у каждой своя база данных, хранилище и администратор. Здесь — только сводные цифры."
+      <PageHeader title="Компании" subtitle="Клиенты: у каждой своя база данных, хранилище и администратор. «Открыть» — люди, планы и документы компании; загрузка документов — «Войти как администратор»."
                   actions={<>
                     <Button variant="ghost" icon={RefreshCw} onClick={load}>Обновить</Button>
                     <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>Новая компания</Button>
@@ -121,7 +159,7 @@ export default function Companies() {
             <table className="nm-edit-table" style={{ fontSize: 13 }}>
               <thead><tr>
                 <th>Компания</th><th>Кураторы</th><th>Сотрудники</th><th>С планом</th><th>Документы</th><th>Планы</th>
-                <th>Сообщений доставлено / прочитано</th><th>Открытые вопросы</th><th>Активных за 30 дн.</th><th>Токены DeepSeek, 30 дн.</th><th>Последняя активность</th>
+                <th>Сообщений доставлено / прочитано</th><th>Открытые вопросы</th><th>Активных за 30 дн.</th><th>Токены DeepSeek, 30 дн.</th><th>Последняя активность</th><th />
               </tr></thead>
               <tbody>
                 {items.map((c) => (
@@ -138,6 +176,10 @@ export default function Companies() {
                     <td>{num(c.active_users_30d)}</td>
                     <td>{num(c.deepseek_tokens_30d)}</td>
                     <td className="nm-muted" style={{ whiteSpace: 'nowrap' }}>{date(c.last_activity)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <Button size="sm" icon={DoorOpen} onClick={() => enter(c.slug).catch((e) => toast.error(messageOf(e)))}>Открыть</Button>{' '}
+                      <Button size="sm" variant="ghost" icon={UserCog} onClick={() => asAdmin(c)}>Войти как администратор</Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -147,6 +189,7 @@ export default function Companies() {
       )}
       <CreateDialog open={creating} onClose={() => setCreating(false)} onCreated={(c) => { setCreating(false); setCreated(c); load(); }} />
       <CreatedDialog created={created} onClose={() => setCreated(null)} />
+      <AdminsDialog pick={pick} onClose={() => setPick(null)} />
     </div>
   );
 }

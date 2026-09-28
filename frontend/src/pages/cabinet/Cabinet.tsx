@@ -16,7 +16,7 @@ import { Assistant, Composer } from '../../blocks/Assistant';
 import { MyQuestions } from '../../blocks/MyQuestions';
 import { startTour, useTourHooks } from '../../tour';
 import { Avatar, Button, Card, Count, PageHeader, SectionLabel, Segmented } from '../../ui';
-import { HistoryList, SettingsToggles, TodayList, UpNext, useSick, useSplitInbox } from './parts';
+import { HistoryList, SettingsToggles, TodayList, useSick, useSplitInbox } from './parts';
 
 function Hello() {
   const { me } = useMe();
@@ -51,10 +51,6 @@ function Desktop() {
             <section className="nm-section">
               <SectionLabel>Сегодня</SectionLabel>
               <TodayList wide />
-            </section>
-            <section className="nm-section">
-              <SectionLabel>Дальше по плану</SectionLabel>
-              <UpNext />
             </section>
             {past.length > 0 && (
               <section className="nm-section">

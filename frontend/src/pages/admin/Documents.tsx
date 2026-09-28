@@ -149,7 +149,7 @@ export function StageBoard({ planId, plans, onPlan, onOpenDoc }: { planId: strin
 type Filter = 'all' | 'ready' | 'active' | 'error' | 'private';
 
 export default function Documents() {
-  const { me, isFull } = useMe();
+  const { me, isFull, inCompany } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [docs, setDocs] = useState<Doc[] | null>(null);
@@ -304,11 +304,18 @@ export default function Documents() {
       <NextStep here="/admin/documents" />
       <div className="nm-two-pane">
         <div className="nm-stack">
+          {inCompany ? (
+            <Callout tone="accent">
+              Документы компании загружаются от имени её администратора: «Компании» → <b>«Войти как администратор»</b>.
+              Здесь — просмотр, разбор по этапам и удаление.
+            </Callout>
+          ) : (
           <div data-tour="doc-drop">
             <Dropzone multiple accept=".pdf,.docx,.doc,.pptx,.html,.htm,.md,.txt" onFiles={(fs) => fs.forEach((f) => uploadOne(f))}
                       title="Перетащите документы сюда или нажмите, чтобы выбрать"
                       hint="PDF, DOCX, DOC, PPTX, HTML, MD, TXT · до 50 МБ · ИИ сам разнесёт документ по этапам адаптации" />
           </div>
+          )}
           <div className="nm-row" data-tour="doc-confidential">
             <Checkbox label="Конфиденциальный документ — не отправлять в ИИ" checked={confidential} onChange={setConfidential} />
             <Help text="Для чувствительных документов (положение об оплате труда и т.п.): файл хранится в базе, но ИИ его не читает — ни для сообщений, ни для ответов." />

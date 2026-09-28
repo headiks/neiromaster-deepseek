@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 import config
+import db
 import storage
 import indexing
 import documents
@@ -111,6 +112,11 @@ def upload_document(file: UploadFile = File(...), mode: str = "", confidential: 
     через GET /documents/jobs/{job_id}. Тяжёлый разбор PDF не держит запрос.
     mode — что делать, если документ с таким именем уже есть: replace / separate.
     """
+    if users.is_owner(user) and db.current_schema():
+        # Суперадмин в открытой компании документы не грузит: только войдя как её администратор
+        # (владелец документа — администратор компании, а не разработчик).
+        raise HTTPException(status_code=403, detail="Документы компании загружаются от имени её "
+                                                    "администратора — «Войти как администратор»")
     if mode not in ("", "replace", "separate"):
         raise HTTPException(status_code=400, detail="mode: replace или separate")
     # Читаем не больше лимита +1 байт: иначе гигабайтный файл целиком буферизуется в

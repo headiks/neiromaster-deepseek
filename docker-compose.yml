@@ -98,9 +98,10 @@ services:
 
   # ---------- Демо для показа клиентам ----------
   # Отдельный экземпляр: своя БД (db-demo), своя база Redis (1), свои тома; S3 и raw-БД
-  # выключены — демо ничего не пишет рядом с данными клиентов. Демо-компания с учётками и
-  # документами (data/demo/, examples/) создаётся сама при первом старте; уведомления после
-  # назначения плана приходят каждые 30 с (NEIROMASTER_DEMO_INTERVAL), 5 раз.
+  # выключены — демо ничего не пишет рядом с данными клиентов. Демо-компания с документами
+  # (examples/), планом и историей сотрудников создаётся сама при первом старте; посетитель —
+  # только просмотр (backend/demo.py). Заявки «оставить контакты» уходят в основную базу
+  # ролью leads_writer (только INSERT) — если в .env задан LEADS_DB_PASSWORD.
   web-demo:
     <<: *app
     build: {context: ., target: web}
@@ -112,8 +113,7 @@ services:
       REDIS_URL: redis://redis:6379/1
       NEIROMASTER_EMBED_URL: http://embed:8080
       NEIROMASTER_DEMO: "1"
-      NEIROMASTER_DEMO_PASSWORD: ${DEMO_PASSWORD:-demo12345}
-      NEIROMASTER_ADMIN_PASSWORD: ${DEMO_OWNER_PASSWORD:-}
+      NEIROMASTER_LEADS_DSN: ${LEADS_DB_PASSWORD:+postgresql://leads_writer:${LEADS_DB_PASSWORD}@db-processed:5432/neiromaster}
       NEIROMASTER_SCHEDULER_INTERVAL: "5"
       WEB_CONCURRENCY: "2"
       NEIROMASTER_RQ_WORKERS: "1"

@@ -28,7 +28,6 @@ from zoneinfo import ZoneInfo
 from psycopg.types.json import Json
 
 import db
-import demo
 import users
 import employees as adaptation
 from planner import DEFAULT_TIMEZONE
@@ -90,7 +89,6 @@ def materialize_employee(employee: dict, force: bool = False) -> int:
     plan_id = schedule.get("plan_id")
     rows = [r for r in (_message_row(employee["id"], plan_id, m, tzname)
                         for m in schedule.get("messages", [])) if r]
-    rows = demo.compress(rows)     # демо: первые сообщения — каждые 30 с, а не по дням плана
 
     if force:
         # Только строки плана: отложенные тестовые/служебные уведомления (plan_id NULL) не трогаем.
@@ -299,6 +297,17 @@ def mark_read(employee_id: str, message_row_id: str) -> bool:
         "UPDATE scheduled_messages SET status = 'read', read_at = now(), updated_at = now() "
         "WHERE (id = %s OR id = %s) AND employee_id = %s AND status = 'delivered' RETURNING id",
         (message_row_id, f"{employee_id}:{message_row_id}", employee_id), fetch="all",
+    )
+    return bool(rows)
+
+
+def add_view(employee_id: str, message_row_id: str, ms: int) -> bool:
+    """Время на экране (мс) и первый показ — только своё доставленное сообщение."""
+    rows = db.query(
+        "UPDATE scheduled_messages SET view_ms = view_ms + %s, "
+        "first_view_at = COALESCE(first_view_at, now()) "
+        "WHERE id = %s AND employee_id = %s AND status IN ('delivered', 'read') RETURNING id",
+        (max(0, int(ms)), message_row_id, employee_id), fetch="all",
     )
     return bool(rows)
 

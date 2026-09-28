@@ -1,15 +1,19 @@
 // Карточка сообщения плана (COMPONENTS.md → MessageCard): «Этап · Подэтап» + время, тело по
 // типу: текст, чек-лист (отметка сохраняется сразу), мини-тест (верно/неверно, пояснение),
 // опрос. Та же логика, что в приложении (shared/progress.ts).
+import { useRef } from 'react';
 import { Check } from 'lucide-react';
 import type { Msg } from '@shared/types';
 import { msgKicker, msgTime } from '@shared/format';
 import { isChecklist, isQuestions, msgStats } from '@shared/progress';
 import { Card, Progress } from '../ui';
+import { useViewTime } from '../lib/viewtime';
 
 export function MessageCard({ m, onAnswer, wide }: { m: Msg; onAnswer: (m: Msg, key: string, value: string | null) => void; wide?: boolean }) {
   const p = m.payload, a = m.answers || {};
   const stats = msgStats(m);
+  const ref = useRef<HTMLDivElement>(null);
+  useViewTime(m.id, ref);
   const intro = (p as { intro?: string } | null)?.intro;
   let body;
   if (isChecklist(p)) {
@@ -62,6 +66,7 @@ export function MessageCard({ m, onAnswer, wide }: { m: Msg; onAnswer: (m: Msg, 
   const ratio = stats.kind === 'checklist' ? stats.done / (stats.total || 1)
     : stats.kind === 'quiz' || stats.kind === 'survey' ? stats.answered / (stats.total || 1) : 0;
   return (
+    <div ref={ref}>
     <Card as="article" aria-label={msgKicker(m)}>
       <div className="nm-card-kicker"><span>{msgKicker(m)}</span><time>{msgTime(m)}</time></div>
       {body}
@@ -72,5 +77,6 @@ export function MessageCard({ m, onAnswer, wide }: { m: Msg; onAnswer: (m: Msg, 
         </div>
       )}
     </Card>
+    </div>
   );
 }

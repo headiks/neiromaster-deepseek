@@ -1,17 +1,21 @@
 """Суперадмин: компании-клиенты, их статистика и баланс DeepSeek.
 
-Компания = своя схема PostgreSQL + её администратор (provisioning.create_company). Суперадмин
-видит только сводные цифры по компаниям, а не их документы и людей поимённо.
+Компания = своя схема PostgreSQL + её администратор (provisioning.create_company).
+Суперадмин «открывает» компанию (кука nm_company, см. app.TenantMiddleware) и работает в ней
+с правами админа: люди, документы, планы, вопросы. Документы при этом грузит только «войдя
+как администратор» компании — его сессией; вернуться — /api/return-to-owner.
 """
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 import activitylog
+import auth
 import db
 import provisioning
-from deps import owner_only, require_owner
+import users
+from deps import _session_token, _set_session_cookie, owner_only, require_owner
 
 router = APIRouter(prefix="/api/companies", dependencies=owner_only)
 
@@ -72,6 +76,85 @@ def create_company(req: CompanyRequest, actor: dict = Depends(require_owner)):
                     detail={"action": "company_create", "company": result["company"],
                             "schema": result["schema"], "admin": result["admin"]["username"]})
     return result
+
+
+class LeadStatus(BaseModel):
+    status: str = Field(pattern="^(new|done)$")
+
+
+@router.get("/leads")
+def list_leads():
+    """Заявки с демо-сайта: кто оставил контакты. new — ещё не обработана."""
+    import leads
+    return {"leads": leads.list_all(), "new": leads.count_new()}
+
+
+@router.post("/leads/{lead_id}")
+def set_lead_status(lead_id: str, req: LeadStatus):
+    import leads
+    if not leads.set_status(lead_id, req.status):
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    return {"ok": True}
+
+
+def _schema_of(slug: str) -> str:
+    try:
+        schema = provisioning.schema_for(slug)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not provisioning.is_company(schema):
+        raise HTTPException(status_code=404, detail="Компания не найдена")
+    return schema
+
+
+def _cookie(response: Response, name: str, value: str):
+    response.set_cookie(name, value, httponly=True, samesite="strict", secure=auth.COOKIE_SECURE,
+                        max_age=auth.SESSION_TTL, path="/")
+
+
+@router.post("/{slug}/enter")
+def enter_company(slug: str, response: Response, actor: dict = Depends(require_owner)):
+    """Открыть компанию: дальше все разделы панели — в её схеме, с правами её админа."""
+    schema = _schema_of(slug)
+    _cookie(response, auth.COMPANY_COOKIE, schema)
+    with db.use_schema(schema):
+        activitylog.log("action", user=actor, path=f"/api/companies/{slug}/enter",
+                        detail={"action": "owner_enter_company"})
+    return {"schema": schema, "company": provisioning.company_name(schema)}
+
+
+@router.post("/exit")
+def exit_company(response: Response):
+    response.delete_cookie(auth.COMPANY_COOKIE, path="/")
+    return {"ok": True}
+
+
+@router.get("/{slug}/admins")
+def company_admins(slug: str):
+    """Администраторы компании — для «Войти как администратор»."""
+    with db.use_schema(_schema_of(slug)):
+        return {"admins": [{"id": u["id"], "full_name": u.get("full_name"), "username": u.get("username")}
+                           for u in users.list_users()
+                           if u["role"] == users.ROLE_ADMIN and u.get("active") and u.get("username")]}
+
+
+@router.post("/{slug}/login-as/{user_id}")
+def login_as_admin(slug: str, user_id: str, request: Request, response: Response,
+                   actor: dict = Depends(require_owner)):
+    """Войти как администратор компании (загрузка документов — только от его имени). Сессия
+    суперадмина откладывается в куку nm_owner_return — вернуться: /api/return-to-owner."""
+    schema = _schema_of(slug)
+    with db.use_schema(schema):
+        target = users.get_user(user_id)
+        if not target or target.get("role") != users.ROLE_ADMIN or not target.get("active"):
+            raise HTTPException(status_code=400, detail="Это не действующий администратор компании")
+        token = auth.new_session(target, schema)
+        activitylog.log("action", user=actor, path=f"/api/companies/{slug}/login-as",
+                        detail={"action": "owner_login_as", "target": target.get("username")})
+    _cookie(response, auth.OWNER_RETURN_COOKIE, _session_token(request) or "")
+    _set_session_cookie(response, token)
+    response.delete_cookie(auth.COMPANY_COOKIE, path="/")
+    return {"username": target.get("username"), "company": provisioning.company_name(schema)}
 
 
 @router.get("/deepseek-balance")

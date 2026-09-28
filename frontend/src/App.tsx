@@ -12,6 +12,7 @@ import { ConfirmProvider } from './ui/confirm';
 import { Spinner } from './ui';
 import { ErrorBoundary } from './ui/ErrorBoundary';
 import { AppShell } from './blocks/AppShell';
+import { DemoLayer } from './blocks/Demo';
 import { TourHost } from './tour';
 import Login from './pages/auth/Login';
 import Register from './pages/auth/Register';
@@ -26,6 +27,7 @@ import Documents from './pages/admin/Documents';
 import Messages from './pages/admin/Messages';
 import Questions from './pages/admin/Questions';
 import Companies from './pages/admin/Companies';
+import Leads from './pages/admin/Leads';
 import Logs from './pages/service/Logs';
 import PlansDb from './pages/service/PlansDb';
 import NotifyTest from './pages/service/NotifyTest';
@@ -52,6 +54,7 @@ function Protected() {
     <InboxProvider enabled>
       <Outlet />
       <TourHost />
+      <DemoLayer />
     </InboxProvider>
   );
 }
@@ -77,8 +80,8 @@ function Home() {
 
 /** Стартовый раздел панели: суперадмину — компании, админу и куратору — пользователи. */
 function AdminHome() {
-  const { isOwner } = useMe();
-  return <Navigate to={isOwner ? '/admin/companies' : '/admin/users'} replace />;
+  const { isOwner, inCompany } = useMe();
+  return <Navigate to={isOwner && !inCompany ? '/admin/companies' : '/admin/users'} replace />;
 }
 
 function OwnerOnly({ children }: { children: ReactNode }) {
@@ -112,6 +115,7 @@ export default function App() {
                   <Route path="/admin" element={<AdminHome />} />
                   <Route element={<AdminLayout />}>
                     <Route path="/admin/companies" element={<OwnerOnly><Companies /></OwnerOnly>} />
+                    <Route path="/admin/leads" element={<OwnerOnly><Leads /></OwnerOnly>} />
                     <Route path="/admin/users" element={<Users />} />
                     <Route path="/admin/plans" element={<Plans />} />
                     <Route path="/admin/documents" element={<Documents />} />

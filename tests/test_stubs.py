@@ -65,6 +65,15 @@ def install(db: bool = True, psycopg: bool = False,
     return cfg
 
 
+def superadmin_hash(password: str) -> str:
+    """«соль:хэш» пароля суперадмина для NEIROMASTER_SUPERADMIN_HASH (параметры — как в
+    users.hash_password): в тестах суперадмин входит своим паролем, а не боевым."""
+    import hashlib
+    salt = b"0123456789abcdef"
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    return f"{salt.hex()}:{digest.hex()}"
+
+
 if __name__ == "__main__":
     cfg = install(some_flag=1)
     assert cfg.some_flag == 1

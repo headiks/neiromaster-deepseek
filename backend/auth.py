@@ -29,6 +29,9 @@ import provisioning
 import users
 
 COOKIE_NAME = "nm_session"
+# Суперадмин: открытая компания (схема) и его сессия, отложенная на время «входа как админ».
+COMPANY_COOKIE = "nm_company"
+OWNER_RETURN_COOKIE = "nm_owner_return"
 SESSION_TTL = 12 * 3600          # сколько живёт сессия без активности
 
 # Флаг Secure у cookie сессии: по умолчанию ВКЛ (токен не уходит по чистому HTTP).
@@ -153,6 +156,11 @@ def login(username: str, password: str, client: str = "") -> tuple:
 
     clear_failures(key)
 
+    return new_session(user, schema), user
+
+
+def new_session(user: dict, schema: Optional[str] = None) -> str:
+    """Сессия пользователя в схеме schema (текущая схема запроса должна быть ей же)."""
     now = time.time()
     token = secrets.token_urlsafe(32)
     if schema:
@@ -160,7 +168,7 @@ def login(username: str, password: str, client: str = "") -> tuple:
     db.execute("INSERT INTO sessions (token, user_id, created_at, seen_at) VALUES (%s, %s, %s, %s)",
                (_hash_token(token), user["id"], now, now))
     db.execute("DELETE FROM sessions WHERE seen_at < %s", (now - SESSION_TTL,))  # чистим протухшие
-    return token, user
+    return token
 
 
 def schema_of_token(token: Optional[str]) -> Optional[str]:

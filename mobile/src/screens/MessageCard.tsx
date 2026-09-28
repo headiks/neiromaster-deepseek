@@ -9,11 +9,13 @@ import { isChecklist, isQuestions, msgStats } from "../../../shared/progress";
 import { S, useTheme } from "../theme";
 import { GlassCard, Progress, Txt } from "../ui";
 import { CheckIcon } from "../icons";
+import { useViewTime } from "../viewtime";
 
 export default function MessageCard({ m, onAnswer }: { m: Msg; onAnswer: (m: Msg, key: string, value: string | null) => void }) {
   const { c } = useTheme();
   const p = m.payload, a = m.answers || {};
   const stats = msgStats(m);
+  const viewRef = useViewTime(m.id);
   const intro = (p as { intro?: string } | null)?.intro;
   let body: React.ReactNode = null;
   if (isChecklist(p)) {
@@ -71,6 +73,7 @@ export default function MessageCard({ m, onAnswer }: { m: Msg; onAnswer: (m: Msg
   const ratio = stats.kind === "checklist" ? stats.done / (stats.total || 1)
     : stats.kind === "quiz" || stats.kind === "survey" ? stats.answered / (stats.total || 1) : 0;
   return (
+    <View ref={viewRef} collapsable={false}>
     <GlassCard>
       <View style={{ flexDirection: "row", justifyContent: "space-between", gap: S.md }}>
         <Txt v="small" w="600" color={c.softInk} style={{ flex: 1 }}>{msgKicker(m)}</Txt>
@@ -84,5 +87,6 @@ export default function MessageCard({ m, onAnswer }: { m: Msg; onAnswer: (m: Msg
         </View>
       ) : null}
     </GlassCard>
+    </View>
   );
 }
