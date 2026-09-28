@@ -20,7 +20,7 @@ mkdir -p "$OUT" && rm -f "$OUT"/*.log "$OUT"/report.txt
 REGIONS=$(python3 scripts/stress_geo.py regions)
 NAMES=$(echo "$REGIONS" | awk '{print "nm-geo-" $1}')
 
-redis() { $DC exec -T redis redis-cli "$@"; }
+redis() { $DC exec -T redis redis-cli "$@" </dev/null; }   # не читать чужой stdin в циклах
 
 cleanup() {
     echo "== уборка"
@@ -41,9 +41,9 @@ echo "== подготовка: $(echo "$REGIONS" | wc -l) регионов, па
 $D rm -f $NAMES >/dev/null 2>&1
 redis DEL nm:geo:go nm:geo:ready >/dev/null
 while read -r reg rtt jit loss rate; do
-    redis DEL "nm:geo:netem:$reg" >/dev/null
+    redis DEL "nm:geo:netem:$reg" </dev/null >/dev/null
     $DC run -d --no-deps --name "nm-geo-$reg" -v "$PWD/scripts:/app/scripts" web \
-        python scripts/stress_geo.py run --region "$reg" $ARGS >/dev/null || { echo "не запустился $reg"; cleanup; exit 1; }
+        python scripts/stress_geo.py run --region "$reg" $ARGS </dev/null >/dev/null || { echo "не запустился $reg"; cleanup; exit 1; }
 done <<< "$REGIONS"
 
 echo "== сеть регионов (tc netem)"
@@ -52,8 +52,8 @@ while read -r reg rtt jit loss rate; do
     [ "$rate" != "-" ] && shape="$shape rate $rate"
     if $D run --rm --net "container:nm-geo-$reg" --cap-add NET_ADMIN alpine:3 sh -c \
         "apk add -q --no-cache iproute2 >/dev/null && for i in \$(ls /sys/class/net | grep -v '^lo\$'); do tc qdisc replace dev \$i root netem $shape || exit 1; done" \
-        >/dev/null 2>&1; then
-        redis SET "nm:geo:netem:$reg" ok >/dev/null
+        </dev/null >/dev/null 2>&1; then
+        redis SET "nm:geo:netem:$reg" ok </dev/null >/dev/null
         echo "  $reg: $shape"
     else
         echo "  $reg: netem недоступен — задержка $rtt±$jit мс эмулируется в коде"
