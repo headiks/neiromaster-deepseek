@@ -33,6 +33,7 @@ from typing import Optional
 
 import db
 import pii_key
+import provisioning
 
 BASE_DIR = Path(__file__).resolve().parents[1]   # корень проекта (код — в backend/)
 DATA_DIR = BASE_DIR / "data"
@@ -40,11 +41,20 @@ USERS_PATH = DATA_DIR / "users.json"          # старое хранилище 
 LEGACY_EMPLOYEES_PATH = DATA_DIR / "employees.json"
 INITIAL_CREDENTIALS_PATH = DATA_DIR / "owner_initial_credentials.txt"
 
+# Роли (сверху вниз):
+#   owner    — суперадмин разработчика, один на систему, живёт в public: компании, статистика,
+#              журнал всех компаний. Внутри своей (общей) схемы видит всё.
+#   admin    — администратор компании, один на компанию (выдаёт суперадмин): вся компания,
+#              заводит кураторов и сотрудников.
+#   curator  — куратор отдела (заводит админ): только свой отдел, заводит только сотрудников.
+#   employee — сотрудник: свой кабинет.
 ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
+ROLE_CURATOR = "curator"
 ROLE_EMPLOYEE = "employee"
-ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_EMPLOYEE)
-ADMIN_ROLES = (ROLE_OWNER, ROLE_ADMIN)
+ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
+ADMIN_ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_CURATOR)     # есть админ-панель
+FULL_ACCESS_ROLES = (ROLE_OWNER, ROLE_ADMIN)             # видят всю свою схему, не только отдел
 
 ADAPTATION_STATUSES = {"planned", "active", "done", "paused"}
 
@@ -224,6 +234,7 @@ def _insert(user: dict):
     values = [_db_value(c, user.get(c)) for c in _COLUMNS]
     placeholders = ", ".join("%s" for _ in _COLUMNS)
     db.execute(f"INSERT INTO users ({', '.join(_COLUMNS)}) VALUES ({placeholders})", values)
+    provisioning.sync_login(user)     # вход по одному адресу: логин -> схема компании
 
 
 def _save_user(user: dict):
@@ -232,6 +243,7 @@ def _save_user(user: dict):
     values = [_db_value(c, user.get(c)) for c in cols]
     values.append(user["id"])
     db.execute(f"UPDATE users SET {', '.join(c + ' = %s' for c in cols)} WHERE id = %s", values)
+    provisioning.sync_login(user)
 
 
 def public_view(user: dict) -> dict:
@@ -286,7 +298,7 @@ def list_users(with_secrets: bool = False) -> list:
     users = [_row_to_user(r) for r in rows]
     view = (lambda u: {k: v for k, v in u.items() if k not in ("salt", "hash")}) if with_secrets else public_view
     return sorted((view(u) for u in users),
-                  key=lambda u: (u["role"] != ROLE_OWNER, u["role"] != ROLE_ADMIN,
+                  key=lambda u: (ROLES.index(u["role"]) if u["role"] in ROLES else len(ROLES),
                                  u.get("full_name") or ""))
 
 
@@ -305,11 +317,11 @@ def get_by_username(username: str) -> Optional[dict]:
 
 
 def get_owner() -> Optional[dict]:
-    """Первый суперадмин (по сортировке) — «корень» хранилища и первичная учётка.
-    Суперадминов может быть несколько (все равноправны); этот — стабильный «главный»
-    для пути хранилища documents/<owner>/<admin>/."""
-    row = db.query("SELECT * FROM users WHERE role = %s ORDER BY created_at, id LIMIT 1",
-                   (ROLE_OWNER,), "one")
+    """«Корень» хранилища documents/<корень>/<загрузивший>/: в общей схеме — суперадмин,
+    в компании — её администратор (стабильно: первый по дате создания)."""
+    row = db.query("SELECT * FROM users WHERE role IN (%s, %s) "
+                   "ORDER BY (role = %s) DESC, created_at, id LIMIT 1",
+                   (ROLE_OWNER, ROLE_ADMIN, ROLE_OWNER), "one")
     return _row_to_user(row) if row else None
 
 
@@ -326,17 +338,41 @@ def count_users() -> int:
 
 
 def _username_taken(username: str, exclude_id: Optional[str] = None) -> bool:
+    """Логины уникальны во всей системе: вход по одному адресу ищет компанию по логину."""
     row = db.query("SELECT id FROM users WHERE username = %s", (username,), "one")
-    return bool(row) and row["id"] != exclude_id
+    if row and row["id"] != exclude_id:
+        return True
+    return provisioning.login_taken_elsewhere(username, exclude_id)
 
 
 # ---------- Права ----------
 def is_admin(user: dict) -> bool:
+    """Есть админ-панель: суперадмин, админ компании, куратор."""
     return bool(user) and user.get("role") in ADMIN_ROLES
 
 
 def is_owner(user: dict) -> bool:
+    """Суперадмин (разработчик): компании, статистика, журнал всех компаний."""
     return bool(user) and user.get("role") == ROLE_OWNER
+
+
+def is_full_access(user: dict) -> bool:
+    """Видит всю свою схему, а не только отдел: админ компании (и суперадмин в общей)."""
+    return bool(user) and user.get("role") in FULL_ACCESS_ROLES
+
+
+def is_curator(user: dict) -> bool:
+    return bool(user) and user.get("role") == ROLE_CURATOR
+
+
+def assignable_roles(actor: dict) -> tuple:
+    """Какие роли актор вправе выдавать. Админ компании — кураторов и сотрудников, куратор —
+    только сотрудников. Админов компаний заводит суперадмин вместе с компанией."""
+    if is_full_access(actor):
+        return (ROLE_CURATOR, ROLE_EMPLOYEE)
+    if is_curator(actor):
+        return (ROLE_EMPLOYEE,)
+    return ()
 
 
 def dir_slug(user) -> str:
@@ -355,29 +391,29 @@ def dir_slug(user) -> str:
 
 
 def same_department(actor: dict, target: dict) -> bool:
-    """Один ли отдел. Пустой отдел у администратора не считается совпадением —
-    иначе «безотдельный» админ увидел бы всех, у кого отдел тоже не заполнен."""
+    """Один ли отдел. Пустой отдел у куратора не считается совпадением —
+    иначе «безотдельный» куратор увидел бы всех, у кого отдел тоже не заполнен."""
     dep = (actor.get("department") or "").strip().lower()
     return bool(dep) and dep == (target.get("department") or "").strip().lower()
 
 
 def can_see_doc(actor: dict, doc: dict) -> bool:
     """
-    Виден ли администратору документ. Суперадмин видит всё. Администратор — свои загрузки
-    и ОБЩИЕ документы суперадмина (только чтение): иначе каждый админ грузил и оплачивал
-    обработку одних и тех же общих регламентов заново. Документы других админов и «ничьи»
-    (залиты до разделения прав или через CLI) — только суперадмину.
+    Виден ли документ. Админ компании (суперадмин в общей схеме) видит всё. Куратор — свои
+    загрузки и ОБЩИЕ документы админа (только чтение): иначе каждый куратор грузил и оплачивал
+    обработку одних и тех же общих регламентов заново. Документы других кураторов и «ничьи»
+    (залиты до разделения прав или через CLI) — только админу.
     """
-    if is_owner(actor):
+    if is_full_access(actor):
         return True
-    if doc.get("uploaded_by_role") == ROLE_OWNER:
+    if doc.get("uploaded_by_role") in FULL_ACCESS_ROLES:
         return True
     return bool(doc.get("uploaded_by")) and doc.get("uploaded_by") == actor.get("id")
 
 
 def can_edit_doc(actor: dict, doc: dict) -> bool:
-    """Удалять/переразбирать/уточнять: суперадмин — любой документ, админ — только свой."""
-    if is_owner(actor):
+    """Удалять/переразбирать/уточнять: админ — любой документ, куратор — только свой."""
+    if is_full_access(actor):
         return True
     return bool(doc.get("uploaded_by")) and doc.get("uploaded_by") == actor.get("id")
 
@@ -388,11 +424,10 @@ def visible_docs(actor: dict, docs: list) -> list:
 
 def visible_users(actor: dict, all_users: list) -> list:
     """
-    Кого администратор видит в списке людей.
-    Главный администратор — всех. Обычный администратор — только свой отдел
+    Кого актор видит в списке людей. Админ компании — всех. Куратор — только свой отдел
     (и себя самого, даже если отдел ему не проставили).
     """
-    if is_owner(actor):
+    if is_full_access(actor):
         return list(all_users)
     return [u for u in all_users
             if u.get("id") == actor.get("id") or same_department(actor, u)]
@@ -400,25 +435,24 @@ def visible_users(actor: dict, all_users: list) -> list:
 
 def can_manage(actor: dict, target: dict) -> bool:
     """
-    Кого актор вправе редактировать.
-    Главный администратор — всех. Обычный администратор — только сотрудников
-    СВОЕГО отдела (и себя): иначе он мог бы сбросить пароль другому администратору
-    и обойти ограничения, либо править людей чужого подразделения.
+    Кого актор вправе редактировать. Суперадмин в общей схеме — всех. Админ компании —
+    себя, кураторов и сотрудников. Куратор — себя и сотрудников СВОЕГО отдела: иначе он мог
+    бы сбросить пароль админу или куратору и обойти ограничения.
     """
     if not is_admin(actor) or not target:
         return False
-    if is_owner(actor):
+    if is_owner(actor) or target.get("id") == actor.get("id"):
         return True
-    if target.get("id") == actor.get("id"):
-        return True
+    if is_full_access(actor):
+        return target.get("role") in (ROLE_CURATOR, ROLE_EMPLOYEE)
     return target.get("role") == ROLE_EMPLOYEE and same_department(actor, target)
 
 
 def ensure_can_manage(actor: dict, target: dict):
     if not can_manage(actor, target):
         raise PermissionError(
-            "Недостаточно прав: администратор работает только с сотрудниками своего отдела, "
-            "остальное — у главного администратора")
+            "Недостаточно прав: куратор работает только с сотрудниками своего отдела, "
+            "остальное — у администратора компании")
 
 
 # ---------- Запись ----------
@@ -713,10 +747,9 @@ def set_active(user_id: str, active: bool) -> Optional[dict]:
 
 def set_role(user_id: str, role: str) -> dict:
     """
-    Назначение любой роли: сотрудник / администратор / суперадмин (owner).
-    Суперадминов может быть НЕСКОЛЬКО — назначаем ролью owner напрямую. При снятии
-    роли с суперадмина не даём убрать последнего (иначе систему некому администрировать).
-    Роль с правами (admin/owner) требует заданного пароля.
+    Смена роли. Кто какую роль вправе выдать, решает API (assignable_roles): админ
+    компании — куратора/сотрудника, куратор — никому. Здесь — инварианты: последнего
+    суперадмина не снять, роль с админ-панелью требует заданного пароля.
     """
     if role not in ROLES:
         raise ValueError("Недопустимая роль")
@@ -735,7 +768,7 @@ def set_role(user_id: str, role: str) -> dict:
 
 
 def transfer_ownership(current_owner_id: str, new_owner_id: str) -> dict:
-    """Передача роли главного администратора. Прежний владелец становится админом."""
+    """Передача роли суперадмина. Прежний становится куратором (роль с панелью, без полного доступа)."""
     with _lock:
         current = get_user(current_owner_id)
         new_owner = get_user(new_owner_id)
@@ -753,7 +786,7 @@ def transfer_ownership(current_owner_id: str, new_owner_id: str) -> dict:
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         new_owner["role"] = ROLE_OWNER
         new_owner["updated_at"] = now
-        current["role"] = ROLE_ADMIN
+        current["role"] = ROLE_CURATOR
         current["updated_at"] = now
         _save_user(new_owner)
         _save_user(current)
@@ -768,6 +801,7 @@ def delete_user(user_id: str) -> bool:
         if user["role"] == ROLE_OWNER and count_owners() <= 1:
             raise ValueError("Это последний суперадмин — сначала назначьте другого")
         db.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        provisioning.drop_login(user_id)
     return True
 
 
@@ -844,6 +878,16 @@ def _import_records(records) -> int:
         existing.add(uid)
         moved += 1
     return moved
+
+
+def migrate_admins_to_curators() -> int:
+    """До разделения на компании «администратор» был админом ОТДЕЛА. Теперь это куратор, а
+    admin — администратор компании (живёт в её схеме). Только общая схема; идемпотентно."""
+    if db.current_schema():
+        return 0
+    rows = db.query("UPDATE users SET role = %s WHERE role = %s RETURNING id",
+                    (ROLE_CURATOR, ROLE_ADMIN)) or []
+    return len(rows)
 
 
 def migrate_start_dates() -> int:
@@ -927,21 +971,30 @@ if __name__ == "__main__":
     assert dir_slug({"id": "abcdef123456"}) == "user-abcdef12"
     assert dir_slug(None) == "_common"
     _owner = {"id": "o", "role": ROLE_OWNER, "department": ""}
-    _adm = {"id": "a", "role": ROLE_ADMIN, "department": "Логистика"}
+    _adm = {"id": "a", "role": ROLE_CURATOR, "department": "Логистика"}   # куратор отдела
     _all = [_owner, _adm, {"id": "e1", "role": ROLE_EMPLOYEE, "department": "логистика"},
             {"id": "e2", "role": ROLE_EMPLOYEE, "department": "Сварка"},
             {"id": "e3", "role": ROLE_EMPLOYEE, "department": ""}]
     assert len(visible_users(_owner, _all)) == 5
     assert {u["id"] for u in visible_users(_adm, _all)} == {"a", "e1"}   # свой отдел + сам
-    assert {u["id"] for u in visible_users({"id": "a2", "role": ROLE_ADMIN, "department": ""}, _all)} == set()
+    assert {u["id"] for u in visible_users({"id": "a2", "role": ROLE_CURATOR, "department": ""}, _all)} == set()
     # управление: свой отдел — да, чужой отдел и другой админ — нет, себя — да
     assert can_manage(_adm, _all[2]) and not can_manage(_adm, _all[3])
-    assert not can_manage(_adm, {"id": "a9", "role": ROLE_ADMIN, "department": "Логистика"})
+    assert not can_manage(_adm, {"id": "a9", "role": ROLE_CURATOR, "department": "Логистика"})
     assert can_manage(_adm, _adm) and can_manage(_owner, _all[3])
+    # админ компании: вся компания; кураторы и сотрудники — да, суперадмин — нет
+    _cadm = {"id": "c", "role": ROLE_ADMIN, "department": ""}
+    assert len(visible_users(_cadm, _all)) == 5
+    assert can_manage(_cadm, _adm) and can_manage(_cadm, _all[3]) and not can_manage(_cadm, _owner)
+    assert assignable_roles(_cadm) == (ROLE_CURATOR, ROLE_EMPLOYEE)
+    assert assignable_roles(_adm) == (ROLE_EMPLOYEE,) and assignable_roles(_all[2]) == ()
     # документы: свои — да, чужие и «ничьи» — только суперадмину
     _docs = [{"filename": "own.pdf", "uploaded_by": "a"},
              {"filename": "alien.pdf", "uploaded_by": "a2"},
              {"filename": "legacy.pdf"}]
     assert [d["filename"] for d in visible_docs(_adm, _docs)] == ["own.pdf"]
-    assert len(visible_docs(_owner, _docs)) == 3
+    assert len(visible_docs(_owner, _docs)) == 3 and len(visible_docs(_cadm, _docs)) == 3
+    # общие документы админа компании куратор видит, но не правит
+    _shared = {"filename": "common.pdf", "uploaded_by": "c", "uploaded_by_role": ROLE_ADMIN}
+    assert can_see_doc(_adm, _shared) and not can_edit_doc(_adm, _shared)
     print("OK: dir_slug, видимость людей и документов, управление по отделу")

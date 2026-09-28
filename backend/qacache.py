@@ -16,8 +16,8 @@ qacache.py — база готовых ответов: похожий вопро
 Хранение: таблица qa_answers в основной БД — переживает перезапуски, без TTL. Вопрос и ответ
 шифруются как ПДн (сотрудник мог написать в вопросе своё имя). Изменились документы — faq.py
 удаляет ответы faq/model по затронутым подэтапам и пишет новые; ответы специалистов не трогает.
-Векторы держим в памяти процесса; любая запись увеличивает версию (Redis nm:qa:ver), и
-процессы перечитывают матрицу.
+Векторы держим в памяти процесса — своя матрица у каждой компании (схемы); любая запись
+увеличивает версию компании (Redis nm:qa:ver:<схема>), и процессы перечитывают её матрицу.
 ponytail: полная перезагрузка матрицы после каждой записи; тысячи строк — доли секунды.
 Десятки тысяч — догружать только новые id.
 """
@@ -31,6 +31,7 @@ import numpy as np
 
 import db
 import embed
+import provisioning
 import users
 from redis_conn import get_redis
 
@@ -79,8 +80,8 @@ _STOP = {"а", "в", "во", "и", "к", "ко", "на", "о", "об", "от", "
          "мои", "нам", "нас", "меня", "как", "подскажите", "скажите", "пожалуйста", "можно"}
 
 _lock = threading.Lock()
-_idx = {"ver": None, "ids": np.zeros(0, dtype=np.int64), "pos": [], "mat": None}
-_mem_ver = [0]    # версия без Redis (один процесс)
+_idx: dict = {}      # схема компании -> {"ver", "ids", "pos", "mat"}: ответы компаний не смешиваются
+_mem_ver: dict = {}  # схема -> версия без Redis (один процесс)
 
 
 def sim_threshold() -> float:
@@ -113,28 +114,34 @@ def _pos(position: str) -> str:
 # ---------- Версия и матрица векторов ----------
 def _version() -> int:
     r = get_redis()
-    return _mem_ver[0] if r is None else int(r.get("nm:qa:ver") or 0)
+    if r is None:
+        return _mem_ver.get(db.current_schema() or "", 0)
+    return int(r.get(provisioning.tenant_key("nm:qa:ver")) or 0)
 
 
 def _bump():
     r = get_redis()
     if r is None:
-        _mem_ver[0] += 1
+        schema = db.current_schema() or ""
+        _mem_ver[schema] = _mem_ver.get(schema, 0) + 1
     else:
-        r.incr("nm:qa:ver")
+        r.incr(provisioning.tenant_key("nm:qa:ver"))
 
 
 def _index() -> dict:
-    ver = _version()
+    ver, schema = _version(), db.current_schema() or ""
     with _lock:
-        if _idx["ver"] != ver:
+        idx = _idx.get(schema)
+        if idx is None or idx["ver"] != ver:
             rows = db.query("SELECT id, position, embedding FROM qa_answers "
                             "WHERE embedding IS NOT NULL ORDER BY id") or []
-            _idx["ids"] = np.asarray([r["id"] for r in rows], dtype=np.int64)
-            _idx["pos"] = [r["position"] for r in rows]
-            _idx["mat"] = np.asarray([r["embedding"] for r in rows], dtype=np.float32) if rows else None
-            _idx["ver"] = ver
-        return dict(_idx)
+            idx = _idx[schema] = {
+                "ver": ver,
+                "ids": np.asarray([r["id"] for r in rows], dtype=np.int64),
+                "pos": [r["position"] for r in rows],
+                "mat": np.asarray([r["embedding"] for r in rows], dtype=np.float32) if rows else None,
+            }
+        return dict(idx)
 
 
 def best_match(mat, ids, positions, vec, position: str = ""):

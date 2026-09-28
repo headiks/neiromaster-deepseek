@@ -31,13 +31,26 @@ def _queue():
     return Queue(QUEUE_NAME, connection=r)
 
 
+def in_schema(schema, target, *args):
+    """Выполнить задачу в схеме компании, которая её поставила (worker-процесс не знает,
+    из какого запроса пришла задача)."""
+    import db
+    if not schema:
+        return target(*args)
+    with db.use_schema(schema):
+        return target(*args)
+
+
 def _run_or_thread(q, target, *args, job_timeout=JOB_TIMEOUT):
-    """Redis есть — в RQ; нет — в поток. Возврат: True, если ушло в очередь."""
+    """Redis есть — в RQ; нет — в поток. Возврат: True, если ушло в очередь.
+    Задача выполняется в схеме текущей компании (in_schema)."""
+    import db
+    schema = db.current_schema()
     if q is not None:
-        q.enqueue(target, *args, job_timeout=job_timeout,
+        q.enqueue(in_schema, schema, target, *args, job_timeout=job_timeout,
                   result_ttl=600, failure_ttl=24 * 3600)
         return True
-    threading.Thread(target=target, args=args, daemon=True).start()
+    threading.Thread(target=in_schema, args=(schema, target, *args), daemon=True).start()
     return False
 
 

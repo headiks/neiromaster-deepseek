@@ -14,7 +14,7 @@ import folders
 import users
 import activitylog
 from config import MAX_UPLOAD_BYTES
-from deps import _bg, require_admin, admin_only, owner_only, globaltest_only, can_see_doc, visible_documents, ensure_doc_access
+from deps import _bg, require_admin, admin_only, full_access_only, globaltest_only, can_see_doc, visible_documents, ensure_doc_access
 
 router = APIRouter()
 
@@ -36,7 +36,7 @@ def get_documents(user: dict = Depends(require_admin)):
     """Список документов в базе с их статусом индексации (загружен / обрабатывается / готов / ошибка).
     Суперадмину — все документы, администратору — только его собственные загрузки."""
     return {"documents": visible_documents(user),
-            "scope": "all" if users.is_owner(user) else "own"}
+            "scope": "all" if users.is_full_access(user) else "own"}
 
 
 @router.get("/documents/board")
@@ -184,17 +184,19 @@ def api_s3_list(prefix: str = "", recursive: bool = False,
     Суперадмин ходит по всему бакету (его папка — корень структуры), обычный
     администратор заперт в СВОЁМ подкаталоге <суперадмин>/<админ>/: запрошенный
     префикс вне него подменяется на собственный, чужие файлы не листаются."""
-    import config
+    import db
     import storage
-    home = ""
-    if not users.is_owner(user):
+    # Компания видит только свой префикс бакета (cab_<код>/...), куратор — только свою папку
+    # внутри него. Весь бакет — только суперадмину в общей схеме.
+    home = storage._prefix() if db.current_schema() else ""
+    if not users.is_full_access(user):
         top, own = indexing.owner_dirs(user)
-        home = f"{config.S3_PREFIX}{top}/{own}/"
-        if not (prefix or "").startswith(home):
-            prefix = home
+        home = f"{storage._prefix()}{top}/{own}/"
+    if home and not (prefix or "").startswith(home):
+        prefix = home
     data = storage.list_objects(prefix=prefix, delimiter=("" if recursive else "/"))
     data["home"] = home          # ниже этого префикса администратору спускаться нельзя
-    data["scope"] = "all" if users.is_owner(user) else "own"
+    data["scope"] = "all" if users.is_full_access(user) else "own"
     return data
 
 
@@ -342,7 +344,7 @@ class ClarifyRequest(BaseModel):
     clarification: str = Field(max_length=4000)
 
 
-@router.post("/documents/reanalyze", dependencies=owner_only)
+@router.post("/documents/reanalyze", dependencies=full_access_only)
 def reanalyze_documents():
     """Полный повторный анализ ВСЕЙ базы под текущую структуру папок (фоново).
     Только суперадмин: операция задевает документы всех администраторов.
@@ -375,7 +377,7 @@ def reprocess_one(filename: str, user: dict = Depends(require_admin)):
     ensure_doc_access(user, filename, write=True)
     if indexing.is_confidential(filename):
         raise HTTPException(status_code=400, detail="Документ помечен «не отправлять в ИИ»")
-    fp = indexing.DOCS_DIR / filename
+    fp = config.docs_dir() / filename
     if not fp.exists():
         raise HTTPException(status_code=404, detail="Файл-оригинал не найден в хранилище")
     job = indexing.enqueue_document(fp)

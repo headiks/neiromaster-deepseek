@@ -190,13 +190,10 @@ def group_pushes(rows: list) -> list:
 
 
 def _schemas():
-    """Схемы для обработки: public (None) + все кабинеты из реестра."""
+    """Схемы для обработки: public (None) + все компании из реестра."""
+    import provisioning
     yield None
-    try:
-        for r in db.query("SELECT schema_name FROM public.cabinets"):
-            yield r["schema_name"]
-    except Exception:
-        pass   # реестра кабинетов ещё нет — работаем только с public
+    yield from provisioning.schemas(fresh=True)
 
 
 def dispatch_all() -> int:

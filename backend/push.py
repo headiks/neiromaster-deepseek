@@ -156,7 +156,7 @@ def notify(items: list) -> int:
         return 0
     import sizing
     with ThreadPoolExecutor(max_workers=max(1, min(sizing.push_workers(), len(jobs)))) as ex:
-        results = list(ex.map(lambda j: _send_one(*j), jobs))
+        results = list(ex.map(db.bind_schema(lambda j: _send_one(*j)), jobs))
     for (tok, *_), res in zip(jobs, results):
         if res == "unregistered":
             remove_token(tok)

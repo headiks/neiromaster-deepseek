@@ -21,17 +21,24 @@ def _requeue_once(r):
     иначе каждый запущенный worker поставил бы дубли."""
     if not r.set("nm:lock:requeue", str(os.getpid()), nx=True, ex=120):
         return
-    try:
-        import indexing
-        n1 = indexing.requeue_stranded()
-    except Exception as e:
-        print(f"[worker] requeue index: {e}"); n1 = 0
-    try:
-        import docpipe
-        n2 = docpipe.requeue_stranded()
-    except Exception as e:
-        print(f"[worker] requeue docpipe: {e}"); n2 = 0
-    print(f"[worker] возобновлено зависших задач: индексация={n1}, docpipe={n2}")
+    import contextlib
+    import db
+    import provisioning
+    for schema in [None, *provisioning.schemas(fresh=True)]:     # общая схема + все компании
+        with db.use_schema(schema) if schema else contextlib.nullcontext():
+            try:
+                import indexing
+                n1 = indexing.requeue_stranded()
+            except Exception as e:
+                print(f"[worker] requeue index ({schema or 'public'}): {e}"); n1 = 0
+            try:
+                import docpipe
+                n2 = docpipe.requeue_stranded()
+            except Exception as e:
+                print(f"[worker] requeue docpipe ({schema or 'public'}): {e}"); n2 = 0
+        if n1 or n2:
+            print(f"[worker] {schema or 'public'}: возобновлено зависших задач: "
+                  f"индексация={n1}, docpipe={n2}")
 
 
 def main():

@@ -25,7 +25,7 @@ from deps import (BASE_DIR, STATIC_DIR, GT_COOKIE, GT_TTL, gt_check_password, gt
 router = APIRouter()
 
 # Разделы админки (/admin/<раздел>) и служебные страницы — все внутри SPA.
-ADMIN_SECTIONS = ("users", "plans", "documents", "messages", "questions")
+ADMIN_SECTIONS = ("users", "plans", "documents", "messages", "questions", "companies")
 # Журнал действий — рабочий инструмент администратора. Тесты и диагностика — только через
 # /globaltest с отдельным паролем (deps.page_for_globaltest).
 SERVICE_PAGES = ("/logs", "/globaltest")
@@ -41,6 +41,10 @@ def root(request: Request):
         return RedirectResponse(url="/login", status_code=303)
     if user.get("must_change_credentials"):
         return RedirectResponse(url="/setup", status_code=303)
+    # Персонал (суперадмин, админ, куратор) — сразу в рабочую панель, а не в кабинет
+    # сотрудника с приветствием: своего плана адаптации у них нет.
+    if users.is_admin(user):
+        return RedirectResponse(url="/admin", status_code=303)
     return spa_html()
 
 

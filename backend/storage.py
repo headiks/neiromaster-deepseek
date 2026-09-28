@@ -35,9 +35,17 @@ def _s3():
     return _client
 
 
+def _prefix() -> str:
+    """Префикс ключей: у компании — cab_<код>/<S3_PREFIX>, оригиналы компаний не смешиваются
+    ни в бакете, ни в raw-БД (ключ тот же). Общая схема — просто S3_PREFIX, как раньше."""
+    import db
+    schema = db.current_schema()
+    return f"{schema}/{config.S3_PREFIX}" if schema else config.S3_PREFIX
+
+
 def _key(filename: str) -> str:
     """Плоский ключ (как было до ролей). Остаётся для старых, уже залитых файлов."""
-    return f"{config.S3_PREFIX}{Path(filename).name}"
+    return f"{_prefix()}{Path(filename).name}"
 
 
 def doc_key(filename: str, owner_slug: str = "", admin_slug: str = "") -> str:
@@ -53,7 +61,7 @@ def doc_key(filename: str, owner_slug: str = "", admin_slug: str = "") -> str:
     """
     name = Path(filename).name
     if owner_slug and admin_slug:
-        return f"{config.S3_PREFIX}{owner_slug}/{admin_slug}/{name}"
+        return f"{_prefix()}{owner_slug}/{admin_slug}/{name}"
     return _key(name)
 
 

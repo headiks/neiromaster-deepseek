@@ -17,9 +17,10 @@ from deps import _set_session_cookie, _session_token, current_user, require_setu
 
 router = APIRouter()
 
-# Самостоятельная регистрация (аккаунт ждёт подтверждения администратора). В закрытом
-# контуре, где все доступы выдаёт администратор, её выключают: NEIROMASTER_ALLOW_REGISTRATION=0.
-ALLOW_REGISTRATION = os.environ.get("NEIROMASTER_ALLOW_REGISTRATION", "1").lower() not in ("0", "false", "no")
+# Самостоятельная регистрация — по умолчанию ВЫКЛ: люди живут в компаниях, и доступы
+# выдают админ компании или куратор. Зарегистрированный сам попал бы в общую схему, без
+# компании. Включить для старых установок без компаний: NEIROMASTER_ALLOW_REGISTRATION=1.
+ALLOW_REGISTRATION = os.environ.get("NEIROMASTER_ALLOW_REGISTRATION", "0").lower() in ("1", "true", "yes")
 
 # За заводским NAT вся смена входит с одного адреса: 120 в минуту упирались в утренний пик.
 LOGIN_RATE_PER_MIN = int(os.environ.get("NEIROMASTER_LOGIN_RATE", "600"))

@@ -112,7 +112,8 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
 
 def _record_usage(model: str, usage: dict):
     """Учёт токенов по дням (Redis-хэш nm:llm:YYYY-MM-DD, живёт 90 дней) — чтобы расход
-    было видно без личного кабинета DeepSeek (GET /api/llm-usage). Сбой учёта не мешает."""
+    было видно без личного кабинета DeepSeek (GET /api/llm-usage). Поле company:<схема> —
+    токены каждой компании (статистика суперадмина). Сбой учёта не мешает."""
     try:
         from redis_conn import get_redis
         rd = get_redis()
@@ -126,6 +127,8 @@ def _record_usage(model: str, usage: dict):
         pipe.hincrby(key, "prompt_tokens", pt)
         pipe.hincrby(key, "completion_tokens", ct)
         pipe.hincrby(key, "cache_hit_tokens", int(usage.get("prompt_cache_hit_tokens") or 0))
+        import db
+        pipe.hincrby(key, f"company:{db.current_schema() or 'public'}", pt + ct)
         pipe.expire(key, 90 * 24 * 3600)
         pipe.execute()
     except Exception:
@@ -146,3 +149,31 @@ def usage_by_day(days: int = 14) -> list:
         if h:
             out.append({"date": d, **{k: int(v) for k, v in h.items()}})
     return out
+
+
+def tokens_by_company(days: int = 30) -> dict:
+    """Токены каждой компании за days дней: {схема: токены}. Без Redis — пусто."""
+    total: dict = {}
+    for day in usage_by_day(days):
+        for k, v in day.items():
+            if k.startswith("company:"):
+                total[k[8:]] = total.get(k[8:], 0) + int(v)
+    return total
+
+
+def balance() -> dict:
+    """Баланс счёта DeepSeek (GET /user/balance): {'available', 'currency', 'total',
+    'granted', 'topped_up'}. Нет ключа или сети (закрытый контур) — исключение."""
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "") or API_KEY
+    base_url = (os.environ.get("DEEPSEEK_BASE_URL") or BASE_URL).rstrip("/")
+    if not api_key:
+        raise RuntimeError("DEEPSEEK_API_KEY не задан")
+    r = requests.get(f"{base_url}/user/balance", timeout=15,
+                     headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
+    r.raise_for_status()
+    data = r.json()
+    info = (data.get("balance_infos") or [{}])[0]
+    return {"available": bool(data.get("is_available")), "currency": info.get("currency", ""),
+            "total": float(info.get("total_balance") or 0),
+            "granted": float(info.get("granted_balance") or 0),
+            "topped_up": float(info.get("topped_up_balance") or 0)}

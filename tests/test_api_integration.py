@@ -61,8 +61,8 @@ def env():
     users.INITIAL_CREDENTIALS_PATH = tmp / "owner_initial_credentials.txt"
     users.USERS_PATH = tmp / "users.json"
     users.LEGACY_EMPLOYEES_PATH = tmp / "employees.json"
-    indexing.DOCS_DIR = tmp / "documents"
-    indexing.DOCS_DIR.mkdir()
+    config.DOCS_DIR = tmp / "documents"          # config.docs_dir() берёт его в момент вызова
+    config.DOCS_DIR.mkdir()
     config.REGISTRY_PATH = tmp / "registry.json"
     import docregistry, questions
     docregistry.REGISTRY_PATH = tmp / "registry.json"
@@ -192,10 +192,10 @@ def test_login_lockout_and_admin_reset(env, owner):
 
 
 # ---------------------------------------------------------------- люди и права
-def _make_admin(env, owner, name, dept):
+def _make_curator(env, owner, name, dept):
     c = _as_owner(env, owner)
     u = c.post("/users", json={"full_name": name, "department": dept}, headers=ORIGIN).json()
-    assert c.post(f"/users/{u['id']}/role", json={"role": "admin"}, headers=ORIGIN).status_code == 200
+    assert c.post(f"/users/{u['id']}/role", json={"role": "curator"}, headers=ORIGIN).status_code == 200
     pw = c.post(f"/users/{u['id']}/credentials", json={"password": "admin-pass-123"}, headers=ORIGIN).json()
     c.cookies.clear()
     c.post("/api/login", json={"username": pw["username"], "password": "admin-pass-123"})
@@ -203,10 +203,10 @@ def _make_admin(env, owner, name, dept):
     return {"id": u["id"], "username": pw["username"], "password": "admin-pass-456"}
 
 
-def test_department_admin_boundaries(env, owner):
+def test_department_curator_boundaries(env, owner):
     c = _as_owner(env, owner)
     other = c.post("/users", json={"full_name": "Чужой Иван Петрович", "department": "Склад"}, headers=ORIGIN).json()
-    adm = _make_admin(env, owner, "Админов Олег Олегович", "Цех 1")
+    adm = _make_curator(env, owner, "Админов Олег Олегович", "Цех 1")
     _login(c, adm["username"], adm["password"])
     # создаёт только в своё подразделение
     mine = c.post("/users", json={"full_name": "Свой Пётр Петрович", "department": "Склад"}, headers=ORIGIN).json()
@@ -226,7 +226,7 @@ def test_department_admin_boundaries(env, owner):
 
 
 def test_staffing_import_dates_and_foreign_departments(env, owner):
-    adm = _make_admin(env, owner, "Кадров Кирилл Кириллович", "Цех 2")
+    adm = _make_curator(env, owner, "Кадров Кирилл Кириллович", "Цех 2")
     c = env["client"]
     _login(c, adm["username"], adm["password"])
     res = c.post("/staffing/import", json={"records": [

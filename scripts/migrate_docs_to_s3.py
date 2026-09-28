@@ -21,7 +21,9 @@ def main():
     if not config.S3_ENABLED:
         print("S3 не настроен (нет NEIROMASTER_S3_ENDPOINT / NEIROMASTER_S3_BUCKET). Нечего делать.")
         return
-    files = [p for p in DOCS_DIR.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXT]
+    # Только общая схема: папки компаний (cab_*) заливаются со своими префиксами из приложения.
+    files = [p for p in DOCS_DIR.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXT
+             and not p.relative_to(DOCS_DIR).parts[0].startswith("cab_")]
     if not files:
         print(f"В {DOCS_DIR} нет файлов для заливки.")
         return

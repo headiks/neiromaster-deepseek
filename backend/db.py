@@ -21,6 +21,8 @@ import os
 import re
 import threading
 import contextlib
+import contextvars
+import functools
 
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
@@ -40,37 +42,86 @@ POOL_MAX = sizing.db_pool()
 _pool: ConnectionPool | None = None
 _pool_lock = threading.Lock()
 
-# --- Мультитенантность «схема на кабинет» ---
-# Текущая схема хранится в thread-local, а search_path выставляется на КАЖДОМ
-# соединении при получении из пула (пул переиспользует коннекты — без установки
-# на каждый чекаут схема «протекла» бы между запросами). Без контекста use_schema
-# всё работает в public, как раньше (обратная совместимость).
-# ponytail: SET search_path на каждый вызов query/execute; если станет узким местом —
-# перейти на pool reset-hook или отдельный пул на схему.
-_local = threading.local()
+# --- Мультитенантность «схема на компанию» ---
+# У каждой компании своя схема cab_<slug> со всеми таблицами; в public — суперадмин,
+# реестр компаний и справочник логинов (provisioning.py). Текущая схема — ContextVar:
+# middleware выставляет её на запрос по токену сессии, и она сама переходит в пул
+# потоков FastAPI (anyio копирует контекст). Свои потоки и задачи очереди переносят её
+# явно — bind_schema / jobs.py. Без схемы всё идёт в public, как раньше.
+# search_path компании — ТОЛЬКО её схема: без «провала» в public, иначе таблица, которой
+# нет в схеме компании, молча читалась бы из общей. Общие таблицы — явно через public.
+# ponytail: SET search_path на каждый вызов query/execute; станет узким местом —
+# pool reset-hook или пул на схему.
+_schema: contextvars.ContextVar = contextvars.ContextVar("nm_schema", default=None)
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")   # валидное и безопасное имя схемы
+
+
+def _checked(name: str) -> str:
+    if not _SCHEMA_RE.match(name or ""):
+        raise ValueError(f"Недопустимое имя схемы: {name!r}")
+    return name
 
 
 @contextlib.contextmanager
 def use_schema(name: str):
     """В пределах блока все query/execute/init_schema идут в указанную схему."""
-    if not _SCHEMA_RE.match(name):
-        raise ValueError(f"Недопустимое имя схемы: {name!r}")
-    prev = getattr(_local, "schema", None)
-    _local.schema = name
+    token = _schema.set(_checked(name))
     try:
         yield
     finally:
-        _local.schema = prev
+        _schema.reset(token)
+
+
+def set_schema(name: str | None):
+    """Схема до конца текущего контекста (запрос целиком): middleware и вход по логину."""
+    _schema.set(_checked(name) if name else None)
+
+
+def current_schema() -> str | None:
+    """Схема компании текущего запроса/задачи; None — общая (public)."""
+    return _schema.get()
+
+
+def bind_schema(fn):
+    """fn, которая выполнится в схеме текущей компании, — для своих потоков и пулов:
+    обычный threading.Thread / ThreadPoolExecutor контекст не наследует."""
+    schema = _schema.get()
+    if not schema:
+        return fn
+
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with use_schema(schema):
+            return fn(*args, **kwargs)
+    return run
 
 
 def _apply_schema(conn):
     """Выставить search_path соединения под текущую схему (или public по умолчанию)."""
-    schema = getattr(_local, "schema", None)
-    if schema:
-        conn.execute(f'SET search_path TO "{schema}", public')
-    else:
-        conn.execute("SET search_path TO public")
+    schema = _schema.get()
+    conn.execute(f'SET search_path TO "{schema}"' if schema else "SET search_path TO public")
+
+# Общие таблицы — всегда в public (имена с явной схемой): реестр компаний и справочник
+# «логин -> схема компании» для входа по одному адресу (см. provisioning.py). Создаются при
+# любом init_schema, чтобы проверка уникальности логина работала и в скриптах, и в тестах.
+PUBLIC_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS public.cabinets (
+        slug        TEXT PRIMARY KEY,
+        schema_name TEXT UNIQUE NOT NULL,
+        company     TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS public.logins (
+        username    TEXT PRIMARY KEY,
+        schema_name TEXT NOT NULL,
+        user_id     TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_logins_user ON public.logins(schema_name, user_id)",
+)
 
 SCHEMA_STATEMENTS = (
     """
@@ -303,7 +354,7 @@ def init_schema():
     """Создаёт таблицы и индексы, если их ещё нет (в текущей схеме, см. use_schema)."""
     with _get_pool().connection() as conn:
         _apply_schema(conn)
-        for stmt in SCHEMA_STATEMENTS:
+        for stmt in (*PUBLIC_STATEMENTS, *SCHEMA_STATEMENTS):
             conn.execute(stmt)
     _migrate_substages_from_jsonb()
 

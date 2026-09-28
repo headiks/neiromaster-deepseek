@@ -18,6 +18,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 import auth
+import db
 import users
 import indexing
 
@@ -27,7 +28,7 @@ STATIC_DIR = BASE_DIR / "static"
 
 def _bg(fn, *args):
     """Фоновая задача (реанализ базы и т.п. — может быть долгой из-за LLM)."""
-    threading.Thread(target=fn, args=args, daemon=True).start()
+    threading.Thread(target=db.bind_schema(fn), args=args, daemon=True).start()   # в схеме компании
 
 
 SPA_INDEX = STATIC_DIR / "app" / "index.html"
@@ -90,15 +91,23 @@ def require_admin(user: dict = Depends(require_setup_done)) -> dict:
 
 
 def require_owner(user: dict = Depends(require_setup_done)) -> dict:
+    """Суперадмин (разработчик): компании, статистика, журнал всех компаний."""
     if not users.is_owner(user):
-        raise HTTPException(status_code=403,
-                            detail="Это может сделать только главный администратор")
+        raise HTTPException(status_code=403, detail="Это может сделать только суперадмин")
+    return user
+
+
+def require_full_access(user: dict = Depends(require_setup_done)) -> dict:
+    """Админ компании (в общей схеме — суперадмин): вся компания, не только отдел."""
+    if not users.is_full_access(user):
+        raise HTTPException(status_code=403, detail="Это может сделать только администратор компании")
     return user
 
 
 logged_in = [Depends(require_setup_done)]
 admin_only = [Depends(require_admin)]
 owner_only = [Depends(require_owner)]
+full_access_only = [Depends(require_full_access)]
 
 
 # ---------- Разграничение видимости между администраторами ----------
@@ -113,10 +122,10 @@ def visible_documents(user: dict) -> list:
 
 
 def ensure_doc_access(user: dict, filename: str, write: bool = False):
-    """403, если администратор обращается к чужому документу (write=True — к общему
-    документу суперадмина тоже: его можно смотреть, но не менять). Незнакомое имя
-    пропускаем — свой 404 отдаст сам обработчик."""
-    if users.is_owner(user):
+    """403, если куратор обращается к чужому документу (write=True — к общему документу
+    админа тоже: его можно смотреть, но не менять). Незнакомое имя пропускаем — свой 404
+    отдаст сам обработчик."""
+    if users.is_full_access(user):
         return
     doc = next((d for d in indexing.list_documents() if d.get("filename") == filename), None)
     if doc is None:

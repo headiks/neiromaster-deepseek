@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import HTTPConnection
 import uvicorn
 
 import db
@@ -36,6 +37,7 @@ import messaging
 import activitylog
 import security
 import pii_key
+import provisioning
 import rawdb
 from deps import BASE_DIR, STATIC_DIR
 
@@ -48,9 +50,10 @@ import api_plans
 import api_people
 import api_activity
 import api_queue
+import api_companies
 
 ROUTERS = (api_pages, api_accounts, api_chat, api_documents,
-           api_knowledge, api_plans, api_people, api_activity, api_queue)
+           api_knowledge, api_plans, api_people, api_activity, api_queue, api_companies)
 
 
 def _step(name: str, fn):
@@ -91,6 +94,7 @@ def _migrate_legacy():
         "вопросов из pending_questions.json": questions.migrate_from_file(),
         "дат выхода к формату ГГГГ-ММ-ДД": users.migrate_start_dates(),
         "шифрование ПДн пользователей": users.encrypt_plaintext(),
+        "админов отдела в кураторы": users.migrate_admins_to_curators(),
         "шифрование ПДн в вопросах": questions.encrypt_plaintext(),
     }
     for what, n in moved.items():
@@ -145,6 +149,7 @@ def _autoassign_plan():
 async def lifespan(app: FastAPI):
     with db.startup_lock():                  # схема и миграции — по одному воркеру за раз
         db.init_schema()                     # до первого обращения к аккаунтам
+        provisioning.ensure_registry()       # реестр компаний и справочник логинов
         rawdb.init_schema()                  # отдельная БД исходников (если задана)
         # Ключ шифрования ПДн: из окружения, из файла или новый. Ключ не совпал с тем,
         # которым зашифрованы данные, — старт прерывается (иначе ПДн стали бы нечитаемы).
@@ -160,6 +165,14 @@ async def lifespan(app: FastAPI):
         _step("очистка осиротевших меток docpipe", _prune_orphans)
         _requeue_without_redis()
         _step("автоназначение плана", _autoassign_plan)
+        # Компании: те же таблицы и служебные шаги в схеме каждой — так до них доезжают
+        # новые миграции. Сбой одной компании не мешает остальным.
+        for schema in provisioning.schemas(fresh=True):
+            with db.use_schema(schema):
+                _step(f"компания {schema}: таблицы", provisioning.init_tables)
+                _step(f"компания {schema}: осиротевшие метки docpipe", _prune_orphans)
+                _requeue_without_redis()
+                _step(f"компания {schema}: автоназначение плана", _autoassign_plan)
     # Фоновый планировщик доставки сообщений плана. NEIROMASTER_SCHEDULER=0 — выключить
     # (когда доставку гоняют внешним cron: python dispatch_messages.py).
     messaging.start_scheduler()
@@ -227,8 +240,34 @@ def _log_page_view(request, path: str):
         pass
 
 
-# Заголовки безопасности и проверка Origin — самым внешним слоем (добавлен последним).
+# Заголовки безопасности и проверка Origin.
 security.install(app, cookie_name=auth.COOKIE_NAME, secure=auth.COOKIE_SECURE)
+
+
+class TenantMiddleware:
+    """Схема компании на весь запрос — по токену сессии (Bearer или кука). Самый внешний
+    слой (добавлен последним): все остальные слои и обработчики уже работают в схеме
+    компании, в т.ч. в пуле потоков (ContextVar копируется). Чистый ASGI — без лишней задачи."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        schema = None
+        if scope["type"] in ("http", "websocket"):
+            conn = HTTPConnection(scope)
+            header = conn.headers.get("authorization") or ""
+            token = header[7:].strip() if header.lower().startswith("bearer ") \
+                else conn.cookies.get(auth.COOKIE_NAME)
+            schema = auth.schema_of_token(token)
+        if schema:
+            with db.use_schema(schema):
+                await self.app(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(TenantMiddleware)
 
 
 @app.get("/healthz", include_in_schema=False)

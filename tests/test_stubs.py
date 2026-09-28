@@ -48,6 +48,12 @@ def install(db: bool = True, psycopg: bool = False,
     if db:
         mod = types.ModuleType("db")
         mod.query = mod.execute = lambda *a, **k: None
+        # Мультитенантность: без схемы компании всё идёт в общую (как настоящий db без контекста).
+        import contextlib
+        mod.current_schema = lambda: None
+        mod.set_schema = lambda name=None: None
+        mod.bind_schema = lambda fn: fn
+        mod.use_schema = lambda name: contextlib.nullcontext()
         sys.modules.setdefault("db", mod)
 
     cfg = sys.modules.get("config")
