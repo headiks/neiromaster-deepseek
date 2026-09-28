@@ -90,4 +90,4 @@ echo "== итог"
 python3 scripts/stress_geo.py report "$OUT"/*.log | tee "$OUT/report.txt"
 echo
 echo "Пиковая нагрузка сервера (load average за 1 мин): $(grep -o 'load [0-9.]*' "$OUT/stats.log" | awk '{print $2}' | sort -n | tail -1)"
-echo "Сотрудников после теста: $($DC exec -T web python -c "import db; print(db.query(\"SELECT count(*) AS n FROM users WHERE username LIKE 'stress-geo-%'\", (), 'one')['n'])")"
+echo "Тестовых сотрудников после теста: $($DC exec -T web python -c 'import db; print(db.query("SELECT count(*) AS n FROM users WHERE username LIKE %s", ("stress-geo-%",), "one")["n"])')"
