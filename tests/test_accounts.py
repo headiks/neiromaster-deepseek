@@ -15,6 +15,10 @@ import tempfile
 os.environ.setdefault("REDIS_URL", "")   # лок-аут — в памяти процесса, тест не зависит от Redis
 from pathlib import Path
 
+from test_stubs import superadmin_hash
+
+os.environ["NEIROMASTER_SUPERADMIN_HASH"] = superadmin_hash("super-test-pass")
+
 import psycopg
 from psycopg_pool import PoolTimeout
 
@@ -30,7 +34,6 @@ def _isolate(tmp: Path):
     """Файловые артефакты — во временную папку; БД — в отдельную тестовую, с чистой таблицей."""
     users.DATA_DIR = tmp
     users.USERS_PATH = tmp / "users.json"
-    users.INITIAL_CREDENTIALS_PATH = tmp / "owner_initial_credentials.txt"
     users.LEGACY_EMPLOYEES_PATH = tmp / "employees.json"
     db.configure(TEST_DSN)
     db.init_schema()
@@ -42,19 +45,32 @@ def run():
     with tempfile.TemporaryDirectory() as d:
         _isolate(Path(d))
 
-        # 1. Первый запуск: создаётся единственный owner с одноразовыми данными
-        creds = users.ensure_owner()
-        assert creds and creds["username"].startswith("admin-")
-        assert users.ensure_owner() is None, "owner должен создаваться только один раз"
+        # 1. Суперадмин из кода: создаётся один раз и выравнивается на каждом старте;
+        # прежний владелец (до суперадмина) становится администратором
+        legacy = users.create_user({"username": "director", "password": "s3cret-pass",
+                                    "full_name": "Прежний владелец"}, role=users.ROLE_OWNER)
+        users.ensure_owner()
+        users.ensure_owner()
         owner = users.get_owner()
-        assert owner["role"] == users.ROLE_OWNER and owner["must_change_credentials"]
+        assert owner["username"] == users.SUPERADMIN_USERNAME and owner["role"] == users.ROLE_OWNER
+        assert not owner["must_change_credentials"]
+        assert users.get_user(legacy["id"])["role"] == users.ROLE_ADMIN
+        assert len([u for u in users.list_users() if u["role"] == users.ROLE_OWNER]) == 1
 
-        # 2. Owner входит по выданным данным, затем задаёт свои логин/пароль
-        token, u = auth.login(creds["username"], creds["password"])
+        # 2. Суперадмин входит паролем из кода; пароль, логин, роль и доступ через интерфейс
+        # не меняются
+        token, u = auth.login(users.SUPERADMIN_USERNAME, "super-test-pass")
         assert u["id"] == owner["id"]
-        users.set_credentials(owner["id"], "director", "s3cret-pass")
-        token, u = auth.login("director", "s3cret-pass")
-        assert not users.get_user(owner["id"])["must_change_credentials"]
+        for change in (lambda: users.set_password(owner["id"], "other-pass-1"),
+                       lambda: users.set_credentials(owner["id"], None, "other-pass-1"),
+                       lambda: users.set_role(owner["id"], users.ROLE_ADMIN),
+                       lambda: users.set_active(owner["id"], False),
+                       lambda: users.delete_user(owner["id"])):
+            try:
+                change()
+                assert False, "учётка суперадмина не должна меняться"
+            except ValueError:
+                pass
 
         # 3. Самостоятельная регистрация сотрудника -> ждёт подтверждения (active=False)
         emp = users.register_employee("ivanov", "employee-pass", "Иванов Иван", position="Водитель")
@@ -92,15 +108,15 @@ def run():
         except ValueError as e:
             assert "много" in str(e).lower()
 
-        # 8. Роли: обычный admin правит сотрудников СВОЕГО подразделения, но не других
-        # админов и не чужой отдел; owner — всех
+        # 8. Роли: куратор правит сотрудников СВОЕГО подразделения, но не других
+        # кураторов и не чужой отдел; owner — всех
         admin = users.create_user({"username": "hrdept", "password": "hr-pass-123",
-                                    "full_name": "HR", "department": "Цех"}, role=users.ROLE_ADMIN)
+                                    "full_name": "HR", "department": "Цех"}, role=users.ROLE_CURATOR)
         assert not users.can_manage(admin, users.get_user(emp["id"]))   # сотрудник без отдела: нет
         users.update_profile(emp["id"], {**users.get_user(emp["id"]), "department": "Цех"})
         assert users.can_manage(admin, users.get_user(emp["id"]))       # свой отдел: да
-        assert not users.can_manage(admin, users.get_owner())           # admin -> owner: нет
-        assert users.can_manage(owner, admin)                           # owner -> admin: да
+        assert not users.can_manage(admin, users.get_owner())           # куратор -> owner: нет
+        assert users.can_manage(owner, admin)                           # owner -> куратор: да
 
         # 9. Смена собственного пароля рвёт старые сессии (лок-аут из шага 7 снимаем, как
         # это делает выдача нового пароля администратором)

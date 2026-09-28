@@ -3,7 +3,7 @@
 // сотрудника, выдача доступа, пауза (больничный), блокировка, удаление, расписание.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Ban, CalendarDays, Check, Clock, Download, FileSpreadsheet, KeyRound, MoreHorizontal, Pause, Pencil, Play,
+  Ban, BarChart3, CalendarDays, Check, Clock, Download, FileSpreadsheet, KeyRound, MoreHorizontal, Pause, Pencil, Play,
   Search, Trash2, TriangleAlert, UserPlus, UserX, Users as UsersIcon, X,
 } from 'lucide-react';
 import { employeeStatus, ROLE } from '@shared/status';
@@ -14,7 +14,7 @@ import { useToast } from '../../lib/toast';
 import type { AdminUser, PlanSummary, ScheduleMessage } from '../../lib/types';
 import { useTourHooks } from '../../tour';
 import {
-  Badge, Button, Callout, Card, Empty, Field, Input, PageHeader, Select, Spinner, StatusBadge, Textarea,
+  Badge, Button, Callout, Card, Empty, Field, Input, PageHeader, Progress, Select, Spinner, StatusBadge, Textarea,
 } from '../../ui';
 import { DataTable, type Column } from '../../ui/DataTable';
 import { Dialog } from '../../ui/Dialog';
@@ -29,10 +29,83 @@ type Profile = Record<(typeof PROFILE_FIELDS)[number], string>;
 const EMPTY: Profile = { full_name: '', position: '', department: '', phone: '', email: '', mentor: '', manager: '', plan_id: '', start_date: '', notes: '' };
 
 const ROLE_CONFIRM: Record<string, string> = {
-  owner: 'Сделать суперадмином? Полный доступ: все документы, все сотрудники, раздача прав.',
-  admin: 'Сделать администратором? Доступ к документам, планам и сотрудникам своего подразделения.',
+  admin: 'Сделать администратором? Доступ ко всей компании: люди, планы, документы; заводит админов и кураторов.',
+  curator: 'Сделать куратором? Доступ к документам, планам и людям своего отдела; заводит кураторов и сотрудников отдела.',
   employee: 'Сделать обычным сотрудником? Доступ к админке пропадёт.',
 };
+const ROLE_OPTION: Record<string, string> = { employee: 'Сотрудник', curator: 'Куратор отдела', admin: 'Администратор компании' };
+const ROLE_NEW: Record<string, string> = { employee: 'Новый сотрудник', curator: 'Новый куратор', admin: 'Новый администратор' };
+/** Какие роли выдаёт актор (сервер проверяет сам): админ — админов, кураторов, сотрудников;
+ *  куратор — кураторов и сотрудников своего отдела. */
+const assignableFor = (isFull: boolean) => (isFull ? ['employee', 'curator', 'admin'] : ['employee', 'curator']);
+
+// ---------------------------------------------------------------- статистика сотрудника
+type Stats = {
+  stage: string; progress: number; delivered: number; total: number; read: number; reaction_min: number | null;
+  reading: { read: number; skim: number; scroll: number };
+  tests: { given: number; passed: number; percent: number | null }; engagement: number | null;
+};
+type StatsDetail = Stats & { messages: { id: string; title: string; kind: string; delivered_at: string; opened_at: string;
+  reaction_min: number | null; view_s: number; expected_s: number; reading: 'read' | 'skim' | 'scroll' | null;
+  quiz?: { right: number; answered: number; total: number } }[] };
+const READING: Record<string, { tone: 'ok' | 'warn' | 'danger'; label: string }> = {
+  read: { tone: 'ok', label: 'читает' }, skim: { tone: 'warn', label: 'бегло' }, scroll: { tone: 'danger', label: 'пролистывает' },
+};
+const toneOf = (v: number | null | undefined, ok = 70, warn = 40) => (v == null ? 'muted' : v >= ok ? 'ok' : v >= warn ? 'warn' : 'danger');
+const minutes = (m: number | null | undefined) => (m == null ? '—' : m < 60 ? `${m} мин` : m < 48 * 60 ? `${Math.round(m / 60)} ч` : `${Math.round(m / 1440)} дн`);
+const mainReading = (r: Stats['reading']) => {
+  const [k, n] = Object.entries(r).sort((a, b) => b[1] - a[1])[0] || [];
+  return n ? READING[k] : null;
+};
+
+function StatsDialog({ user, onClose }: { user: AdminUser | null; onClose: () => void }) {
+  const [d, setD] = useState<StatsDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setD(null); setError(null);
+    if (user) api.get<StatsDetail>(`/users/${enc(user.id)}/stats`).then(setD).catch((e) => setError(messageOf(e)));
+  }, [user]);
+  if (!user) return null;
+  const main = d ? mainReading(d.reading) : null;
+  return (
+    <Dialog open onClose={onClose} wide title={`Статистика: ${user.full_name}`}
+            subtitle="Этап, мини-тесты и вовлечённость: как быстро открывает новые сообщения и читает ли их (время на экране против нужного для чтения)."
+            footer={<Button variant="primary" onClick={onClose}>Закрыть</Button>}>
+      {error ? <Callout tone="danger">{error}</Callout> : !d ? <Spinner /> : !d.total ? (
+        <Callout tone="accent">Сообщений плана у сотрудника пока нет — статистика появится после первых сообщений.</Callout>
+      ) : (
+        <div className="nm-stack" style={{ gap: 14 }}>
+          <div className="nm-stat-grid">
+            <div><div className="nm-micro nm-muted">Этап</div><b>{d.stage || '—'}</b>
+              <Progress value={d.progress} small label="Пройдено по плану" /><div className="nm-micro nm-muted">{d.delivered} из {d.total} сообщений</div></div>
+            <div><div className="nm-micro nm-muted">Мини-тесты</div>
+              <b>{d.tests.percent == null ? '—' : `${d.tests.percent}% верных`}</b>
+              <div className="nm-micro nm-muted">пройдено {d.tests.passed} из {d.tests.given}</div></div>
+            <div><div className="nm-micro nm-muted">Вовлечённость</div>
+              <Badge tone={toneOf(d.engagement)}>{d.engagement == null ? '—' : `${d.engagement} / 100`}</Badge>
+              <div className="nm-micro nm-muted">прочитано {d.read} из {d.delivered} · открывает через {minutes(d.reaction_min)}{main ? ` · ${main.label}` : ''}</div></div>
+          </div>
+          <div className="nm-table-wrap">
+            <table className="nm-edit-table" style={{ fontSize: 13 }}>
+              <thead><tr><th>Сообщение</th><th>Открыл через</th><th>На экране</th><th>Чтение</th><th>Тест</th></tr></thead>
+              <tbody>
+                {d.messages.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.title}</td>
+                    <td className="nm-muted">{m.opened_at ? minutes(m.reaction_min) : 'не открыл'}</td>
+                    <td className="nm-muted">{m.view_s ? `${m.view_s} с из ~${m.expected_s} с` : '—'}</td>
+                    <td>{m.reading ? <Badge tone={READING[m.reading].tone}>{READING[m.reading].label}</Badge> : '—'}</td>
+                    <td>{m.quiz ? (m.quiz.answered ? `${m.quiz.right} из ${m.quiz.total}` : 'не пройден') : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
 
 // ---------------------------------------------------------------- штатное расписание
 type StaffRow = { full_name?: string; position?: string; department?: string; start_date?: string; exists?: boolean; foreign?: boolean };
@@ -131,9 +204,9 @@ function Staffing({ onDone }: { onDone: () => void }) {
 // ---------------------------------------------------------------- карточка сотрудника
 function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClose, onSaved, demo }: {
   open: boolean; user: AdminUser | null; users: AdminUser[]; plans: PlanSummary[]; readyProfs: Set<string>;
-  defaultPlanId: string | null; onClose: () => void; onSaved: (created?: { username: string; temp_password: string }) => void; demo?: boolean;
+  defaultPlanId: string | null; onClose: () => void; onSaved: (created?: { username: string; temp_password: string; role?: string }) => void; demo?: boolean;
 }) {
-  const { me, isOwner } = useMe();
+  const { me, isFull } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [f, setF] = useState<Profile>(EMPTY);
@@ -146,17 +219,19 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
     if (!open) return;
     const base = { ...EMPTY };
     if (user) PROFILE_FIELDS.forEach((k) => { base[k] = String((user as Record<string, unknown>)[k] ?? ''); });
-    else if (!isOwner) base.department = me?.department || '';
+    else if (!isFull) base.department = me?.department || '';
     setF(base);
     setRole(user?.role || 'employee');
     setError(null);
-  }, [open, user, isOwner, me]);
+  }, [open, user, isFull, me]);
   const set = (k: keyof Profile) => (v: string) => setF((x) => ({ ...x, [k]: v }));
   const positions = useMemo(() => [...new Set(users.map((u) => (u.position || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [users]);
   const departments = useMemo(() => [...new Set(users.map((u) => (u.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [users]);
   const people = useMemo(() => [...new Set(users.filter((u) => u.id !== user?.id && !(u.full_name || '').startsWith('(вакансия)'))
     .map((u) => (u.full_name || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [users, user]);
-  const showRole = isOwner && !!user && user.id !== me?.id;
+  // Роль выбирается при создании и у тех, кому актор вправе её менять (себе — нет).
+  const assignable = assignableFor(isFull);
+  const showRole = !user || (user.id !== me?.id && assignable.includes(user.role));
 
   const deleteProf = async (prof: string) => {
     if (!defaultPlanId) { toast.warn('Общий план не назначен — удалять нечего.'); return; }
@@ -170,15 +245,17 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
   const save = async () => {
     if (demo) { onClose(); return; }
     if (!f.full_name.trim()) { setError('Укажите ФИО'); return; }
+    if (showRole && role === 'curator' && !f.department.trim()) { setError('У куратора должен быть отдел — он видит только его'); return; }
     setBusy(true);
     setError(null);
-    const payload = Object.fromEntries(PROFILE_FIELDS.map((k) => [k, f[k] || null]));
+    const payload: Record<string, unknown> = Object.fromEntries(PROFILE_FIELDS.map((k) => [k, f[k] || null]));
+    if (!user && showRole) payload.role = role;
     try {
       const saved = await (user ? api.put<AdminUser>(`/users/${enc(user.id)}`, payload) : api.post<AdminUser>('/users', payload));
       if (showRole && user && role !== user.role && (await confirm({ title: 'Сменить роль?', text: ROLE_CONFIRM[role], ok: 'Сменить' }))) {
         try { await api.post(`/users/${enc(user.id)}/role`, { role }); } catch (e) { toast.error(`Роль не изменена: ${messageOf(e)}`); }
       }
-      onSaved(user ? undefined : { username: saved.username || '', temp_password: saved.temp_password || '' });
+      onSaved(user ? undefined : { username: saved.username || '', temp_password: saved.temp_password || '', role: saved.role });
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -188,7 +265,7 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
 
   return (
     <Dialog open={open} onClose={onClose} wide modal={!demo} className={demo ? 'nmt-demo' : undefined}
-            title={user ? `Редактирование: ${user.full_name}` : 'Новый сотрудник'}
+            title={user ? `Редактирование: ${user.full_name}` : ROLE_NEW[role] || 'Новый сотрудник'}
             subtitle={user ? undefined : 'Логин создастся из ФИО, пароль — автоматически.'}
             footer={<><Button variant="ghost" onClick={onClose}>Отмена</Button><Button variant="primary" loading={busy} onClick={save}>Сохранить</Button></>}>
       <form className="nm-stack" style={{ gap: 14 }} onSubmit={(e) => { e.preventDefault(); save(); }}>
@@ -202,8 +279,8 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
             <Combobox value={f.position} onChange={set('position')} options={positions} free placeholder="Выбор из штатки или своя"
                       marked={ready} markTitle="Сообщения плана готовы" onDelete={deleteProf} />
           </Field>
-          <Field label="Подразделение" help={isOwner ? 'Справочник строится из штатного расписания. Новое подразделение можно добавить, набрав название.' : 'Подразделение меняет суперадмин'}>
-            <Combobox value={f.department} onChange={set('department')} options={departments} free disabled={!isOwner} placeholder="Выбор из справочника" />
+          <Field label="Подразделение" help={isFull ? 'Справочник строится из штатного расписания. Новое подразделение можно добавить, набрав название.' : 'Подразделение меняет администратор компании'}>
+            <Combobox value={f.department} onChange={set('department')} options={departments} free disabled={!isFull} placeholder="Выбор из справочника" />
           </Field>
           <div data-tour="emp-plan">
             <Field label="План адаптации">
@@ -221,9 +298,9 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
           <Field label="Телефон"><Input type="tel" value={f.phone} onChange={(e) => set('phone')(e.target.value)} placeholder="+7 900 000-00-00" /></Field>
           <Field label="Email"><Input type="email" value={f.email} onChange={(e) => set('email')(e.target.value)} placeholder="ivanov@company.ru" /></Field>
           {showRole && (
-            <Field label="Роль" help="Администратор — документы, планы и сотрудники своего подразделения. Суперадмин — всё и все.">
+            <Field label="Роль" help="Администратор — вся компания, заводит админов и кураторов. Куратор — свой отдел: нетиповые вопросы и ЧС, заводит кураторов и сотрудников отдела. Сотрудник — только свой кабинет.">
               <Select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="employee">Сотрудник</option><option value="admin">Администратор</option><option value="owner">Суперадмин</option>
+                {assignable.map((r) => <option key={r} value={r}>{ROLE_OPTION[r]}</option>)}
               </Select>
             </Field>
           )}
@@ -303,7 +380,7 @@ function ScheduleDialog({ user, onClose }: { user: AdminUser | null; onClose: ()
 
 // ---------------------------------------------------------------- страница
 export default function Users() {
-  const { me, isOwner } = useMe();
+  const { me, isFull } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -315,14 +392,17 @@ export default function Users() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [staffing, setStaffing] = useState(false);
   const [editing, setEditing] = useState<{ user: AdminUser | null; demo?: boolean } | null>(null);
-  const [created, setCreated] = useState<{ username: string; temp_password: string } | null>(null);
+  const [created, setCreated] = useState<{ username: string; temp_password: string; role?: string } | null>(null);
   const [creds, setCreds] = useState<AdminUser | null>(null);
   const [schedule, setSchedule] = useState<AdminUser | null>(null);
+  const [stats, setStats] = useState<Record<string, Stats>>({});
+  const [statsOf, setStatsOf] = useState<AdminUser | null>(null);
 
   useEffect(() => { document.title = 'Пользователи · НейроМастер'; }, []);
   const load = useCallback(() => api.get<{ users: AdminUser[] }>('/users').then((d) => setUsers(d.users || [])).catch((e) => toast.error(messageOf(e))), [toast]);
   useEffect(() => {
     load();
+    api.get<{ stats: Record<string, Stats> }>('/users/stats').then((d) => setStats(d.stats || {})).catch(() => {});
     api.get<{ plans: PlanSummary[]; default_plan_id?: string }>('/plans').then((d) => {
       setPlans(d.plans || []);
       setDefaultPlanId(d.default_plan_id || null);
@@ -347,7 +427,9 @@ export default function Users() {
       && (!q || [u.full_name, u.username, u.position, u.department].some((v) => (v || '').toLowerCase().includes(q))));
   }, [list, dept, query]);
   const pending = list.filter((u) => !u.active);
-  const canManage = (u: AdminUser) => isOwner || u.role === 'employee';
+  // Админ компании — все, кроме суперадмина; куратор — кураторы и сотрудники своего отдела
+  // (в списке у него только свой отдел; сервер проверяет сам).
+  const canManage = (u: AdminUser) => u.role !== 'owner' && (isFull || u.role !== 'admin');
   const selectable = shown.filter((u) => canManage(u) && u.id !== me?.id);
   const allOn = selectable.length > 0 && selectable.every((u) => selected.has(u.id));
   useEffect(() => {
@@ -404,6 +486,21 @@ export default function Users() {
     { key: 'start', width: '100px', title: 'Дата выхода', render: (u) => <span className="nm-muted">{ruDate(u.start_date)}</span> },
     { key: 'status', width: '160px', title: 'Статус', render: (u) => (u.role === 'employee'
       ? <StatusBadge view={employeeStatus(u.status, !!u.plan_id, u.active)} /> : !u.active ? <Badge tone="warn">Ждёт подтверждения</Badge> : null) },
+    { key: 'stats', width: 'minmax(200px, 1.6fr)', title: <span data-tour="users-stats">Этап · тесты · вовлечённость</span>, render: (u) => {
+      const s = stats[u.id];
+      if (!s || !s.delivered) return u.role === 'employee' ? <span className="nm-muted nm-small">нет сообщений</span> : null;
+      const main = mainReading(s.reading);
+      return (
+        <button type="button" className="nm-stat-cell" onClick={() => setStatsOf(u)} title="Подробная статистика">
+          <span className="nm-cell-sub">{s.stage || '—'} · {Math.round(s.progress * 100)}%</span>
+          <span className="nm-row" style={{ gap: 6 }}>
+            <Badge tone={toneOf(s.tests.percent)}>{s.tests.percent == null ? 'тестов нет' : `тесты ${s.tests.percent}%`}</Badge>
+            <Badge tone={toneOf(s.engagement)}>{s.engagement == null ? '—' : `вовлечён ${s.engagement}`}</Badge>
+            {main && <Badge tone={main.tone}>{main.label}</Badge>}
+          </span>
+        </button>
+      );
+    } },
     { key: 'actions', width: '160px', title: '', render: (u) => {
       const self = u.id === me?.id;
       const manage = canManage(u);
@@ -412,6 +509,7 @@ export default function Users() {
           {manage && <Button size="sm" icon={Pencil} onClick={() => setEditing({ user: u })}>Изменить</Button>}
           <Menu label={`Действия: ${u.full_name}`} items={[
             { label: 'Расписание', icon: CalendarDays, onClick: () => setSchedule(u) },
+            { label: 'Статистика', icon: BarChart3, onClick: () => setStatsOf(u), hidden: u.role !== 'employee' },
             { label: 'Доступ (новый пароль)', icon: KeyRound, onClick: () => setCreds(u), hidden: !manage },
             { label: 'Приостановить (больничный)', icon: Pause, onClick: () => pause(u, true), hidden: !manage || u.role !== 'employee' || !u.plan_id || u.status === 'paused' },
             { label: 'Возобновить', icon: Play, onClick: () => pause(u, false), hidden: !manage || u.role !== 'employee' || !u.plan_id || u.status !== 'paused' },
@@ -430,7 +528,7 @@ export default function Users() {
       <PageHeader title="Пользователи" subtitle="Сотрудники на адаптации, наставники и администраторы."
                   actions={<>
                     <Button variant="primary" icon={FileSpreadsheet} onClick={() => setStaffing((v) => !v)} data-tour="btn-staffing" aria-expanded={staffing}>Загрузить штатное расписание</Button>
-                    <Button icon={UserPlus} onClick={() => setEditing({ user: null })} data-tour="btn-add-user">Добавить сотрудника</Button>
+                    <Button icon={UserPlus} onClick={() => setEditing({ user: null })} data-tour="btn-add-user">'Добавить пользователя'</Button>
                   </>} />
       <NextStep here="/admin/users" />
       {staffing && <Staffing onDone={load} />}
@@ -457,13 +555,14 @@ export default function Users() {
       <UserDialog open={!!editing} user={editing?.user || null} demo={editing?.demo} users={list} plans={plans} readyProfs={readyProfs} defaultPlanId={defaultPlanId}
                   onClose={() => setEditing(null)}
                   onSaved={(c) => { setEditing(null); if (c) setCreated(c); else toast.ok('Сохранено'); load(); }} />
-      <Dialog open={!!created} onClose={() => setCreated(null)} title="Сотрудник создан"
+      <Dialog open={!!created} onClose={() => setCreated(null)} title={created?.role === 'admin' ? 'Администратор создан' : created?.role === 'curator' ? 'Куратор создан' : 'Сотрудник создан'}
               footer={<Button variant="primary" onClick={() => setCreated(null)}>Готово</Button>}>
         <Callout tone="ok" icon={Check}>Логин: <b>{created?.username}</b> · пароль: <code className="nm-code">{created?.temp_password}</code></Callout>
-        <p className="nm-small nm-muted" style={{ margin: 0 }}>Пароль виден в списке и в Excel, пока сотрудник не задаст свой. Сменить его можно в меню «⋯ → Доступ».</p>
+        <p className="nm-small nm-muted" style={{ margin: 0 }}>Пароль виден в списке и в Excel, пока {created?.role === 'employee' || !created?.role ? 'сотрудник' : 'он'} не задаст свой. Сменить его можно в меню «⋯ → Доступ».</p>
       </Dialog>
       <CredentialsDialog user={creds} onClose={() => setCreds(null)} onChanged={load} />
       <ScheduleDialog user={schedule} onClose={() => setSchedule(null)} />
+      <StatsDialog user={statsOf} onClose={() => setStatsOf(null)} />
     </div>
   );
 }

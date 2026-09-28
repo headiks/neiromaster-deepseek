@@ -1387,7 +1387,8 @@ def _run_generation(job_id: str, plan: dict, profs: list, only_missing: bool = F
             # Параллельная генерация подэтапов (каждый — вызов DeepSeek, I/O-bound).
             _lock = threading.Lock()
             with ThreadPoolExecutor(max_workers=_GEN_WORKERS) as ex:
-                futs = [ex.submit(_gen_one, it) for it in items]
+                gen_one = db.bind_schema(_gen_one)       # потоки пула — в схеме компании
+                futs = [ex.submit(gen_one, it) for it in items]
                 for fut in as_completed(futs):
                     if (get_job(job_id) or {}).get("cancel"):
                         cancelled = True

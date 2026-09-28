@@ -444,3 +444,22 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .nm-qr-card { flex-direction: row; align-items: center; gap: 20px; flex-wrap: wrap; }
 .nm-qr { flex: none; border-radius: var(--nm-r-s); }
 .nm-qr-card > .nm-stack { flex: 1; min-width: 220px; }
+
+/* ---------- Суперадмин в компании, демо, статистика ---------- */
+.nm-scope { margin-bottom: 16px; background: var(--nm-soft); }
+.nm-scope > .lucide { width: 18px; height: 18px; color: var(--nm-soft-ink); flex: none; }
+.nm-divider { display: flex; align-items: center; gap: 10px; }
+.nm-divider::before, .nm-divider::after { content: ""; flex: 1; border-top: 1px solid var(--nm-line); }
+.nm-demo-pill { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50; pointer-events: none;
+  padding: 5px 12px; border-radius: var(--nm-r-pill); background: var(--nm-warn-soft); color: var(--nm-warn);
+  font-size: var(--nm-fs-micro); font-weight: 600; -webkit-backdrop-filter: var(--nm-blur); backdrop-filter: var(--nm-blur); }
+.nm-lead { position: fixed; right: 16px; bottom: 16px; z-index: 60; width: min(340px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px); overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px;
+  border-radius: var(--nm-r); background: var(--nm-glass-solid); border: 1px solid var(--nm-line); box-shadow: var(--nm-shadow-float); }
+.nm-lead p { margin: 0; }
+.nm-lead-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nm-stat-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; border: 0; background: none;
+  padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.nm-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.nm-stat-grid > div { display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 640px) { .nm-lead { right: 8px; bottom: 8px; width: calc(100vw - 16px); } }

@@ -26,9 +26,9 @@ class StaffingImportRequest(BaseModel):
 
 
 def _foreign_department(actor: dict, department: str) -> bool:
-    """Обычный администратор заводит людей только своего подразделения: иначе он создал бы
-    сотрудников, которых сам не видит и не может править (список фильтруется по отделу)."""
-    if users.is_owner(actor):
+    """Куратор заводит людей только своего подразделения: иначе он создал бы сотрудников,
+    которых сам не видит и не может править (список фильтруется по отделу)."""
+    if users.is_full_access(actor):
         return False
     own = (actor.get("department") or "").strip().lower()
     dep = (department or "").strip().lower()
@@ -61,10 +61,10 @@ def staffing_preview(file: UploadFile = File(...), actor: dict = Depends(require
 def staffing_import(req: StaffingImportRequest, actor: dict = Depends(require_admin)):
     """Массовое создание из подтверждённых строк единой таблицы: строки с ФИО — профили
     сотрудников (логины/пароли в ответе, один раз), строки без ФИО — профили-вакансии.
-    Обычный администратор создаёт только людей своего подразделения (пустое — его)."""
+    Куратор создаёт только людей своего подразделения (пустое — его)."""
     records = [r for r in (req.records or []) if isinstance(r, dict)][:5000]
     foreign = []
-    if not users.is_owner(actor):
+    if not users.is_full_access(actor):
         own = actor.get("department") or ""
         mine = []
         for r in records:
@@ -88,12 +88,11 @@ class IdsRequest(BaseModel):
 
 def _delete_denied(actor: dict, target: dict) -> str:
     """Причина, по которой актор не может удалить пользователя ('' — может). Одно правило
-    для одиночного и массового удаления: себя нельзя; обычный администратор — только
-    сотрудников своего подразделения; суперадмин — любого (последнего owner не даст users)."""
+    для одиночного и массового удаления: себя нельзя; куратор — только сотрудников своего
+    подразделения; админ компании — кураторов и сотрудников (users.can_manage)."""
     if target.get("id") == actor.get("id"):
         return "нельзя удалить себя"
-    if not users.is_owner(actor) and (target.get("role") != users.ROLE_EMPLOYEE
-                                      or not users.can_manage(actor, target)):
+    if not users.can_manage(actor, target):
         return "недостаточно прав"
     return ""
 
@@ -142,6 +141,7 @@ def credentials_xlsx(ids: str = "", actor: dict = Depends(require_admin)):
 # ---------- Пользователи: профили, роли, назначение планов ----------
 class UserRequest(BaseModel):
     full_name: str
+    role: str | None = None            # только при создании: куратор или сотрудник (assignable_roles)
     username: str | None = None
     password: str | None = None
     position: str | None = None
@@ -205,27 +205,53 @@ def get_users(actor: dict = Depends(require_admin)):
             "plan_generated": bool(plan and plan.get("generated")),
             "has_account": bool(user.get("username")),
         })
-    return {"users": result, "scope": "all" if users.is_owner(actor) else "department"}
+    return {"users": result, "scope": "all" if users.is_full_access(actor) else "department",
+            "assignable_roles": list(users.assignable_roles(actor))}
+
+
+@router.get("/users/stats")
+def users_stats(actor: dict = Depends(require_admin)):
+    """Статистика сотрудников, которых видит актор (куратор — свой отдел): этап, тесты,
+    вовлечённость. {user_id: сводка} — отдельно от списка, чтобы список не ждал расчёта."""
+    import stats
+    ids = [u["id"] for u in users.visible_users(actor, users.list_users())
+           if u.get("role") == users.ROLE_EMPLOYEE]
+    return {"stats": stats.summary(ids)}
+
+
+@router.get("/users/{user_id}/stats")
+def user_stats(user_id: str, actor: dict = Depends(require_admin)):
+    import stats
+    target = users.get_user(user_id)
+    if target is None or target not in users.visible_users(actor, [target]):
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return stats.detail(user_id)
 
 
 @router.post("/users", dependencies=admin_only)
 def create_user(req: UserRequest, actor: dict = Depends(require_admin)):
     """
-    Заведение сотрудника администратором. Логин и временный пароль необязательны:
-    профиль можно создать заранее, а доступ выдать позже.
+    Заведение человека. Админ компании — админа, куратора или сотрудника; куратор — куратора
+    или сотрудника своего отдела. Логин и временный пароль выдаются сразу.
     """
     payload = req.model_dump()
+    role = payload.pop("role", None) or users.ROLE_EMPLOYEE
+    if role not in users.assignable_roles(actor):
+        raise HTTPException(status_code=403, detail="Недостаточно прав, чтобы заводить пользователя с этой ролью")
+    if role == users.ROLE_CURATOR and not (payload.get("department") or "").strip():
+        raise HTTPException(status_code=400, detail="У куратора должен быть отдел — он видит только его")
     # Логин выдаётся один раз из фамилии и инициалов и не редактируется; временный пароль —
     # случайный, админ видит его в списке и в Excel до первого входа сотрудника.
     payload["username"] = staffing.new_username(payload.get("full_name") or "")
     payload["password"] = staffing.temp_password()
-    # Обычный администратор заводит людей только в своё подразделение: иначе он создал бы
-    # человека, которого сам же не увидит (список людей отфильтрован по отделу).
-    if not users.is_owner(actor) and actor.get("department"):
-        payload["department"] = actor["department"]
+    # Куратор заводит людей только в своё подразделение: иначе он создал бы человека,
+    # которого сам же не увидит (список людей отфильтрован по отделу).
+    if users.is_curator(actor):
+        payload["department"] = actor.get("department") or ""
     try:
-        user = users.create_user(payload, actor=actor, role=users.ROLE_EMPLOYEE,
-                                 issued_password=True)
+        # Админ и куратор — роли с админ-панелью: при первом входе зададут свой пароль.
+        user = users.create_user(payload, actor=actor, role=role, issued_password=True,
+                                 must_change_credentials=role != users.ROLE_EMPLOYEE)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {**users.public_view(user), "temp_password": payload["password"]}
@@ -241,9 +267,9 @@ def update_user(user_id: str, req: UserRequest, actor: dict = Depends(require_ad
     """Правка профиля и назначение плана адаптации с датой выхода."""
     before = _target_user(user_id, actor)
     payload = req.model_dump()
-    # Подразделение определяет, кого видит администратор. Обычный админ не меняет его ни
-    # себе (иначе «переехал» бы в чужой отдел и увидел его людей), ни сотрудникам.
-    if not users.is_owner(actor):
+    # Подразделение определяет, кого видит куратор. Куратор не меняет его ни себе (иначе
+    # «переехал» бы в чужой отдел и увидел его людей), ни сотрудникам.
+    if not users.is_full_access(actor):
         payload["department"] = before.get("department") or ""
     user = users.update_profile(user_id, payload)
     # Сменились план/дата выхода/должность -> будущие сообщения плана пересобираются сразу
@@ -265,7 +291,7 @@ def remove_user(user_id: str, actor: dict = Depends(require_admin)):
     if reason:
         raise HTTPException(status_code=400 if target.get("id") == actor.get("id") else 403,
                             detail="Нельзя удалить самого себя" if target.get("id") == actor.get("id")
-                            else "Администратор удаляет только сотрудников своего подразделения")
+                            else "Недостаточно прав: куратор удаляет только кураторов и сотрудников своего отдела")
     try:
         deleted = users.delete_user(user_id)
     except ValueError as e:
@@ -278,11 +304,19 @@ def remove_user(user_id: str, actor: dict = Depends(require_admin)):
     return {"user_id": user_id, "deleted": True}
 
 
-@router.post("/users/{user_id}/role", dependencies=owner_only)
-def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends(require_owner)):
-    """Назначить администратором или убрать из администраторов — только главный."""
+@router.post("/users/{user_id}/role", dependencies=admin_only)
+def change_user_role(user_id: str, req: RoleRequest, actor: dict = Depends(require_admin)):
+    """Смена роли в пределах assignable_roles: админ компании — админ/куратор/сотрудник,
+    куратор — куратор/сотрудник своего отдела (_target_user проверяет, что человек его).
+    Суперадмин в системе один, роль owner не выдаётся."""
     if user_id == actor["id"]:
         raise HTTPException(status_code=400, detail="Нельзя изменить собственную роль")
+    target = _target_user(user_id, actor)
+    allowed = users.assignable_roles(actor)
+    if req.role not in allowed or target.get("role") not in allowed:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для такой смены роли")
+    if req.role == users.ROLE_CURATOR and not (target.get("department") or "").strip():
+        raise HTTPException(status_code=400, detail="Сначала укажите отдел — куратор видит только его")
     try:
         user = users.set_role(user_id, req.role)
     except ValueError as e:
@@ -344,19 +378,6 @@ def pause_user(user_id: str, req: PauseRequest, actor: dict = Depends(require_ad
     («Я на больничном»)."""
     _target_user(user_id, actor)
     return users.public_view(messaging.set_sick(user_id, req.paused))
-
-
-@router.post("/users/{user_id}/transfer-ownership", dependencies=owner_only)
-def transfer_ownership(user_id: str, actor: dict = Depends(require_owner)):
-    """Передача роли главного администратора. Прежний владелец остаётся админом."""
-    try:
-        new_owner = users.transfer_ownership(actor["id"], user_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    # Роли поменялись у обоих — обе сессии переоформляются входом заново
-    auth.drop_user_sessions(user_id)
-    auth.drop_user_sessions(actor["id"])
-    return users.public_view(new_owner)
 
 
 @router.get("/users/{user_id}/schedule")

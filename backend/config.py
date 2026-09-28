@@ -37,6 +37,28 @@ REGISTRY_PATH = DATA_DIR / "registry.json"   # прежний файловый �
 for d in (DOCS_DIR, CONVERTED_DIR, CACHE_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+
+def _tenant_dir(base: Path) -> Path:
+    import db
+    schema = db.current_schema()
+    if not schema:
+        return base
+    path = base / schema
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def docs_dir() -> Path:
+    """Оригиналы документов: у компании своя папка data/documents/<схема>/ — одинаковые имена
+    файлов в разных компаниях не перетирают друг друга. Общая схема — data/documents/.
+    Кэш разбора (CACHE_DIR) общий: он адресуется хэшем содержимого и ничего не раскрывает."""
+    return _tenant_dir(DOCS_DIR)
+
+
+def converted_dir() -> Path:
+    """Markdown-версии документов — по той же схеме, что и оригиналы."""
+    return _tenant_dir(CONVERTED_DIR)
+
 SUPPORTED_EXT = {".pdf", ".docx", ".doc", ".pptx", ".html", ".htm", ".md", ".txt"}
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 МБ на файл
 

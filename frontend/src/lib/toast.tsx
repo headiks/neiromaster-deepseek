@@ -13,8 +13,12 @@ const ICON = { ok: CircleCheck, danger: CircleAlert, warn: TriangleAlert, accent
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<Toast[]>([]);
   const seq = useRef(0);
+  const last = useRef({ text: '', at: 0 });
   const close = useCallback((id: number) => setItems((l) => l.filter((t) => t.id !== id)), []);
   const push = useCallback<Push>(({ timeout, ...t }) => {
+    // Одно и то же подряд (демо: общий тост + ошибка страницы) — показываем один раз.
+    if (last.current.text === t.text && Date.now() - last.current.at < 1500) return;
+    last.current = { text: t.text, at: Date.now() };
     const id = ++seq.current;
     setItems((l) => [...l.slice(-3), { ...t, id }]);
     window.setTimeout(() => close(id), timeout ?? (t.tone === 'danger' ? 8000 : 5000));

@@ -149,7 +149,7 @@ export function StageBoard({ planId, plans, onPlan, onOpenDoc }: { planId: strin
 type Filter = 'all' | 'ready' | 'active' | 'error' | 'private';
 
 export default function Documents() {
-  const { me, isOwner } = useMe();
+  const { me, isFull, inCompany } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [docs, setDocs] = useState<Doc[] | null>(null);
@@ -270,13 +270,13 @@ export default function Documents() {
         || (filter === 'error' && d.status === 'error') || (filter === 'private' && !!d.confidential)));
   }, [list, query, filter]);
   const groups = useMemo(() => {
-    if (!isOwner) return [['', shown] as [string, Doc[]]];
+    if (!isFull) return [['', shown] as [string, Doc[]]];
     const m = new Map<string, Doc[]>();
     shown.forEach((d) => { const k = d.uploaded_by_name || 'Без владельца (загружено до разделения прав)'; m.set(k, [...(m.get(k) || []), d]); });
     return [...m.entries()];
-  }, [shown, isOwner]);
+  }, [shown, isFull]);
   const folderName = (slug: string) => folders.find((f) => f.slug === slug)?.name || slug;
-  const canEdit = (d: Doc) => isOwner || d.uploaded_by === me?.id;
+  const canEdit = (d: Doc) => isFull || d.uploaded_by === me?.id;
   const selectable = shown.filter(canEdit);
   const allOn = selectable.length > 0 && selectable.every((d) => selected.has(d.filename));
   useEffect(() => {   // фильтр/поиск/удаление: отметки только у видимых документов
@@ -304,11 +304,18 @@ export default function Documents() {
       <NextStep here="/admin/documents" />
       <div className="nm-two-pane">
         <div className="nm-stack">
+          {inCompany ? (
+            <Callout tone="accent">
+              Документы компании загружаются от имени её администратора: «Компании» → <b>«Войти как администратор»</b>.
+              Здесь — просмотр, разбор по этапам и удаление.
+            </Callout>
+          ) : (
           <div data-tour="doc-drop">
             <Dropzone multiple accept=".pdf,.docx,.doc,.pptx,.html,.htm,.md,.txt" onFiles={(fs) => fs.forEach((f) => uploadOne(f))}
                       title="Перетащите документы сюда или нажмите, чтобы выбрать"
                       hint="PDF, DOCX, DOC, PPTX, HTML, MD, TXT · до 50 МБ · ИИ сам разнесёт документ по этапам адаптации" />
           </div>
+          )}
           <div className="nm-row" data-tour="doc-confidential">
             <Checkbox label="Конфиденциальный документ — не отправлять в ИИ" checked={confidential} onChange={setConfidential} />
             <Help text="Для чувствительных документов (положение об оплате труда и т.п.): файл хранится в базе, но ИИ его не читает — ни для сообщений, ни для ответов." />
@@ -375,7 +382,7 @@ export default function Documents() {
           </div>
         )}
         {docs === null ? <Spinner /> : !list.length ? (
-          <Card pad={false}><Empty icon={FileText}>{isOwner ? 'Пока никто из администраторов не загрузил документы.' : 'Пока нет ваших документов — добавьте первый регламент выше.'}</Empty></Card>
+          <Card pad={false}><Empty icon={FileText}>{isFull ? 'Пока в компании никто не загрузил документы.' : 'Пока нет ваших документов — добавьте первый регламент выше.'}</Empty></Card>
         ) : !shown.length ? <Card pad={false}><Empty icon={Search}>Ничего не найдено.</Empty></Card> : (
           <Card pad={false}>
             {groups.map(([owner, items]) => (

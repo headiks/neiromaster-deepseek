@@ -3,7 +3,11 @@
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
+import contextlib
+
 import activitylog
+import db
+import provisioning
 import security
 import users
 from fastapi import HTTPException
@@ -32,13 +36,17 @@ def ingest_event(req: EventRequest, request: Request, user: dict = Depends(curre
 
 @router.get("/api/activity")
 def list_activity(event_type: str | None = None, user_id: str | None = None,
-                  limit: int = 200, actor: dict = Depends(require_admin)):
+                  company: str | None = None, limit: int = 200,
+                  actor: dict = Depends(require_admin)):
     """
-    Журнал действий. Разграничение как на основной странице: суперадмин видит логи ВСЕХ,
-    администратор — только пользователей СВОЕГО отдела (и свои). Фильтры: тип, пользователь.
+    Журнал действий. Суперадмин — события ВСЕХ компаний (у каждого — поле company, фильтр
+    company=<схема>). Админ компании — вся компания, куратор — только свой отдел (и свои).
+    Фильтры: тип, пользователь.
     """
-    if users.is_owner(actor):
-        allowed = None                       # суперадмин — все
+    if users.is_owner(actor) and not db.current_schema():
+        return {"events": _all_companies(limit, event_type, company)}
+    if users.is_full_access(actor):
+        allowed = None
     else:
         allowed = [u["id"] for u in users.visible_users(actor, users.list_users())]
 
@@ -47,6 +55,21 @@ def list_activity(event_type: str | None = None, user_id: str | None = None,
             raise HTTPException(status_code=403, detail="Пользователь не из вашего отдела")
         return {"events": activitylog.recent(limit=limit, event_type=event_type, user_id=user_id)}
     return {"events": activitylog.recent(limit=limit, event_type=event_type, user_ids=allowed)}
+
+
+def _all_companies(limit: int, event_type: str | None, company: str | None) -> list:
+    """Последние события по общей схеме и всем компаниям — одной лентой, новые сверху."""
+    names = {r["schema_name"]: r["company"] for r in provisioning.list_companies()}
+    targets = [company] if company in names or company == "public" else [None, *names]
+    events = []
+    for schema in targets:
+        schema = None if schema == "public" else schema
+        with db.use_schema(schema) if schema else contextlib.nullcontext():
+            for e in activitylog.recent(limit=limit, event_type=event_type) or []:
+                events.append({**e, "company": schema or "public",
+                               "company_name": names.get(schema, "Суперадмин / общая")})
+    events.sort(key=lambda e: e["ts"], reverse=True)
+    return events[:max(1, min(int(limit), 1000))]
 
 
 @router.get("/api/llm-usage", dependencies=owner_only)

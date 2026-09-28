@@ -190,13 +190,10 @@ def group_pushes(rows: list) -> list:
 
 
 def _schemas():
-    """Схемы для обработки: public (None) + все кабинеты из реестра."""
+    """Схемы для обработки: public (None) + все компании из реестра."""
+    import provisioning
     yield None
-    try:
-        for r in db.query("SELECT schema_name FROM public.cabinets"):
-            yield r["schema_name"]
-    except Exception:
-        pass   # реестра кабинетов ещё нет — работаем только с public
+    yield from provisioning.schemas(fresh=True)
 
 
 def dispatch_all() -> int:
@@ -300,6 +297,17 @@ def mark_read(employee_id: str, message_row_id: str) -> bool:
         "UPDATE scheduled_messages SET status = 'read', read_at = now(), updated_at = now() "
         "WHERE (id = %s OR id = %s) AND employee_id = %s AND status = 'delivered' RETURNING id",
         (message_row_id, f"{employee_id}:{message_row_id}", employee_id), fetch="all",
+    )
+    return bool(rows)
+
+
+def add_view(employee_id: str, message_row_id: str, ms: int) -> bool:
+    """Время на экране (мс) и первый показ — только своё доставленное сообщение."""
+    rows = db.query(
+        "UPDATE scheduled_messages SET view_ms = view_ms + %s, "
+        "first_view_at = COALESCE(first_view_at, now()) "
+        "WHERE id = %s AND employee_id = %s AND status IN ('delivered', 'read') RETURNING id",
+        (max(0, int(ms)), message_row_id, employee_id), fetch="all",
     )
     return bool(rows)
 

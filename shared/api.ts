@@ -17,6 +17,7 @@ export type Transport = {
   token?: () => Promise<string | null> | string | null;
   onUnauthorized?: () => void;                    // сессия истекла
   credentials?: "same-origin" | "include" | "omit";
+  guard?: (path: string, method: string) => string | null;   // текст отказа — запрос не уходит (демо)
 };
 
 function parse(text: string): any {
@@ -35,6 +36,8 @@ export function errorText(data: any, status: number): string {
 
 export function createClient(t: Transport) {
   async function request<T = any>(path: string, opts: RequestInit & { json?: unknown } = {}): Promise<T> {
+    const denied = t.guard?.(path, String(opts.method || "GET").toUpperCase());
+    if (denied) throw new ApiError(403, denied, { demo: true });
     const headers: Record<string, string> = { ...(opts.headers as Record<string, string> | undefined) };
     let body = opts.body;
     if (opts.json !== undefined) {
@@ -79,6 +82,7 @@ export function createClient(t: Transport) {
     myMessages: () => request<Inbox>("/api/my/messages"),
     myQuestions: () => request<{ questions: MyQuestion[] }>("/api/my/questions"),
     markRead: (id: string) => request(`/api/my/messages/${enc(id)}/read`, { method: "POST", json: {} }),
+    view: (id: string, ms: number) => request(`/api/my/messages/${enc(id)}/view`, { method: "POST", json: { ms } }),
     answer: (id: string, answers: Answers) =>
       request(`/api/my/messages/${enc(id)}/answer`, { method: "POST", json: { answers } }),
     ask: (question: string, session_id?: string | null) =>

@@ -12,6 +12,8 @@ import queue
 import hashlib
 import threading
 from pathlib import Path
+
+import db
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import core, llm, store, professions
@@ -163,7 +165,7 @@ def ingest(filepath, filename: str = None, plan_version: str = "current",
     import threading as _th
     _lock = _th.Lock()
     with ThreadPoolExecutor(max_workers=_INGEST_WORKERS) as ex:
-        futs = {ex.submit(_label_section, sec, repeated, card, structure, positions): (seq, sid)
+        futs = {ex.submit(db.bind_schema(_label_section), sec, repeated, card, structure, positions): (seq, sid)
                 for seq, sec, sid in todo}
         for fut in as_completed(futs):
             seq, sid = futs[fut]
@@ -373,7 +375,7 @@ def requeue_stranded() -> int:
     Берём последнюю задачу по каждому файлу; если она не done/error — ставим заново
     (force=True: полный перепрогон, идемпотентно по content_hash)."""
     import db
-    from config import DOCS_DIR
+    from config import docs_dir
     rows = db.query("SELECT DISTINCT ON (filename) filename, status FROM label_jobs "
                     "ORDER BY filename, updated_at DESC")
     # Файлы, у которых уже была успешная разметка: их не переразмечаем, даже если позже
@@ -385,7 +387,7 @@ def requeue_stranded() -> int:
     for r in rows or []:
         if r.get("status") in ("done", "error") or r["filename"] in done_files:
             continue
-        fp = DOCS_DIR / r["filename"]
+        fp = docs_dir() / r["filename"]
         if not fp.exists():
             print(f"[docpipe] возобновление пропущено — нет оригинала: {r['filename']}")
             continue

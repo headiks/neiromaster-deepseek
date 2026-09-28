@@ -103,8 +103,11 @@ def _unique_username(base: str, taken: set) -> str:
 
 
 def new_username(full_name: str) -> str:
-    """Логин нового сотрудника: фамилия + инициалы, уникальный среди существующих."""
+    """Логин нового сотрудника: фамилия + инициалы, уникальный во всей системе (вход по
+    одному адресу ищет компанию по логину — совпадений между компаниями быть не может)."""
+    import provisioning
     taken = {u["username"] for u in users.list_users() if u.get("username")}
+    taken |= provisioning.taken_logins()
     return _unique_username(username_base(full_name), taken)
 
 

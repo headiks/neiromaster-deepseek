@@ -22,6 +22,7 @@ sys.modules["psycopg_pool"].ConnectionPool = object
 _db = types.ModuleType("db")
 _db.execute = lambda *a, **k: None
 _db.query = lambda *a, **k: None
+_db.current_schema = lambda: None      # общая схема (без компании)
 sys.modules["db"] = _db
 
 import users
@@ -29,12 +30,12 @@ import storage
 import config
 
 OWNER = {"id": "own", "username": "super", "role": "owner", "department": ""}
-ADMIN_LOG = {"id": "a1", "username": "adm.log", "role": "admin", "department": "Логистика"}
-ADMIN_SVAR = {"id": "a2", "username": "adm.svar", "role": "admin", "department": "Сварка"}
+CUR_LOG = {"id": "a1", "username": "adm.log", "role": "curator", "department": "Логистика"}
+CUR_SVAR = {"id": "a2", "username": "adm.svar", "role": "curator", "department": "Сварка"}
 EMP_LOG = {"id": "e1", "username": "driver", "role": "employee", "department": "логистика"}
 EMP_SVAR = {"id": "e2", "username": "welder", "role": "employee", "department": "Сварка"}
 EMP_NONE = {"id": "e3", "username": "nobody", "role": "employee", "department": ""}
-ALL_USERS = [OWNER, ADMIN_LOG, ADMIN_SVAR, EMP_LOG, EMP_SVAR, EMP_NONE]
+ALL_USERS = [OWNER, CUR_LOG, CUR_SVAR, EMP_LOG, EMP_SVAR, EMP_NONE]
 
 DOCS = [
     {"filename": "ot_log.pdf", "uploaded_by": "a1"},
@@ -50,22 +51,22 @@ def test_owner_sees_every_document():
     assert len(users.visible_docs(OWNER, DOCS)) == len(DOCS)
 
 
-def test_admin_sees_own_uploads_and_shared_owner_docs():
+def test_curator_sees_own_uploads_and_shared_owner_docs():
     # общие документы суперадмина видны всем админам — не грузить (и не оплачивать) повторно
-    assert [d["filename"] for d in users.visible_docs(ADMIN_LOG, DOCS)] == ["ot_log.pdf", "marshruty.docx", "obshee.md"]
-    assert [d["filename"] for d in users.visible_docs(ADMIN_SVAR, DOCS)] == ["svarka.pdf", "obshee.md"]
+    assert [d["filename"] for d in users.visible_docs(CUR_LOG, DOCS)] == ["ot_log.pdf", "marshruty.docx", "obshee.md"]
+    assert [d["filename"] for d in users.visible_docs(CUR_SVAR, DOCS)] == ["svarka.pdf", "obshee.md"]
 
 
-def test_admin_cannot_edit_shared_or_foreign_docs():
-    assert users.can_edit_doc(ADMIN_LOG, DOCS[0])
-    assert not users.can_edit_doc(ADMIN_LOG, DOCS[3])      # общий документ суперадмина — только чтение
-    assert not users.can_edit_doc(ADMIN_LOG, DOCS[2])      # документ другого админа
+def test_curator_cannot_edit_shared_or_foreign_docs():
+    assert users.can_edit_doc(CUR_LOG, DOCS[0])
+    assert not users.can_edit_doc(CUR_LOG, DOCS[3])      # общий документ суперадмина — только чтение
+    assert not users.can_edit_doc(CUR_LOG, DOCS[2])      # документ другого админа
     assert users.can_edit_doc(OWNER, DOCS[2])
 
 
-def test_admin_does_not_see_ownerless_docs():
+def test_curator_does_not_see_ownerless_docs():
     # «ничьи» документы видит только суперадмин — иначе старая база утекла бы всем админам
-    assert not users.can_see_doc(ADMIN_LOG, {"filename": "legacy.pdf"})
+    assert not users.can_see_doc(CUR_LOG, {"filename": "legacy.pdf"})
     assert users.can_see_doc(OWNER, {"filename": "legacy.pdf"})
 
 
@@ -74,19 +75,19 @@ def test_owner_sees_all_people():
     assert len(users.visible_users(OWNER, ALL_USERS)) == len(ALL_USERS)
 
 
-def test_admin_sees_only_his_department():
-    seen = {u["id"] for u in users.visible_users(ADMIN_LOG, ALL_USERS)}
+def test_curator_sees_only_his_department():
+    seen = {u["id"] for u in users.visible_users(CUR_LOG, ALL_USERS)}
     assert seen == {"a1", "e1"}                     # свой отдел (регистр не важен) + сам
     assert "e2" not in seen and "e3" not in seen and "own" not in seen
 
 
-def test_admin_manages_only_his_department_employees():
-    assert users.can_manage(ADMIN_LOG, EMP_LOG)
-    assert not users.can_manage(ADMIN_LOG, EMP_SVAR)     # чужой отдел
-    assert not users.can_manage(ADMIN_LOG, EMP_NONE)     # отдел не проставлен
-    assert not users.can_manage(ADMIN_LOG, ADMIN_SVAR)   # другой администратор
-    assert not users.can_manage(ADMIN_LOG, OWNER)
-    assert users.can_manage(OWNER, ADMIN_LOG) and users.can_manage(OWNER, EMP_SVAR)
+def test_curator_manages_only_his_department_employees():
+    assert users.can_manage(CUR_LOG, EMP_LOG)
+    assert not users.can_manage(CUR_LOG, EMP_SVAR)     # чужой отдел
+    assert not users.can_manage(CUR_LOG, EMP_NONE)     # отдел не проставлен
+    assert not users.can_manage(CUR_LOG, CUR_SVAR)   # другой администратор
+    assert not users.can_manage(CUR_LOG, OWNER)
+    assert users.can_manage(OWNER, CUR_LOG) and users.can_manage(OWNER, EMP_SVAR)
 
 
 def test_employee_manages_nobody():
@@ -98,8 +99,8 @@ def test_employee_manages_nobody():
 def test_storage_tree_is_owner_then_admin_then_file():
     config.S3_PREFIX = "documents/"
     top = users.dir_slug(OWNER)
-    assert storage.doc_key("ot.pdf", top, users.dir_slug(ADMIN_LOG)) == "documents/super/adm.log/ot.pdf"
-    assert storage.doc_key("s.pdf", top, users.dir_slug(ADMIN_SVAR)) == "documents/super/adm.svar/s.pdf"
+    assert storage.doc_key("ot.pdf", top, users.dir_slug(CUR_LOG)) == "documents/super/adm.log/ot.pdf"
+    assert storage.doc_key("s.pdf", top, users.dir_slug(CUR_SVAR)) == "documents/super/adm.svar/s.pdf"
     # документы самого суперадмина лежат в его же папке внутри его каталога
     assert storage.doc_key("o.md", top, top) == "documents/super/super/o.md"
 
@@ -118,45 +119,66 @@ def test_storage_key_falls_back_to_flat_for_legacy():
 
 def test_dir_slug_is_safe_path_segment():
     allowed = users.USERNAME_ALLOWED
-    assert set(users.dir_slug(ADMIN_LOG)) <= allowed
+    assert set(users.dir_slug(CUR_LOG)) <= allowed
     assert users.dir_slug({"id": "1234567890ab"}) == "user-12345678"
     assert "/" not in users.dir_slug({"id": "x/y"})
 
 
-# ---------- Несколько суперадминов ----------
-def test_multiple_owners_promote_and_last_guard():
-    """Админа можно повысить сразу до owner; последнего owner снять/удалить нельзя."""
+# ---------- Суперадмин один, последний админ компании ----------
+def test_owner_role_not_assignable_and_superadmin_fixed():
+    """Роль owner никому не выдаётся; учётка superadmin из кода не меняется."""
     saved = {}
-    orig_get, orig_save, orig_cnt = users.get_user, users._save_user, users.count_owners
+    orig_get, orig_save = users.get_user, users._save_user
     try:
         users._save_user = lambda u: saved.update(u)
-
-        # повышение админа до суперадмина (owner) напрямую — при 1 существующем owner
         users.get_user = lambda uid: {"id": uid, "role": "admin", "hash": "x", "active": True}
-        users.count_owners = lambda active_only=False: 1
-        assert users.set_role("a", "owner")["role"] == "owner"
-
-        # понижение owner, когда он НЕ последний — можно
-        users.get_user = lambda uid: {"id": uid, "role": "owner", "hash": "x", "active": True}
-        users.count_owners = lambda active_only=False: 2
-        assert users.set_role("o2", "admin")["role"] == "admin"
-
-        # последнего owner снять нельзя
-        users.count_owners = lambda active_only=False: 1
         try:
-            users.set_role("o1", "admin")
-            assert False, "последний owner не должен сниматься"
-        except ValueError as e:
-            assert "последний" in str(e).lower()
-
-        # и удалить последнего owner нельзя
-        try:
-            users.delete_user("o1")
-            assert False, "последний owner не должен удаляться"
-        except ValueError as e:
-            assert "последний" in str(e).lower()
+            users.set_role("a", "owner")
+            assert False, "роль owner не выдаётся"
+        except ValueError:
+            pass
+        users.get_user = lambda uid: {"id": uid, "role": "owner", "username": users.SUPERADMIN_USERNAME,
+                                      "hash": "x", "active": True}
+        for change in (lambda: users.set_role("s", "admin"), lambda: users.delete_user("s"),
+                       lambda: users.set_password("s", "long-enough-1")):
+            try:
+                change()
+                assert False, "суперадмин не меняется"
+            except ValueError as e:
+                assert "суперадмин" in str(e).lower()
+        assert not saved
     finally:
-        users.get_user, users._save_user, users.count_owners = orig_get, orig_save, orig_cnt
+        users.get_user, users._save_user = orig_get, orig_save
+
+
+def test_last_company_admin_guard():
+    """В компании последнего активного админа не понизить и не удалить; второго — можно."""
+    saved = {}
+    orig = users.get_user, users._save_user, _db.current_schema, _db.query
+    try:
+        users._save_user = lambda u: saved.update(u)
+        users.get_user = lambda uid: {"id": uid, "role": "admin", "hash": "x", "active": True}
+        _db.current_schema = lambda: "cab_x"
+        _db.query = lambda *a, **k: {"n": 0}                  # других админов нет
+        try:
+            users.set_role("a1", "curator")
+            assert False, "последний админ компании не понижается"
+        except ValueError as e:
+            assert "последний" in str(e).lower()
+        _db.query = lambda *a, **k: {"n": 1}                  # есть ещё один
+        assert users.set_role("a1", "curator")["role"] == "curator"
+    finally:
+        users.get_user, users._save_user, _db.current_schema, _db.query = orig
+
+
+def test_role_rules():
+    """Админ заводит админов, кураторов, сотрудников; куратор — кураторов и сотрудников отдела."""
+    adm = {"id": "c", "role": "admin", "department": ""}
+    assert users.assignable_roles(adm) == ("admin", "curator", "employee")
+    assert users.assignable_roles(CUR_LOG) == ("curator", "employee")
+    assert users.can_manage(adm, {"id": "c2", "role": "admin"}) and not users.can_manage(adm, OWNER)
+    assert users.can_manage(CUR_LOG, {"id": "c3", "role": "curator", "department": "Логистика"})
+    assert not users.can_manage(CUR_LOG, CUR_SVAR) and not users.can_manage(CUR_LOG, adm)
 
 
 if __name__ == "__main__":

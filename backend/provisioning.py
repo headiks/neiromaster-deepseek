@@ -1,187 +1,251 @@
 """
-provisioning.py — создание изолированного кабинета компании.
+provisioning.py — компании (мультитенантность «схема на компанию»).
 
-Модель мультитенантности: «схема на кабинет» (schema-per-tenant). Каждая компания
-получает свою PostgreSQL-схему со своим полным набором таблиц — данные клиентов
-физически изолированы в одной базе. Подходит для десятков-сотен кабинетов.
+Каждая компания — своя PostgreSQL-схема cab_<slug> с полным набором таблиц: сотрудники,
+кураторы, документы, планы, сообщения, вопросы, журнал. В public — только общее:
+    public.cabinets — реестр компаний;
+    public.logins   — справочник «логин -> схема компании»: вход по одному адресу, логины
+                      уникальны во всей системе;
+    суперадмин (и данные, заведённые до разделения на компании).
 
-Kafka здесь не нужна: создание кабинета — редкая синхронная операция с немедленным
-результатом («схема создалась / нет»), а не поток событий. Всё делается одним
-рукописным скриптом поверх уже существующих init_schema (db, docpipe, documents).
+Вне БД компании разделены так же: файлы — data/documents/<схема>/ (config.docs_dir), ключи
+S3 и raw-БД — с префиксом схемы (storage), кэш ответов и блокировки в Redis — с суффиксом
+схемы (tenant_key), задачи очереди выполняются в схеме поставившей их компании (jobs.py).
 
-    python provisioning.py <slug> [--company "ООО Ромашка"]   # создать кабинет
-    python provisioning.py --list                              # список кабинетов
-
-Что делает provision_cabinet():
-    CREATE SCHEMA "cab_<slug>"
-      -> все CREATE TABLE в этой схеме (db + docpipe + document_meta)
-      -> посев стартовой структуры (этапы + папки) из knowledge_seed.json
-      -> регистрация кабинета в реестре public.cabinets
-      -> S3-префикс кабинета cab_<slug>/… (изоляция оригиналов; no-op без S3)
-      -> Qdrant-коллекции кабинета cab_<slug>__{reglaments,docpipe,folder_tags,doc_summaries}
+    python provisioning.py <slug> --company "ООО Ромашка" [--admin "Иванов Иван"]
+    python provisioning.py --list
 """
+import json
 import re
 import sys
+import threading
 import time
-import json
+from pathlib import Path
 
-import db
-import stages
-import folders
-import documents
 import config
-from config import BASE_DIR
+import db
+
+BASE_DIR = Path(__file__).resolve().parents[1]   # корень проекта (код — в backend/)
 
 SCHEMA_PREFIX = "cab_"
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,40}$")
 
+
+
 def schema_for(slug: str) -> str:
-    """slug кабинета -> имя схемы. Валидирует slug (латиница/цифры/подчёркивание)."""
+    """slug компании -> имя схемы. Валидирует slug (латиница/цифры/подчёркивание)."""
     slug = (slug or "").strip().lower()
     if not _SLUG_RE.match(slug):
-        raise ValueError("slug кабинета: латиница/цифры/подчёркивание, начинается с буквы или цифры")
+        raise ValueError("Код компании: латиница, цифры и подчёркивание, начинается с буквы или цифры")
     return f"{SCHEMA_PREFIX}{slug}"
 
 
 def s3_prefix_for(slug: str) -> str:
-    """Префикс кабинета в бакете: cab_<slug>/<глобальный S3_PREFIX>. Оригиналы разных
-    компаний физически разложены по своим «папкам» одного бакета."""
-    schema_for(slug)   # валидация slug
-    return f"{SCHEMA_PREFIX}{slug.strip().lower()}/{config.S3_PREFIX}"
+    """Префикс компании в бакете: cab_<slug>/<глобальный S3_PREFIX>."""
+    return f"{schema_for(slug)}/{config.S3_PREFIX}"
+
+
+def slug_from(name: str) -> str:
+    """Код компании из названия: «ООО Ромашка» -> «ooo_romashka» (без кавычек и знаков)."""
+    from staffing import _translit
+    words = [_translit(w) for w in re.split(r"[\s\-]+", name or "")]
+    slug = "_".join(w for w in words if w)[:40].strip("_")
+    return slug or f"c{int(time.time())}"
 
 
 def ensure_registry():
-    """Реестр кабинетов в public — общий для всех тенантов (какие кабинеты есть)."""
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS public.cabinets ("
-        "  slug        TEXT PRIMARY KEY,"
-        "  schema_name TEXT UNIQUE NOT NULL,"
-        "  company     TEXT NOT NULL DEFAULT '',"
-        "  created_at  TEXT NOT NULL)"
-    )
+    """Реестр компаний и справочник логинов (DDL — db.PUBLIC_STATEMENTS)."""
+    for stmt in db.PUBLIC_STATEMENTS:
+        db.execute(stmt)
 
 
-def cabinet_exists(schema: str) -> bool:
-    r = db.query(
-        "SELECT 1 FROM information_schema.schemata WHERE schema_name = %s",
-        (schema,), fetch="one",
-    )
-    return r is not None
+# ---------- Реестр компаний (кэш) ----------
+_cache = {"at": 0.0, "schemas": frozenset()}
+_cache_lock = threading.Lock()
 
 
-def list_cabinets() -> list:
+def schemas(fresh: bool = False, max_age: float = 30) -> list:
+    """Схемы всех компаний. Кэш на процесс — проверка токена идёт на каждый запрос."""
+    with _cache_lock:
+        if fresh or time.time() - _cache["at"] > max_age:
+            try:
+                rows = db.query("SELECT schema_name FROM public.cabinets ORDER BY created_at") or []
+            except Exception:
+                rows = []                         # реестра ещё нет — компаний нет
+            _cache["schemas"] = frozenset(r["schema_name"] for r in rows)
+            _cache["at"] = time.time()
+        return sorted(_cache["schemas"])
+
+
+def is_company(schema: str) -> bool:
+    """Незнакомая схема — перечитать реестр (компанию могли создать в другом процессе), но
+    не чаще раза в 5 с: иначе токены с выдуманным префиксом дёргали бы БД на каждый запрос."""
+    return bool(schema) and (schema in schemas() or schema in schemas(max_age=5))
+
+
+def list_companies() -> list:
     ensure_registry()
-    return db.query("SELECT slug, schema_name, company, created_at FROM public.cabinets ORDER BY created_at")
+    return db.query("SELECT slug, schema_name, company, created_at FROM public.cabinets "
+                    "ORDER BY created_at") or []
 
 
-def _provision_s3(slug: str) -> dict:
-    """Поднять S3-префикс кабинета: проверить бакет и создать маркер cab_<slug>/…/.keep,
-    чтобы префикс существовал в листингах. No-op при выключенном S3. Сбой не роняет
-    создание кабинета — префикс появится при первой заливке оригинала."""
-    prefix = s3_prefix_for(slug)
+def company_name(schema: str) -> str:
+    row = db.query("SELECT company FROM public.cabinets WHERE schema_name = %s", (schema,), "one")
+    return (row or {}).get("company") or ""
+
+
+def tenant_key(name: str) -> str:
+    """Ключ Redis/кэша, свой у каждой компании: общие имена не пересекаются между ними."""
+    schema = db.current_schema()
+    return f"{name}:{schema}" if schema else name
+
+
+# ---------- Справочник логинов ----------
+def schema_of_login(username: str):
+    """Схема компании, где заведён логин; None — общая (суперадмин, старые данные)."""
+    try:
+        row = db.query("SELECT schema_name FROM public.logins WHERE username = %s", (username,), "one")
+    except Exception:
+        return None
+    return row["schema_name"] if row else None
+
+
+def login_taken_elsewhere(username: str, user_id=None) -> bool:
+    """Логин занят в другой компании или в общей схеме (логины уникальны во всей системе)."""
+    schema = db.current_schema()
+    row = db.query("SELECT 1 FROM public.logins WHERE username = %s "
+                   "AND NOT (schema_name = %s AND user_id = %s)",
+                   (username, schema or "", user_id or ""), "one")
+    if row:
+        return True
+    if schema:     # из компании общая таблица users не видна — проверяем явно
+        return db.query("SELECT 1 FROM public.users WHERE username = %s", (username,), "one") is not None
+    return False
+
+
+def taken_logins() -> set:
+    """Все логины системы — для генерации нового уникального логина."""
+    rows = db.query("SELECT username FROM public.logins UNION SELECT username FROM public.users "
+                    "WHERE username IS NOT NULL") or []
+    return {r["username"] for r in rows}
+
+
+def sync_login(user: dict):
+    """Запись пользователя компании изменилась — справочник логинов следом."""
+    schema = db.current_schema()
+    if not schema:
+        return
+    db.execute("DELETE FROM public.logins WHERE schema_name = %s AND user_id = %s", (schema, user["id"]))
+    if user.get("username"):
+        db.execute("INSERT INTO public.logins (username, schema_name, user_id) VALUES (%s, %s, %s)",
+                   (user["username"], schema, user["id"]))
+
+
+def drop_login(user_id: str):
+    schema = db.current_schema()
+    if schema:
+        db.execute("DELETE FROM public.logins WHERE schema_name = %s AND user_id = %s", (schema, user_id))
+
+
+# ---------- Таблицы компании ----------
+def init_tables():
+    """Все таблицы и стартовая структура в ТЕКУЩЕЙ схеме. Идемпотентно: при старте
+    приложения прогоняется по всем компаниям — так до них доезжают новые миграции."""
+    import docregistry
+    import documents
+    import folders
+    import qacache
+    import questions
+    import stages
+    db.init_schema()
+    docregistry.init()
+    questions.init()
+    qacache.init()
+    documents.init()
+    try:
+        import docpipe
+        docpipe.init_schema()
+        docpipe.sync_plan_from_catalog()
+    except Exception as e:
+        print(f"[warn] docpipe в {db.current_schema() or 'public'}: {e}")
+    seed_path = BASE_DIR / "data" / "knowledge_seed.json"
+    if seed_path.exists():
+        seed = json.loads(seed_path.read_text(encoding="utf-8"))
+        stages.seed_if_empty(seed.get("stages", []))
+        folders.seed_if_empty(seed.get("folders", []))
+
+
+def _provision_s3(slug: str):
+    """Маркер префикса компании в бакете. No-op без S3; сбой не мешает созданию компании —
+    префикс появится с первым оригиналом."""
     if not config.S3_ENABLED:
-        print(f"[s3] {slug}: S3 выключен — префикс {prefix!r} заведётся при включении S3")
-        return {"enabled": False, "prefix": prefix, "status": "skipped"}
+        return
     try:
         import storage
-        s3 = storage._s3()
-        s3.head_bucket(Bucket=config.S3_BUCKET)                          # бакет доступен
-        s3.put_object(Bucket=config.S3_BUCKET, Key=f"{prefix}.keep", Body=b"")   # «поднять» префикс
-        print(f"[s3] {slug}: префикс {prefix!r} готов (bucket={config.S3_BUCKET})")
-        return {"enabled": True, "prefix": prefix, "bucket": config.S3_BUCKET, "status": "created"}
+        storage._s3().put_object(Bucket=config.S3_BUCKET, Key=f"{s3_prefix_for(slug)}.keep", Body=b"")
     except Exception as e:
-        print(f"[warn] S3-префикс для {slug}: {e}")
-        return {"enabled": True, "prefix": prefix, "status": "error", "error": str(e)}
+        print(f"[warn] S3-префикс компании {slug}: {e}")
 
 
-def provision_cabinet(slug: str, company: str = "", seed_path=None) -> str:
-    """Создать кабинет: схема + все таблицы + посев + S3-префикс + запись в реестр.
-    Возвращает имя схемы. Векторного стора (Qdrant) нет — ретрив идёт по LLM-меткам в Postgres."""
+def create_company(company: str, slug: str = "", admin_full_name: str = "") -> dict:
+    """Компания = схема со всеми таблицами + её администратор (один на компанию).
+    Возвращает логин и временный пароль администратора — показать один раз."""
+    import staffing
+    import users
+    company = (company or "").strip()
+    if not company:
+        raise ValueError("Укажите название компании")
+    slug = (slug or "").strip().lower() or slug_from(company)
     schema = schema_for(slug)
     ensure_registry()
-    if cabinet_exists(schema):
-        raise ValueError(f"Кабинет уже существует: схема {schema!r}")
+    if db.query("SELECT 1 FROM public.cabinets WHERE slug = %s OR schema_name = %s",
+                (slug, schema), "one") or \
+            db.query("SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (schema,), "one"):
+        raise ValueError(f"Компания с кодом «{slug}» уже есть")
 
-    # 1) сама схема
-    with db._get_pool().connection() as conn:
-        conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-
-    # 2) все таблицы + посев — внутри схемы кабинета (search_path)
-    with db.use_schema(schema):
-        db.init_schema()                      # users, sessions, folders, stages, substages
-        try:
-            import docpipe
-            docpipe.init_schema()             # конвейер разметки v2
-        except Exception as e:
-            print(f"[warn] docpipe schema в {schema}: {e}")
-        documents.init()                      # document_meta (реестр v1)
-
-        seed_path = seed_path or (BASE_DIR / "data" / "knowledge_seed.json")
-        if seed_path.exists():
-            seed = json.loads(seed_path.read_text(encoding="utf-8"))
-            s = stages.seed_if_empty(seed.get("stages", []))
-            f = folders.seed_if_empty(seed.get("folders", []))
-            print(f"[seed] {schema}: этапов {s}, папок {f}")
-        else:
-            print(f"[warn] нет файла сида {seed_path} — кабинет создан без стартовой структуры")
-
-    # 3) регистрация в общем реестре (public)
-    db.execute(
-        "INSERT INTO public.cabinets (slug, schema_name, company, created_at) VALUES (%s, %s, %s, %s)",
-        (slug.strip().lower(), schema, company or "", time.strftime("%Y-%m-%dT%H:%M:%S")),
-    )
-
-    # 4) S3-префикс кабинета — изоляция оригиналов документов компании
+    db.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        with db.use_schema(schema):
+            init_tables()
+            full_name = (admin_full_name or "").strip() or f"Администратор {company}"
+            password = staffing.temp_password()
+            admin = users.create_user(
+                {"full_name": full_name, "username": f"admin_{slug}"[:40], "password": password},
+                role=users.ROLE_ADMIN, must_change_credentials=True)
+        db.execute("INSERT INTO public.cabinets (slug, schema_name, company, created_at) "
+                   "VALUES (%s, %s, %s, %s)", (slug, schema, company, time.strftime("%Y-%m-%dT%H:%M:%S")))
+    except Exception:
+        # Не оставляем полусозданную компанию: схему и её логины — обратно.
+        db.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        db.execute("DELETE FROM public.logins WHERE schema_name = %s", (schema,))
+        raise
+    schemas(fresh=True)
     _provision_s3(slug)
-
-    return schema
+    return {"slug": slug, "schema": schema, "company": company,
+            "admin": {"id": admin["id"], "full_name": admin["full_name"],
+                      "username": admin["username"], "password": password}}
 
 
 def _main(argv):
     if "--list" in argv:
-        rows = list_cabinets()
+        rows = list_companies()
         if not rows:
-            print("Кабинетов пока нет.")
+            print("Компаний пока нет.")
         for r in rows:
             print(f"  {r['slug']:<20} {r['schema_name']:<24} {r['company']}  ({r['created_at']})")
         return
     args = [a for a in argv if not a.startswith("--")]
-    if not args:
+    opt = lambda k: argv[argv.index(k) + 1] if k in argv and argv.index(k) + 1 < len(argv) else ""  # noqa: E731
+    company = opt("--company")
+    slug = args[0] if args and args[0] not in (company, opt("--admin")) else ""
+    if not company:
         print(__doc__)
         return
-    slug = args[0]
-    company = ""
-    if "--company" in argv:
-        i = argv.index("--company")
-        company = argv[i + 1] if i + 1 < len(argv) else ""
-    schema = provision_cabinet(slug, company=company)
-    print(f"Кабинет создан: схема {schema}")
-
-
-def _selfcheck():
-    """Смоук-тест чистых хелперов имён (схема, S3-префикс) без сети/БД."""
-    assert schema_for("acme") == "cab_acme"
-    assert schema_for(" Acme ") == "cab_acme"
-    for bad in ("", "1acme-x", "acme;drop", "переезд"):
-        try:
-            schema_for(bad)
-            raise AssertionError(f"должно было упасть: {bad!r}")
-        except ValueError:
-            pass
-    # S3-префикс кабинета: cab_<slug>/<глобальный префикс>
-    config.S3_PREFIX = "documents/"
-    assert s3_prefix_for("acme") == "cab_acme/documents/"
-    assert s3_prefix_for(" Acme ") == "cab_acme/documents/"
-    for bad in ("", "acme;drop"):
-        try:
-            s3_prefix_for(bad); raise AssertionError("s3_prefix_for должен валидировать slug")
-        except ValueError:
-            pass
-    print("provisioning: schema_for / s3_prefix_for — OK")
+    r = create_company(company, slug=slug, admin_full_name=opt("--admin"))
+    print(f"Компания создана: {r['company']} (схема {r['schema']})")
+    print(f"  Администратор: {r['admin']['username']}  пароль: {r['admin']['password']}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        _main(sys.argv[1:])
-    else:
-        _selfcheck()
+    ensure_registry()
+    _main(sys.argv[1:])

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 import config
+import db
 import storage
 import indexing
 import documents
@@ -14,7 +15,7 @@ import folders
 import users
 import activitylog
 from config import MAX_UPLOAD_BYTES
-from deps import _bg, require_admin, admin_only, owner_only, globaltest_only, can_see_doc, visible_documents, ensure_doc_access
+from deps import _bg, require_admin, admin_only, full_access_only, globaltest_only, can_see_doc, visible_documents, ensure_doc_access
 
 router = APIRouter()
 
@@ -36,7 +37,7 @@ def get_documents(user: dict = Depends(require_admin)):
     """Список документов в базе с их статусом индексации (загружен / обрабатывается / готов / ошибка).
     Суперадмину — все документы, администратору — только его собственные загрузки."""
     return {"documents": visible_documents(user),
-            "scope": "all" if users.is_owner(user) else "own"}
+            "scope": "all" if users.is_full_access(user) else "own"}
 
 
 @router.get("/documents/board")
@@ -111,6 +112,11 @@ def upload_document(file: UploadFile = File(...), mode: str = "", confidential: 
     через GET /documents/jobs/{job_id}. Тяжёлый разбор PDF не держит запрос.
     mode — что делать, если документ с таким именем уже есть: replace / separate.
     """
+    if users.is_owner(user) and db.current_schema():
+        # Суперадмин в открытой компании документы не грузит: только войдя как её администратор
+        # (владелец документа — администратор компании, а не разработчик).
+        raise HTTPException(status_code=403, detail="Документы компании загружаются от имени её "
+                                                    "администратора — «Войти как администратор»")
     if mode not in ("", "replace", "separate"):
         raise HTTPException(status_code=400, detail="mode: replace или separate")
     # Читаем не больше лимита +1 байт: иначе гигабайтный файл целиком буферизуется в
@@ -184,17 +190,19 @@ def api_s3_list(prefix: str = "", recursive: bool = False,
     Суперадмин ходит по всему бакету (его папка — корень структуры), обычный
     администратор заперт в СВОЁМ подкаталоге <суперадмин>/<админ>/: запрошенный
     префикс вне него подменяется на собственный, чужие файлы не листаются."""
-    import config
+    import db
     import storage
-    home = ""
-    if not users.is_owner(user):
+    # Компания видит только свой префикс бакета (cab_<код>/...), куратор — только свою папку
+    # внутри него. Весь бакет — только суперадмину в общей схеме.
+    home = storage._prefix() if db.current_schema() else ""
+    if not users.is_full_access(user):
         top, own = indexing.owner_dirs(user)
-        home = f"{config.S3_PREFIX}{top}/{own}/"
-        if not (prefix or "").startswith(home):
-            prefix = home
+        home = f"{storage._prefix()}{top}/{own}/"
+    if home and not (prefix or "").startswith(home):
+        prefix = home
     data = storage.list_objects(prefix=prefix, delimiter=("" if recursive else "/"))
     data["home"] = home          # ниже этого префикса администратору спускаться нельзя
-    data["scope"] = "all" if users.is_owner(user) else "own"
+    data["scope"] = "all" if users.is_full_access(user) else "own"
     return data
 
 
@@ -342,7 +350,7 @@ class ClarifyRequest(BaseModel):
     clarification: str = Field(max_length=4000)
 
 
-@router.post("/documents/reanalyze", dependencies=owner_only)
+@router.post("/documents/reanalyze", dependencies=full_access_only)
 def reanalyze_documents():
     """Полный повторный анализ ВСЕЙ базы под текущую структуру папок (фоново).
     Только суперадмин: операция задевает документы всех администраторов.
@@ -375,7 +383,7 @@ def reprocess_one(filename: str, user: dict = Depends(require_admin)):
     ensure_doc_access(user, filename, write=True)
     if indexing.is_confidential(filename):
         raise HTTPException(status_code=400, detail="Документ помечен «не отправлять в ИИ»")
-    fp = indexing.DOCS_DIR / filename
+    fp = config.docs_dir() / filename
     if not fp.exists():
         raise HTTPException(status_code=404, detail="Файл-оригинал не найден в хранилище")
     job = indexing.enqueue_document(fp)

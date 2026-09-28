@@ -7,16 +7,17 @@
 :root {
   /* Фон страницы: мягкая сетка из трёх радиальных пятен поверх светлой базы */
   --nm-page:
-    radial-gradient(55% 45% at 15% 10%, #dde3ff 0%, transparent 70%),
-    radial-gradient(45% 45% at 90% 30%, #d6f2ef 0%, transparent 70%),
-    radial-gradient(55% 55% at 50% 100%, #f1e2ff 0%, transparent 70%),
-    #eef0f6;
+    radial-gradient(55% 45% at 15% 10%, #d3dbff 0%, transparent 70%),
+    radial-gradient(45% 45% at 90% 30%, #cbece7 0%, transparent 70%),
+    radial-gradient(55% 55% at 50% 100%, #e8d7fb 0%, transparent 70%),
+    #e2e5ee;
 
   /* Поверхности (стекло) */
-  --nm-surface: rgba(255, 255, 255, 0.60);   /* карточки, панели */
-  --nm-side:    rgba(255, 255, 255, 0.35);   /* сайдбар */
-  --nm-fill:    rgba(255, 255, 255, 0.50);   /* поля, сегменты, выделение строки */
-  --nm-line:    rgba(255, 255, 255, 0.90);   /* светлая кромка стекла */
+  /* Светлая тема: блоки плотнее фона и с тёмным контуром — не сливаются друг с другом. */
+  --nm-surface: rgba(255, 255, 255, 0.82);   /* карточки, панели */
+  --nm-side:    rgba(255, 255, 255, 0.55);   /* сайдбар */
+  --nm-fill:    rgba(15, 18, 34, 0.045);     /* поля, сегменты, выделение строки — темнее карточки */
+  --nm-line:    rgba(15, 18, 34, 0.12);      /* контур блоков и полей */
   --nm-line-strong: rgba(15, 18, 34, 0.26);  /* контур элементов управления (чекбокс, выкл.) — контраст ≥ 3:1 */
   --nm-scroll: rgba(15, 18, 34, 0.18);       /* ползунок полосы прокрутки */
   --nm-scroll-hover: rgba(15, 18, 34, 0.32);
@@ -26,7 +27,7 @@
   --nm-knob-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
   --nm-cursor-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
   --nm-blur:    blur(26px) saturate(1.8);
-  --nm-shadow:  0 8px 30px rgba(40, 50, 110, 0.08);
+  --nm-shadow:  0 1px 2px rgba(20, 30, 70, 0.06), 0 8px 28px rgba(40, 50, 110, 0.12);
   --nm-shadow-float: 0 10px 30px rgba(20, 30, 80, 0.15);
 
   /* Текст */
@@ -197,7 +198,7 @@ a:hover { color: var(--nm-accent); }
 .nm-seg button[aria-pressed="true"] { background: var(--nm-surface); color: var(--nm-text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .nm-chip { height: 34px; padding: 0 13px; border-radius: var(--nm-r-pill); border: 1px solid var(--nm-line); background: transparent;
            color: var(--nm-text); font: 500 13px/1 var(--nm-font); cursor: pointer; }
-.nm-chip[aria-pressed="true"] { background: var(--nm-text); border-color: var(--nm-text); color: var(--nm-surface); }
+.nm-chip[aria-pressed="true"] { background: var(--nm-text); border-color: var(--nm-text); color: var(--nm-glass-solid); }
 .nm-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: var(--nm-r-pill); font-size: 12px; font-weight: 600; }
 .nm-badge-ok { background: var(--nm-ok-soft); color: var(--nm-ok); }
 .nm-badge-warn { background: var(--nm-warn-soft); color: var(--nm-warn); }

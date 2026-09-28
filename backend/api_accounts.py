@@ -17,9 +17,10 @@ from deps import _set_session_cookie, _session_token, current_user, require_setu
 
 router = APIRouter()
 
-# Самостоятельная регистрация (аккаунт ждёт подтверждения администратора). В закрытом
-# контуре, где все доступы выдаёт администратор, её выключают: NEIROMASTER_ALLOW_REGISTRATION=0.
-ALLOW_REGISTRATION = os.environ.get("NEIROMASTER_ALLOW_REGISTRATION", "1").lower() not in ("0", "false", "no")
+# Самостоятельная регистрация — по умолчанию ВЫКЛ: люди живут в компаниях, и доступы
+# выдают админ компании или куратор. Зарегистрированный сам попал бы в общую схему, без
+# компании. Включить для старых установок без компаний: NEIROMASTER_ALLOW_REGISTRATION=1.
+ALLOW_REGISTRATION = os.environ.get("NEIROMASTER_ALLOW_REGISTRATION", "0").lower() in ("1", "true", "yes")
 
 # За заводским NAT вся смена входит с одного адреса: 120 в минуту упирались в утренний пик.
 LOGIN_RATE_PER_MIN = int(os.environ.get("NEIROMASTER_LOGIN_RATE", "600"))
@@ -108,22 +109,53 @@ def api_register(req: RegisterRequest, request: Request):
 @router.get("/api/config")
 def api_config():
     """Публичные настройки для страниц входа (без секретов)."""
-    return {"registration": ALLOW_REGISTRATION}
+    import demo
+    return {"registration": ALLOW_REGISTRATION, "demo": demo.enabled()}
 
 
 @router.post("/api/logout")
 def api_logout(request: Request, response: Response):
     # Браузер — кука, приложение — Bearer: разлогиниваем тот токен, которым пришли.
     token = _session_token(request)
+    if getattr(request.state, "as_owner", None):
+        import db
+        db.set_schema(None)                 # сессия суперадмина — в общей схеме, не в компании
     activitylog.log("logout", user=auth.get_session_user(token), request=request)
     auth.logout(token)
-    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    for name in (auth.COOKIE_NAME, auth.COMPANY_COOKIE, auth.OWNER_RETURN_COOKIE):
+        response.delete_cookie(name, path="/")
     return {"logged_out": True}
 
 
 @router.get("/api/me")
-def api_me(user: dict = Depends(current_user)):
-    return users.public_view(user)
+def api_me(request: Request, user: dict = Depends(current_user)):
+    import db
+    import provisioning
+    schema = db.current_schema()
+    return {**users.public_view(user),
+            # Суперадмин в открытой компании / админ, за которого вошёл суперадмин.
+            "company": schema or "", "company_name": provisioning.company_name(schema) if schema else "",
+            "owner_return": bool(request.cookies.get(auth.OWNER_RETURN_COOKIE))}
+
+
+@router.post("/api/return-to-owner")
+def return_to_owner(request: Request, response: Response):
+    """Суперадмин входил как администратор компании — вернуть его сессию (кука nm_owner_return),
+    а сессию админа закрыть. Кука без живой сессии суперадмина — 401."""
+    import db
+    owner_token = request.cookies.get(auth.OWNER_RETURN_COOKIE)
+    admin_token = _session_token(request)
+    db.set_schema(None)
+    owner = auth.get_session_user(owner_token)
+    response.delete_cookie(auth.OWNER_RETURN_COOKIE, path="/")
+    if not users.is_owner(owner):
+        raise HTTPException(status_code=401, detail="Сессия суперадмина истекла — войдите заново")
+    schema = auth.schema_of_token(admin_token)
+    if schema:
+        with db.use_schema(schema):
+            auth.logout(admin_token)
+    _set_session_cookie(response, owner_token)
+    return {"username": owner["username"], "role": owner["role"]}
 
 
 @router.post("/api/setup-credentials")
@@ -187,6 +219,19 @@ def api_mark_message_read(message_id: str, user: dict = Depends(require_setup_do
     if not messaging.mark_read(user["id"], message_id):
         raise HTTPException(status_code=404, detail="Сообщение не найдено или уже прочитано")
     return {"read": True}
+
+
+class ViewRequest(BaseModel):
+    ms: int = Field(ge=0, le=3_600_000)
+
+
+@router.post("/api/my/messages/{message_id}/view", dependencies=logged_in)
+def api_message_view(message_id: str, req: ViewRequest, user: dict = Depends(require_setup_done)):
+    """Сколько мс сообщение было на экране (кабинет и приложение шлют порциями) — для
+    статистики вовлечённости: открыл ли быстро, читал или пролистал (stats.py)."""
+    import stats
+    messaging.add_view(user["id"], message_id, min(req.ms, stats.MAX_VIEW_MS))
+    return {"ok": True}
 
 
 class AnswersRequest(BaseModel):

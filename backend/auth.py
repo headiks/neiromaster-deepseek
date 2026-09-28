@@ -6,6 +6,11 @@
     - защита от перебора;
     - выдача и проверка токена сессии.
 
+Компании: логин ищется в справочнике public.logins -> схема компании; вход и сессия — в
+её схеме. Токен сессии несёт схему: «cab_<код>.<случайная часть>», по нему middleware
+(TenantMiddleware) выбирает схему на весь запрос. Подделка префикса ничего не даёт: сессия
+ищется внутри этой схемы по хэшу всего токена. Токен без префикса — общая схема (суперадмин).
+
 Сессии хранятся в PostgreSQL (таблица sessions, см. db.py): переживают перезапуск
 сервера (пользователей не разлогинивает) и общие для всех uvicorn-воркеров. В БД лежит
 не сам токен, а его SHA-256: утёкший дамп не даёт войти чужой сессией.
@@ -20,9 +25,13 @@ import threading
 from typing import Optional
 
 import db
+import provisioning
 import users
 
 COOKIE_NAME = "nm_session"
+# Суперадмин: открытая компания (схема) и его сессия, отложенная на время «входа как админ».
+COMPANY_COOKIE = "nm_company"
+OWNER_RETURN_COOKIE = "nm_owner_return"
 SESSION_TTL = 12 * 3600          # сколько живёт сессия без активности
 
 # Флаг Secure у cookie сессии: по умолчанию ВКЛ (токен не уходит по чистому HTTP).
@@ -127,6 +136,10 @@ def login(username: str, password: str, client: str = "") -> tuple:
     if locked_for:
         raise ValueError(f"Слишком много неудачных попыток. Повторите через {locked_for} сек.")
 
+    schema = provisioning.schema_of_login(username)
+    if schema and not provisioning.is_company(schema):
+        schema = None                     # компания удалена — логина больше нет
+    db.set_schema(schema)                 # вход и всё дальше в этом запросе — в схеме компании
     user = users.get_by_username(username)
 
     # Хэш считаем всегда — иначе по времени ответа видно, существует ли логин
@@ -143,12 +156,27 @@ def login(username: str, password: str, client: str = "") -> tuple:
 
     clear_failures(key)
 
+    return new_session(user, schema), user
+
+
+def new_session(user: dict, schema: Optional[str] = None) -> str:
+    """Сессия пользователя в схеме schema (текущая схема запроса должна быть ей же)."""
     now = time.time()
     token = secrets.token_urlsafe(32)
+    if schema:
+        token = f"{schema}.{token}"       # «.» не встречается в token_urlsafe
     db.execute("INSERT INTO sessions (token, user_id, created_at, seen_at) VALUES (%s, %s, %s, %s)",
                (_hash_token(token), user["id"], now, now))
     db.execute("DELETE FROM sessions WHERE seen_at < %s", (now - SESSION_TTL,))  # чистим протухшие
-    return token, user
+    return token
+
+
+def schema_of_token(token: Optional[str]) -> Optional[str]:
+    """Схема компании из токена сессии; None — общая схема или токен не наш."""
+    if not token or "." not in token or len(token) > 256:
+        return None
+    prefix = token.split(".", 1)[0]
+    return prefix if provisioning.is_company(prefix) else None
 
 
 def get_session_user(token: Optional[str]) -> Optional[dict]:
@@ -158,6 +186,12 @@ def get_session_user(token: Optional[str]) -> Optional[dict]:
     или блокировка действуют сразу, без ожидания перелогина.
     """
     if not token or len(token) > 256:
+        return None
+    # Схему запроса уже выставил TenantMiddleware; здесь — страховка: сессия компании
+    # проверяется только в её схеме (токен с чужим префиксом там не найдётся).
+    if "." in token and schema_of_token(token) is None:
+        return None
+    if schema_of_token(token) != db.current_schema():
         return None
     now = time.time()
     hashed = _hash_token(token)

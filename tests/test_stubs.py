@@ -48,6 +48,12 @@ def install(db: bool = True, psycopg: bool = False,
     if db:
         mod = types.ModuleType("db")
         mod.query = mod.execute = lambda *a, **k: None
+        # Мультитенантность: без схемы компании всё идёт в общую (как настоящий db без контекста).
+        import contextlib
+        mod.current_schema = lambda: None
+        mod.set_schema = lambda name=None: None
+        mod.bind_schema = lambda fn: fn
+        mod.use_schema = lambda name: contextlib.nullcontext()
         sys.modules.setdefault("db", mod)
 
     cfg = sys.modules.get("config")
@@ -57,6 +63,15 @@ def install(db: bool = True, psycopg: bool = False,
     for k, v in config_extra.items():
         setattr(cfg, k, v)
     return cfg
+
+
+def superadmin_hash(password: str) -> str:
+    """«соль:хэш» пароля суперадмина для NEIROMASTER_SUPERADMIN_HASH (параметры — как в
+    users.hash_password): в тестах суперадмин входит своим паролем, а не боевым."""
+    import hashlib
+    salt = b"0123456789abcdef"
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+    return f"{salt.hex()}:{digest.hex()}"
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from test_stubs import superadmin_hash
 
 TEST_DSN = (os.environ.get("NEIROMASTER_TEST_DSN")
             or "postgresql://neiromaster:neiromaster@localhost:5432/neiromaster_test")
@@ -29,7 +30,7 @@ os.environ.update({
     "NEIROMASTER_SCHEDULER": "0",
     "REDIS_URL": "",                          # всё в памяти процесса — тест самодостаточен
     "DEEPSEEK_API_KEY": "",
-    "NEIROMASTER_ADMIN_PASSWORD": "owner-initial-pass",
+    "NEIROMASTER_SUPERADMIN_HASH": superadmin_hash("owner-strong-pass"),
     # Ключа нет — приложение создаёт его само (как на свежем сервере), во временной папке.
     "NEIROMASTER_PII_KEY": "",
     "NEIROMASTER_PII_KEY_FILE": os.path.join(tempfile.mkdtemp(), "secrets", "pii.key"),
@@ -58,11 +59,10 @@ def env():
     import indexing
     import config
     users.DATA_DIR = tmp
-    users.INITIAL_CREDENTIALS_PATH = tmp / "owner_initial_credentials.txt"
     users.USERS_PATH = tmp / "users.json"
     users.LEGACY_EMPLOYEES_PATH = tmp / "employees.json"
-    indexing.DOCS_DIR = tmp / "documents"
-    indexing.DOCS_DIR.mkdir()
+    config.DOCS_DIR = tmp / "documents"          # config.docs_dir() берёт его в момент вызова
+    config.DOCS_DIR.mkdir()
     config.REGISTRY_PATH = tmp / "registry.json"
     import docregistry, questions
     docregistry.REGISTRY_PATH = tmp / "registry.json"
@@ -86,16 +86,12 @@ def _login(client, username, password):
 
 @pytest.fixture(scope="module")
 def owner(env):
-    """Владелец: вход по начальному паролю -> свой пароль -> новая сессия."""
+    """Суперадмин: логин и пароль заданы в коде (в тестах — хэш из NEIROMASTER_SUPERADMIN_HASH)."""
     import users
     c = env["client"]
     own = users.get_owner()
-    first = _login(c, own["username"], "owner-initial-pass")
-    assert first["must_change_credentials"]
-    assert c.get("/admin", follow_redirects=False).headers["location"] == "/setup"
-    r = c.post("/api/setup-credentials", json={"password": "owner-strong-pass"}, headers=ORIGIN)
-    assert r.status_code == 200, r.text
-    _login(c, own["username"], "owner-strong-pass")
+    assert own["username"] == users.SUPERADMIN_USERNAME
+    assert not _login(c, own["username"], "owner-strong-pass")["must_change_credentials"]
     return {"username": own["username"], "password": "owner-strong-pass", "id": own["id"]}
 
 
@@ -192,10 +188,10 @@ def test_login_lockout_and_admin_reset(env, owner):
 
 
 # ---------------------------------------------------------------- люди и права
-def _make_admin(env, owner, name, dept):
+def _make_curator(env, owner, name, dept):
     c = _as_owner(env, owner)
     u = c.post("/users", json={"full_name": name, "department": dept}, headers=ORIGIN).json()
-    assert c.post(f"/users/{u['id']}/role", json={"role": "admin"}, headers=ORIGIN).status_code == 200
+    assert c.post(f"/users/{u['id']}/role", json={"role": "curator"}, headers=ORIGIN).status_code == 200
     pw = c.post(f"/users/{u['id']}/credentials", json={"password": "admin-pass-123"}, headers=ORIGIN).json()
     c.cookies.clear()
     c.post("/api/login", json={"username": pw["username"], "password": "admin-pass-123"})
@@ -203,10 +199,10 @@ def _make_admin(env, owner, name, dept):
     return {"id": u["id"], "username": pw["username"], "password": "admin-pass-456"}
 
 
-def test_department_admin_boundaries(env, owner):
+def test_department_curator_boundaries(env, owner):
     c = _as_owner(env, owner)
     other = c.post("/users", json={"full_name": "Чужой Иван Петрович", "department": "Склад"}, headers=ORIGIN).json()
-    adm = _make_admin(env, owner, "Админов Олег Олегович", "Цех 1")
+    adm = _make_curator(env, owner, "Админов Олег Олегович", "Цех 1")
     _login(c, adm["username"], adm["password"])
     # создаёт только в своё подразделение
     mine = c.post("/users", json={"full_name": "Свой Пётр Петрович", "department": "Склад"}, headers=ORIGIN).json()
@@ -226,7 +222,7 @@ def test_department_admin_boundaries(env, owner):
 
 
 def test_staffing_import_dates_and_foreign_departments(env, owner):
-    adm = _make_admin(env, owner, "Кадров Кирилл Кириллович", "Цех 2")
+    adm = _make_curator(env, owner, "Кадров Кирилл Кириллович", "Цех 2")
     c = env["client"]
     _login(c, adm["username"], adm["password"])
     res = c.post("/staffing/import", json={"records": [

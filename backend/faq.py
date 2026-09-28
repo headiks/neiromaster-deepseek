@@ -16,6 +16,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import db
+import provisioning
 import qacache
 
 PROMPT_VERSION = "1"
@@ -141,7 +142,7 @@ def refresh_sections() -> dict:
 def _run(fn, items) -> int:
     total = 0
     with ThreadPoolExecutor(max_workers=max(1, _WORKERS)) as ex:
-        for res in ex.map(lambda it: _safe(fn, it), items):
+        for res in ex.map(db.bind_schema(lambda it: _safe(fn, it)), items):   # в схеме компании
             total += res
     return total
 
@@ -158,16 +159,16 @@ def refresh() -> dict:
     """Всё сразу, под замком: два воркера не генерируют одно и то же дважды."""
     from redis_conn import get_redis
     r = get_redis()
-    lock = r.lock("nm:faq:lock", timeout=6 * 3600, blocking=False) if r is not None else None
+    lock = r.lock(provisioning.tenant_key("nm:faq:lock"), timeout=6 * 3600, blocking=False) if r is not None else None
     if lock is not None and not lock.acquire():
-        r.set("nm:faq:again", "1")     # идущий прогон повторит себя по окончании
+        r.set(provisioning.tenant_key("nm:faq:again"), "1")     # идущий прогон повторит себя по окончании
         return {"skipped": "уже идёт"}
     try:
         while True:
             res = {"top10": refresh_substages(), "sections": refresh_sections(),
                    "reembedded": qacache.reembed_missing()}
             print(f"[faq] {res}")
-            if r is None or not r.delete("nm:faq:again"):
+            if r is None or not r.delete(provisioning.tenant_key("nm:faq:again")):
                 return res
     finally:
         if lock is not None:

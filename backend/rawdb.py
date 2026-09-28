@@ -174,7 +174,7 @@ def backfill() -> int:
         key = entry.get("s3_key") or storage._key(rel)
         if not rel or key in have:
             continue
-        path = config.DOCS_DIR / rel
+        path = config.docs_dir() / rel
         if not path.exists() and not storage.pull(path, key):
             print(f"[rawdb] нет ни локальной копии, ни копии в S3: {rel}")
             continue

@@ -3,7 +3,8 @@
 // Элементы ищутся по data-tour, страницы отдают туру свои действия через useTourHooks.
 import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { maybeOffer, start, stop, type Kit, type Scenario, type Step } from './engine';
+import { maybeOffer, start, stop, tourRunning, type Kit, type Scenario, type Step } from './engine';
+import { api, isDemoMode } from '../lib/api';
 
 type Hooks = {
   users?: { setStaffing: (on: boolean) => void; openDemo: () => void; closeDemo: () => void };
@@ -160,13 +161,10 @@ const ADMIN_STEPS = (): Step[] => [
   { chapter: 'Каждый день', title: 'Вопросы сотрудников',
     text: 'Если ассистент не нашёл ответа в документах или вопрос похож на ЧС, он попадает сюда (ЧС — сверху). Ваш ответ придёт сотруднику в кабинет и пушем. Число открытых вопросов — рядом с разделом.',
     target: sel('nav-questions'), click: true, enter: (k) => ui(k, Q) },
-  { chapter: 'Каждый день', title: 'Как видит сотрудник',
-    text: '«Мой кабинет» — то же, что видит сотрудник: сообщения плана, прогресс адаптации и ассистент.',
-    target: sel('nav-cabinet'), enter: (k) => ui(k, Q) },
   { chapter: 'Готово', title: 'Вот и всё!',
     html: 'Порядок работы: <b>пользователи → план → документы → сообщения</b>. Тур можно запустить снова в настройках (шестерёнка внизу слева) — <b>«Как пользоваться»</b>.',
     target: sel('profile-menu'), final: true,
-    buttons: [{ act: 'again', label: '↺ Ещё раз' }, { act: 'cabinet', label: 'Тур по кабинету →', primary: true }] },
+    buttons: [{ act: 'again', label: '↺ Ещё раз', primary: true }] },
 ];
 
 const ADMIN: Scenario = {
@@ -185,7 +183,6 @@ const ADMIN: Scenario = {
     if (here() !== s.path) navigate(s.path);
     setTimeout(() => window.scrollTo(0, s.scrollY), 200);
   },
-  actions: { cabinet: () => { stop(true).then(() => { navigate('/'); setTimeout(() => startTour(), 500); }); } },
 };
 
 // ---------------------------------------------------------------- кабинет
@@ -244,9 +241,6 @@ const CABINET_DESKTOP = (): Step[] => [
   { chapter: 'Сообщения', title: 'Сегодня',
     text: 'Сообщения за сегодня: старые — сверху, новые — снизу. Чек-листы отмечаются нажатием, в тестах выбирается ответ — всё сохраняется сразу.',
     target: () => document.querySelector(sel('today')) || document.querySelector('.nm-cabinet .nm-section'), enter: (k) => go(k, '/') },
-  { chapter: 'Сообщения', title: 'Дальше по плану',
-    text: 'Что и когда придёт в ближайшие дни. Прошлые сообщения — в «Истории сообщений» ниже.',
-    target: sel('upnext'), enter: (k) => go(k, '/') },
   { chapter: 'Вопросы', title: 'Ассистент',
     text: 'Спросите про пропуск, спецодежду, график, зарплату — ответ придёт сразу, если он есть в документах.',
     target: sel('assistant'), enter: (k) => go(k, '/') },
@@ -267,10 +261,21 @@ const CABINET_DESKTOP = (): Step[] => [
     target: sel('profile-menu'), final: true, buttons: [{ act: 'again', label: '↺ Ещё раз' }] },
 ];
 
+/** Демо: в конце тура по кабинету — что сейчас начнут приходить сообщения. */
+const withDemoFinale = (steps: () => Step[]) => (): Step[] => {
+  const list = steps();
+  if (!isDemoMode()) return list;
+  const last = list[list.length - 1];
+  return [...list.slice(0, -1), { ...last, title: 'Сейчас придут сообщения',
+    html: 'Закройте тур — и в течение нескольких минут сюда по одному, <b>раз в 30 секунд</b>, придут сообщения всех типов: обычное, чек-лист, опрос, мини-тест. Попробуйте ответить на тест и отметить чек-лист.',
+    buttons: [] }];
+};
+
 const cabinetScenario = (): Scenario => ({
   id: 'cabinet',
   offer: 'Покажем за минуту, где сообщения по адаптации, как задать вопрос и что делать, если заболели.',
-  steps: narrow() ? CABINET_MOBILE : CABINET_DESKTOP,
+  steps: withDemoFinale(narrow() ? CABINET_MOBILE : CABINET_DESKTOP),
+  onStop: () => { if (isDemoMode()) demoTourDone(); },
   snapshot: () => ({ path: here(), scrollY: window.scrollY }),
   restore: (snap) => {
     const s = snap as { path: string; scrollY: number } | null;
@@ -280,6 +285,69 @@ const cabinetScenario = (): Scenario => ({
     setTimeout(() => window.scrollTo(0, s.scrollY), 200);
   },
 });
+
+// ---------------------------------------------------------------- демо
+// Вход в демо -> окно по центру, затемнение, дальше коротко по админке и в конце — кабинет
+// глазами сотрудника (вход песочным сотрудником этого устройства и тур по кабинету).
+const DEMO_PICK = ['Как устроена админка', 'Раздел «Пользователи»', 'Загрузка штатного расписания',
+  'Действия с сотрудником', 'Конструктор плана адаптации', 'Этапы', 'Подэтап = одно сообщение',
+  '«О чём сообщение» — задание для ИИ', 'База знаний', 'Персональные данные и конфиденциальность',
+  'Детали по этапам', 'Сообщения сотрудникам', 'Правка вручную', 'Вопросы сотрудников'];
+
+const DEMO_STEPS = (): Step[] => {
+  const byTitle = new Map(ADMIN_STEPS().map((s) => [s.title, s]));
+  const pick = (t: string) => byTitle.get(t)!;
+  const [intro, ...rest] = DEMO_PICK.map(pick);
+  const users = rest.slice(0, 3), plans = rest.slice(3, 7), docs = rest.slice(7, 10), msgs = rest.slice(10, 12), qs = rest.slice(12);
+  return [
+    { chapter: 'Демо', title: 'Добро пожаловать в НейроМастер',
+      html: 'Это демо-компания с готовыми документами, планом адаптации и сотрудниками. НейроМастер сам пишет новичкам сообщения по плану и отвечает на их вопросы по документам компании.<br><br>Проведём по всему: от администратора до сотрудника. Здесь всё можно смотреть, но не менять.' },
+    { chapter: 'Демо', title: 'Кто с чем работает',
+      html: '<b>Администратор</b> — вся компания: люди, планы, документы; заводит админов и кураторов.<br><b>Куратор</b> — свой отдел: отвечает на нетиповые вопросы и ЧС, заводит кураторов и сотрудников отдела.<br><b>Сотрудник</b> — получает сообщения плана и спрашивает ассистента.' },
+    intro, ...users,
+    { chapter: 'Шаг 1 · Пользователи', title: 'Статистика по каждому',
+      text: 'Какой этап проходит сотрудник, как сдаёт мини-тесты и насколько вовлечён: как быстро открывает новые сообщения и читает ли их или только пролистывает (по времени на экране). Нажмите на человека — подробности по каждому сообщению.',
+      target: sel('users-stats'), enter: (k) => ui(k, U) },
+    ...plans, ...docs, ...msgs, ...qs,
+    { chapter: 'Каждый день', title: 'База ответов',
+      text: 'Частые вопросы по каждому этапу ИИ готовит заранее, а ответы специалистов пополняют базу. Похожий вопрос получает ответ мгновенно, даже сформулированный иначе.',
+      target: '.nm-seg button:last-child', enter: (k) => ui(k, Q) },
+    { chapter: 'Каждый день', title: 'Кураторы отделов',
+      text: 'Куратор видит только свой отдел: его людей, их статистику и вопросы. Так нетиповые вопросы и ЧС разбирает тот, кто знает участок.',
+      target: sel('admin-nav'), enter: (k) => ui(k, U) },
+    { chapter: 'Готово', title: 'Теперь — глазами сотрудника',
+      html: 'Откроем кабинет сотрудника: так его видит новичок на компьютере (в телефоне — то же в приложении).',
+      final: true, buttons: [{ act: 'employee', label: 'Посмотреть глазами сотрудника →', primary: true }] },
+  ];
+};
+
+let toEmployee = false;
+const DEMO: Scenario = {
+  ...ADMIN,
+  id: 'demo',
+  offer: '',
+  steps: DEMO_STEPS,
+  actions: {
+    employee: () => {
+      toEmployee = true;
+      stop(true).then(async () => {
+        try { await api.post('/api/demo/enter', { role: 'employee' }); } catch { /* покажет вход */ }
+        location.assign('/?tour=1');
+      });
+    },
+  },
+  onStop: () => { if (!toEmployee) demoTourDone(); },
+};
+
+/** Тур демо пройден или закрыт: сервер запускает рассылку песочному сотруднику (один раз
+ *  на устройство), страница показывает плашку «Оставить контакты». */
+export function demoTourDone() {
+  api.post('/api/demo/tour-done').catch(() => {}).finally(() => window.dispatchEvent(new Event('nm-demo-tour-done')));
+}
+
+export function startDemoTour() {
+  if (!tourRunning()) start(DEMO);
+}
 
 function scenarioFor(path: string): Scenario {
   return path === '/' ? cabinetScenario() : ADMIN;
@@ -303,6 +371,7 @@ export function TourHost() {
       const t = window.setTimeout(() => startTour(), 700);
       return () => window.clearTimeout(t);
     }
+    if (isDemoMode()) return;                 // в демо тур запускается сам (DemoLayer)
     const t = window.setTimeout(() => maybeOffer(scenarioFor(pathname)), 1500);
     return () => window.clearTimeout(t);
   }, [pathname, nav]);

@@ -1,11 +1,9 @@
 // Части кабинета, общие для широкой и мобильной раскладок.
 import { useEffect, useMemo, useState } from 'react';
-import { BellRing, CalendarCheck, History as HistoryIcon, Inbox } from 'lucide-react';
+import { BellRing, History as HistoryIcon, Inbox } from 'lucide-react';
 import type { Msg } from '@shared/types';
 import { dayLabel, msgDay, ymd } from '@shared/format';
-import { whenNext } from '@shared/progress';
 import { useInbox, notifyEnabled, NOTIFY_KEY } from '../../lib/inbox';
-import { useCabinet } from '../../lib/cabinet';
 import { useMe } from '../../lib/me';
 import { api, messageOf } from '../../lib/api';
 import { useToast } from '../../lib/toast';
@@ -48,27 +46,6 @@ export function HistoryList({ wide }: { wide?: boolean }) {
         </section>
       ))}
     </div>
-  );
-}
-
-export function UpNext() {
-  const { progress, scheduleMissing } = useCabinet();
-  if (scheduleMissing || !progress) return null;
-  if (!progress.upcoming.length) {
-    return <Card pad={false}><Empty icon={CalendarCheck}>{progress.finished ? 'Все сообщения плана уже пришли.' : 'Следующих сообщений по плану пока нет.'}</Empty></Card>;
-  }
-  return (
-    <Card pad={false} data-tour="upnext">
-      {progress.upcoming.slice(0, 4).map((u, i) => (
-        <div className="nm-upnext" key={i}>
-          <div className="nm-upnext-when">{whenNext(progress, u.at)}</div>
-          <div>
-            <div className="nm-upnext-title">{u.title}</div>
-            {u.brief && <div className="nm-upnext-brief">{u.brief.length > 140 ? `${u.brief.slice(0, 140)}…` : u.brief}</div>}
-          </div>
-        </div>
-      ))}
-    </Card>
   );
 }
 

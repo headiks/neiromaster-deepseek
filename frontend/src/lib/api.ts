@@ -4,9 +4,25 @@ import { ApiError, createClient, errorText } from '@shared/api';
 
 const PUBLIC = ['/login', '/register', '/app'];
 
+// Демо-сайт — только просмотр: изменяющий запрос не уходит, человек видит «недоступно».
+// Тот же список разрешённого проверяет сервер (backend/demo.py → verdict).
+export const DEMO_DENIED = 'В демо-версии изменения недоступны';
+const DEMO_OPEN = [/^\/api\/(login|logout|events)$/, /^\/api\/demo\//, /^\/ask$/,
+  /^\/api\/my\/messages\/[^/]+\/(read|answer|view)$/];
+let demoMode = false;
+let demoDenied: (() => void) | null = null;
+export function setDemoMode(on: boolean) { demoMode = on; }
+export const isDemoMode = () => demoMode;
+export function onDemoDenied(fn: (() => void) | null) { demoDenied = fn; }
+
 export const api = createClient({
   base: '',
   credentials: 'same-origin',
+  guard: (path, method) => {
+    if (!demoMode || ['GET', 'HEAD'].includes(method) || DEMO_OPEN.some((r) => r.test(path.split('?')[0]))) return null;
+    demoDenied?.();
+    return DEMO_DENIED;
+  },
   onUnauthorized: () => {
     if (!PUBLIC.includes(location.pathname)) location.assign('/login');
   },

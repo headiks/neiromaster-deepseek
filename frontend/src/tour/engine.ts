@@ -42,6 +42,7 @@ export type Scenario = {
   snapshot?: () => unknown;
   restore?: (snap: unknown) => void;
   actions?: Record<string, () => void>;
+  onStop?: () => void;                      // тур закончен любым способом (демо: дальше рассылка)
 };
 
 const SEEN_KEY = 'nm_tour_seen_';
@@ -352,6 +353,7 @@ export async function stop(markSeen = false) {
   document.documentElement.classList.remove('nmt-active');
   if (markSeen && S.scenario) store.set(SEEN_KEY + S.scenario.id, '1');
   notify();
+  try { S.scenario?.onStop?.(); } catch { /* ignore */ }
 }
 
 // ---------- Предложение пройти тур при первом входе ----------

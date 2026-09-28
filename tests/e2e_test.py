@@ -5,7 +5,7 @@ E2E-проверка нового сайта в настоящем браузе�
 в консоли и бесконечные циклы запросов, делает скриншоты.
 
 Нужен запущенный сервер на ЧИСТОЙ базе с известным начальным паролем владельца:
-    NEIROMASTER_ADMIN_PASSWORD=Owner-start-2026 NEIROMASTER_INSECURE_COOKIE=1 uvicorn app:app
+    NEIROMASTER_SUPERADMIN_HASH=<соль:хэш пароля> NEIROMASTER_INSECURE_COOKIE=1 uvicorn app:app
 Затем:
     E2E_BASE=http://127.0.0.1:8000 E2E_OWNER_PASSWORD=Owner-start-2026 python e2e_test.py
 Скриншоты — в E2E_SHOTS (по умолчанию ./e2e_shots). Браузер — Chromium из Playwright или

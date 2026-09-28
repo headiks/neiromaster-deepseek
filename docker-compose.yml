@@ -17,6 +17,9 @@
 #   db-raw       — исходники: оригиналы документов и загруженные штатки
 #   redis        — очередь задач и общий стейт процессов
 #   embed        — векторы вопросов для базы ответов (bge-m3 на CPU, без интернета)
+#   web-demo, worker-demo, db-demo — демо для показа клиентам (demo.<домен>): свой сайт и
+#                  своя PostgreSQL, к данным клиентов доступа нет. Сброс демо:
+#                  docker compose exec web-demo python backend/demo.py reset
 
 name: neiromaster
 
@@ -93,6 +96,67 @@ services:
     logging: *logging
     networks: [backend]
 
+  # ---------- Демо для показа клиентам ----------
+  # Отдельный экземпляр: своя БД (db-demo), своя база Redis (1), свои тома; S3 и raw-БД
+  # выключены — демо ничего не пишет рядом с данными клиентов. Демо-компания с документами
+  # (examples/), планом и историей сотрудников создаётся сама при первом старте; посетитель —
+  # только просмотр (backend/demo.py). Заявки «оставить контакты» уходят в основную базу
+  # ролью leads_writer (только INSERT) — если в .env задан LEADS_DB_PASSWORD.
+  web-demo:
+    <<: *app
+    build: {context: ., target: web}
+    image: neiromaster-web:${IMAGE_TAG:-latest}
+    environment: &demo-env
+      NEIROMASTER_DB_DSN: postgresql://neiromaster:${POSTGRES_DEMO_PASSWORD:-neiromaster_demo}@db-demo:5432/neiromaster
+      NEIROMASTER_RAW_DB_DSN: ""
+      NEIROMASTER_S3_ENDPOINT: ""
+      REDIS_URL: redis://redis:6379/1
+      NEIROMASTER_EMBED_URL: http://embed:8080
+      NEIROMASTER_DEMO: "1"
+      NEIROMASTER_LEADS_DSN: ${LEADS_DB_PASSWORD:+postgresql://leads_writer:${LEADS_DB_PASSWORD}@db-processed:5432/neiromaster}
+      NEIROMASTER_SCHEDULER_INTERVAL: "5"
+      WEB_CONCURRENCY: "2"
+      NEIROMASTER_RQ_WORKERS: "1"
+    volumes:
+      - demo-documents:/app/data/documents
+      - demo-converted:/app/data/converted
+      - demo-parse-cache:/app/data/processed
+      - demo-secrets:/app/data/secrets
+    networks: [backend, edge]
+    depends_on:
+      db-demo: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-demo:
+    <<: *app
+    build: {context: ., target: worker}
+    image: neiromaster-worker:${IMAGE_TAG:-latest}
+    environment: *demo-env
+    volumes:
+      - demo-documents:/app/data/documents
+      - demo-converted:/app/data/converted
+      - demo-parse-cache:/app/data/processed
+      - demo-secrets:/app/data/secrets
+      - models:/app/.cache
+    depends_on:
+      web-demo: {condition: service_healthy}
+
+  db-demo:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: neiromaster
+      POSTGRES_PASSWORD: ${POSTGRES_DEMO_PASSWORD:-neiromaster_demo}
+      POSTGRES_DB: neiromaster
+    volumes: [pg-demo:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neiromaster -d neiromaster"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+    networks: [backend]
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -103,6 +167,7 @@ services:
       # Домен — сертификат Let's Encrypt (нужен интернет); IP-адрес или localhost —
       # сертификат внутреннего CA Caddy (работает в закрытом контуре).
       SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      DEMO_SITE_ADDRESS: ${DEMO_SITE_ADDRESS:-demo.localhost}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -179,3 +244,8 @@ volumes:
   models-llm:
   caddy-data:
   caddy-config:
+  pg-demo:
+  demo-documents:
+  demo-converted:
+  demo-parse-cache:
+  demo-secrets:

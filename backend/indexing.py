@@ -32,7 +32,7 @@ import documents
 import storage
 import docregistry
 from config import (
-    DOCS_DIR, CONVERTED_DIR, CACHE_DIR,
+    CACHE_DIR, docs_dir, converted_dir,
     SUPPORTED_EXT, MAX_UPLOAD_BYTES,
 )
 
@@ -302,7 +302,7 @@ def delete_document(filename: str, remove_file: bool = True) -> bool:
 
     if entry and remove_file:
         rel_path = entry.get("path", filename)
-        filepath = DOCS_DIR / rel_path
+        filepath = docs_dir() / rel_path
         # убираем оригинал из S3 по ключу владельца (no-op, если S3 выключен)
         storage.delete(rel_path, entry.get("s3_key") or "")
         if filepath.exists():
@@ -311,7 +311,7 @@ def delete_document(filename: str, remove_file: bool = True) -> bool:
                 cache_file.unlink()
         md_rel = entry.get("markdown_path")
         if md_rel:
-            md_path = CONVERTED_DIR / md_rel
+            md_path = converted_dir() / md_rel
             if md_path.exists():
                 md_path.unlink()
 
@@ -343,7 +343,7 @@ def free_filename(filename: str) -> str:
     taken = {d.get("filename") for d in list_documents()}
     stem, ext = Path(filename).stem, Path(filename).suffix
     n = 2
-    while f"{stem} ({n}){ext}" in taken or (DOCS_DIR / f"{stem} ({n}){ext}").exists():
+    while f"{stem} ({n}){ext}" in taken or (docs_dir() / f"{stem} ({n}){ext}").exists():
         n += 1
     return f"{stem} ({n}){ext}"
 
@@ -387,7 +387,7 @@ def set_confidential(filename: str, confidential: bool) -> dict:
                                  phase=None, progress=None, error=None)
     else:
         entry = _update_registry(filename, confidential=False, status="uploaded", error=None)
-        enqueue_document(DOCS_DIR / filename)
+        enqueue_document(docs_dir() / filename)
     return entry
 
 
@@ -403,7 +403,7 @@ def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] =
     # Локально файл лежит плоско в data/documents/ — это КЭШ для конвейера docling
     # (папки — логические метки, физических копий не создают, ТЗ §2). Структура
     # «суперадмин/администратор» живёт в durable-хранилище S3: см. storage.doc_key.
-    filepath = DOCS_DIR / filename
+    filepath = docs_dir() / filename
     with open(filepath, "wb") as f:
         f.write(content)
     try:
@@ -494,7 +494,7 @@ def requeue_stranded() -> int:
     n = 0
     for entry in list_documents():
         if entry.get("status") in ("uploaded", "processing"):
-            enqueue_document(DOCS_DIR / entry["filename"])
+            enqueue_document(docs_dir() / entry["filename"])
             n += 1
     if n:
         print(f"[index] возвращено в очередь зависших документов: {n}")
@@ -512,7 +512,7 @@ def reanalyze_document(filename: str) -> dict:
                      phase="Переклассификация (docpipe)", progress=10)
     try:
         import docpipe
-        fp = DOCS_DIR / filename
+        fp = docs_dir() / filename
         # Локальный кэш мог потеряться (новый контейнер/сервер) — берём оригинал из
         # хранилища исходников (raw-БД, S3), как и при первичном разборе.
         if not storage.pull(fp, (docregistry.get(filename) or {}).get("s3_key") or ""):

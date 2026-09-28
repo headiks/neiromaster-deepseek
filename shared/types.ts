@@ -1,6 +1,7 @@
 // Общие типы сайта (frontend/) и приложения (mobile/): одни и те же ответы API.
 
-export type Role = "owner" | "admin" | "employee";
+// owner — суперадмин (разработчик), admin — администратор компании, curator — куратор отдела.
+export type Role = "owner" | "admin" | "curator" | "employee";
 
 export type Me = {
   id: string;
@@ -18,6 +19,9 @@ export type Me = {
   plan_id?: string | null;
   start_date?: string | null;
   must_change_credentials?: boolean;
+  company?: string;               // схема компании запроса ('' — общая)
+  company_name?: string;
+  owner_return?: boolean;         // суперадмин вошёл как этот администратор
 };
 
 // ---- Сообщения плана (инбокс) ----
