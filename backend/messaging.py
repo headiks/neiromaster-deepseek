@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from psycopg.types.json import Json
 
 import db
+import demo
 import users
 import employees as adaptation
 from planner import DEFAULT_TIMEZONE
@@ -89,6 +90,7 @@ def materialize_employee(employee: dict, force: bool = False) -> int:
     plan_id = schedule.get("plan_id")
     rows = [r for r in (_message_row(employee["id"], plan_id, m, tzname)
                         for m in schedule.get("messages", [])) if r]
+    rows = demo.compress(rows)     # демо: первые сообщения — каждые 30 с, а не по дням плана
 
     if force:
         # Только строки плана: отложенные тестовые/служебные уведомления (plan_id NULL) не трогаем.

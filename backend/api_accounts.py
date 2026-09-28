@@ -109,7 +109,8 @@ def api_register(req: RegisterRequest, request: Request):
 @router.get("/api/config")
 def api_config():
     """Публичные настройки для страниц входа (без секретов)."""
-    return {"registration": ALLOW_REGISTRATION}
+    import demo
+    return {"registration": ALLOW_REGISTRATION, "demo": demo.accounts()}
 
 
 @router.post("/api/logout")

@@ -24,7 +24,6 @@ static/app/
 .github/
 mobile/
 docs/
-examples/
 **/__pycache__/
 **/*.pyc
 .pytest_cache/

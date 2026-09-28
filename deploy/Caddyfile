@@ -6,3 +6,9 @@
 {$SITE_ADDRESS:localhost} {
 	reverse_proxy web:8000
 }
+
+# Демо для показа клиентам — отдельный экземпляр со своей БД (web-demo). Адрес —
+# DEMO_SITE_ADDRESS (по умолчанию demo.localhost; для домена — demo.nm.company.ru).
+{$DEMO_SITE_ADDRESS:demo.localhost} {
+	reverse_proxy web-demo:8000
+}

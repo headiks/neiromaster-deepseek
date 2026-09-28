@@ -24,6 +24,7 @@ import uvicorn
 
 import db
 import auth
+import demo
 import users
 import folders
 import stages
@@ -173,6 +174,8 @@ async def lifespan(app: FastAPI):
                 _step(f"компания {schema}: осиротевшие метки docpipe", _prune_orphans)
                 _requeue_without_redis()
                 _step(f"компания {schema}: автоназначение плана", _autoassign_plan)
+        # Демо-экземпляр (NEIROMASTER_DEMO=1): демо-компания с учётками и документами.
+        _step("демо-компания", demo.ensure_seeded)
     # Фоновый планировщик доставки сообщений плана. NEIROMASTER_SCHEDULER=0 — выключить
     # (когда доставку гоняют внешним cron: python dispatch_messages.py).
     messaging.start_scheduler()
