@@ -3,7 +3,7 @@
 // Элементы ищутся по data-tour, страницы отдают туру свои действия через useTourHooks.
 import { useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { maybeOffer, start, stop, type Kit, type Scenario, type Step } from './engine';
+import { maybeOffer, start, type Kit, type Scenario, type Step } from './engine';
 
 type Hooks = {
   users?: { setStaffing: (on: boolean) => void; openDemo: () => void; closeDemo: () => void };
@@ -160,13 +160,10 @@ const ADMIN_STEPS = (): Step[] => [
   { chapter: 'Каждый день', title: 'Вопросы сотрудников',
     text: 'Если ассистент не нашёл ответа в документах или вопрос похож на ЧС, он попадает сюда (ЧС — сверху). Ваш ответ придёт сотруднику в кабинет и пушем. Число открытых вопросов — рядом с разделом.',
     target: sel('nav-questions'), click: true, enter: (k) => ui(k, Q) },
-  { chapter: 'Каждый день', title: 'Как видит сотрудник',
-    text: '«Мой кабинет» — то же, что видит сотрудник: сообщения плана, прогресс адаптации и ассистент.',
-    target: sel('nav-cabinet'), enter: (k) => ui(k, Q) },
   { chapter: 'Готово', title: 'Вот и всё!',
     html: 'Порядок работы: <b>пользователи → план → документы → сообщения</b>. Тур можно запустить снова в настройках (шестерёнка внизу слева) — <b>«Как пользоваться»</b>.',
     target: sel('profile-menu'), final: true,
-    buttons: [{ act: 'again', label: '↺ Ещё раз' }, { act: 'cabinet', label: 'Тур по кабинету →', primary: true }] },
+    buttons: [{ act: 'again', label: '↺ Ещё раз', primary: true }] },
 ];
 
 const ADMIN: Scenario = {
@@ -185,7 +182,6 @@ const ADMIN: Scenario = {
     if (here() !== s.path) navigate(s.path);
     setTimeout(() => window.scrollTo(0, s.scrollY), 200);
   },
-  actions: { cabinet: () => { stop(true).then(() => { navigate('/'); setTimeout(() => startTour(), 500); }); } },
 };
 
 // ---------------------------------------------------------------- кабинет

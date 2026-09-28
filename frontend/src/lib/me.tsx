@@ -7,8 +7,9 @@ type Ctx = {
   me: Me | null;
   loading: boolean;
   error: string | null;
-  isAdmin: boolean;
-  isOwner: boolean;
+  isAdmin: boolean;   // есть админ-панель: суперадмин, админ компании, куратор
+  isFull: boolean;    // вся своя компания, а не только отдел: админ компании (суперадмин — в общей)
+  isOwner: boolean;   // суперадмин: компании, сводка, журнал всех компаний
   reload: () => Promise<void>;
   setMe: (m: Me) => void;
 };
@@ -33,8 +34,9 @@ export function MeProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => { reload(); }, [reload]);
   const isOwner = me?.role === 'owner';
-  const isAdmin = isOwner || me?.role === 'admin';
-  return <MeCtx.Provider value={{ me, loading, error, isAdmin, isOwner, reload, setMe }}>{children}</MeCtx.Provider>;
+  const isFull = isOwner || me?.role === 'admin';
+  const isAdmin = isFull || me?.role === 'curator';
+  return <MeCtx.Provider value={{ me, loading, error, isAdmin, isFull, isOwner, reload, setMe }}>{children}</MeCtx.Provider>;
 }
 
 export function useMe(): Ctx {

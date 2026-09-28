@@ -29,10 +29,11 @@ type Profile = Record<(typeof PROFILE_FIELDS)[number], string>;
 const EMPTY: Profile = { full_name: '', position: '', department: '', phone: '', email: '', mentor: '', manager: '', plan_id: '', start_date: '', notes: '' };
 
 const ROLE_CONFIRM: Record<string, string> = {
-  owner: 'Сделать суперадмином? Полный доступ: все документы, все сотрудники, раздача прав.',
-  admin: 'Сделать администратором? Доступ к документам, планам и сотрудникам своего подразделения.',
+  curator: 'Сделать куратором? Доступ к документам, планам и сотрудникам своего отдела; заводит сотрудников.',
   employee: 'Сделать обычным сотрудником? Доступ к админке пропадёт.',
 };
+// Какие роли выдаёт админ компании. Админов компаний заводит суперадмин вместе с компанией.
+const ASSIGNABLE = ['employee', 'curator'];
 
 // ---------------------------------------------------------------- штатное расписание
 type StaffRow = { full_name?: string; position?: string; department?: string; start_date?: string; exists?: boolean; foreign?: boolean };
@@ -131,9 +132,9 @@ function Staffing({ onDone }: { onDone: () => void }) {
 // ---------------------------------------------------------------- карточка сотрудника
 function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClose, onSaved, demo }: {
   open: boolean; user: AdminUser | null; users: AdminUser[]; plans: PlanSummary[]; readyProfs: Set<string>;
-  defaultPlanId: string | null; onClose: () => void; onSaved: (created?: { username: string; temp_password: string }) => void; demo?: boolean;
+  defaultPlanId: string | null; onClose: () => void; onSaved: (created?: { username: string; temp_password: string; role?: string }) => void; demo?: boolean;
 }) {
-  const { me, isOwner } = useMe();
+  const { me, isFull } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [f, setF] = useState<Profile>(EMPTY);
@@ -146,17 +147,18 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
     if (!open) return;
     const base = { ...EMPTY };
     if (user) PROFILE_FIELDS.forEach((k) => { base[k] = String((user as Record<string, unknown>)[k] ?? ''); });
-    else if (!isOwner) base.department = me?.department || '';
+    else if (!isFull) base.department = me?.department || '';
     setF(base);
     setRole(user?.role || 'employee');
     setError(null);
-  }, [open, user, isOwner, me]);
+  }, [open, user, isFull, me]);
   const set = (k: keyof Profile) => (v: string) => setF((x) => ({ ...x, [k]: v }));
   const positions = useMemo(() => [...new Set(users.map((u) => (u.position || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [users]);
   const departments = useMemo(() => [...new Set(users.map((u) => (u.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [users]);
   const people = useMemo(() => [...new Set(users.filter((u) => u.id !== user?.id && !(u.full_name || '').startsWith('(вакансия)'))
     .map((u) => (u.full_name || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [users, user]);
-  const showRole = isOwner && !!user && user.id !== me?.id;
+  // Роль выбирает админ компании: при создании и у куратора/сотрудника (себе — нет).
+  const showRole = isFull && (!user || (user.id !== me?.id && ASSIGNABLE.includes(user.role)));
 
   const deleteProf = async (prof: string) => {
     if (!defaultPlanId) { toast.warn('Общий план не назначен — удалять нечего.'); return; }
@@ -170,15 +172,17 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
   const save = async () => {
     if (demo) { onClose(); return; }
     if (!f.full_name.trim()) { setError('Укажите ФИО'); return; }
+    if (showRole && role === 'curator' && !f.department.trim()) { setError('У куратора должен быть отдел — он видит только его'); return; }
     setBusy(true);
     setError(null);
-    const payload = Object.fromEntries(PROFILE_FIELDS.map((k) => [k, f[k] || null]));
+    const payload: Record<string, unknown> = Object.fromEntries(PROFILE_FIELDS.map((k) => [k, f[k] || null]));
+    if (!user && showRole) payload.role = role;
     try {
       const saved = await (user ? api.put<AdminUser>(`/users/${enc(user.id)}`, payload) : api.post<AdminUser>('/users', payload));
       if (showRole && user && role !== user.role && (await confirm({ title: 'Сменить роль?', text: ROLE_CONFIRM[role], ok: 'Сменить' }))) {
         try { await api.post(`/users/${enc(user.id)}/role`, { role }); } catch (e) { toast.error(`Роль не изменена: ${messageOf(e)}`); }
       }
-      onSaved(user ? undefined : { username: saved.username || '', temp_password: saved.temp_password || '' });
+      onSaved(user ? undefined : { username: saved.username || '', temp_password: saved.temp_password || '', role: saved.role });
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -188,7 +192,7 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
 
   return (
     <Dialog open={open} onClose={onClose} wide modal={!demo} className={demo ? 'nmt-demo' : undefined}
-            title={user ? `Редактирование: ${user.full_name}` : 'Новый сотрудник'}
+            title={user ? `Редактирование: ${user.full_name}` : (role === 'curator' ? 'Новый куратор' : 'Новый сотрудник')}
             subtitle={user ? undefined : 'Логин создастся из ФИО, пароль — автоматически.'}
             footer={<><Button variant="ghost" onClick={onClose}>Отмена</Button><Button variant="primary" loading={busy} onClick={save}>Сохранить</Button></>}>
       <form className="nm-stack" style={{ gap: 14 }} onSubmit={(e) => { e.preventDefault(); save(); }}>
@@ -202,8 +206,8 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
             <Combobox value={f.position} onChange={set('position')} options={positions} free placeholder="Выбор из штатки или своя"
                       marked={ready} markTitle="Сообщения плана готовы" onDelete={deleteProf} />
           </Field>
-          <Field label="Подразделение" help={isOwner ? 'Справочник строится из штатного расписания. Новое подразделение можно добавить, набрав название.' : 'Подразделение меняет суперадмин'}>
-            <Combobox value={f.department} onChange={set('department')} options={departments} free disabled={!isOwner} placeholder="Выбор из справочника" />
+          <Field label="Подразделение" help={isFull ? 'Справочник строится из штатного расписания. Новое подразделение можно добавить, набрав название.' : 'Подразделение меняет администратор компании'}>
+            <Combobox value={f.department} onChange={set('department')} options={departments} free disabled={!isFull} placeholder="Выбор из справочника" />
           </Field>
           <div data-tour="emp-plan">
             <Field label="План адаптации">
@@ -221,9 +225,9 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
           <Field label="Телефон"><Input type="tel" value={f.phone} onChange={(e) => set('phone')(e.target.value)} placeholder="+7 900 000-00-00" /></Field>
           <Field label="Email"><Input type="email" value={f.email} onChange={(e) => set('email')(e.target.value)} placeholder="ivanov@company.ru" /></Field>
           {showRole && (
-            <Field label="Роль" help="Администратор — документы, планы и сотрудники своего подразделения. Суперадмин — всё и все.">
+            <Field label="Роль" help="Куратор — документы, планы и сотрудники своего отдела, заводит сотрудников. Сотрудник — только свой кабинет.">
               <Select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="employee">Сотрудник</option><option value="admin">Администратор</option><option value="owner">Суперадмин</option>
+                <option value="employee">Сотрудник</option><option value="curator">Куратор отдела</option>
               </Select>
             </Field>
           )}
@@ -303,7 +307,7 @@ function ScheduleDialog({ user, onClose }: { user: AdminUser | null; onClose: ()
 
 // ---------------------------------------------------------------- страница
 export default function Users() {
-  const { me, isOwner } = useMe();
+  const { me, isFull } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -315,7 +319,7 @@ export default function Users() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [staffing, setStaffing] = useState(false);
   const [editing, setEditing] = useState<{ user: AdminUser | null; demo?: boolean } | null>(null);
-  const [created, setCreated] = useState<{ username: string; temp_password: string } | null>(null);
+  const [created, setCreated] = useState<{ username: string; temp_password: string; role?: string } | null>(null);
   const [creds, setCreds] = useState<AdminUser | null>(null);
   const [schedule, setSchedule] = useState<AdminUser | null>(null);
 
@@ -347,7 +351,8 @@ export default function Users() {
       && (!q || [u.full_name, u.username, u.position, u.department].some((v) => (v || '').toLowerCase().includes(q))));
   }, [list, dept, query]);
   const pending = list.filter((u) => !u.active);
-  const canManage = (u: AdminUser) => isOwner || u.role === 'employee';
+  // Админ компании — кураторы и сотрудники, куратор — только сотрудники (сервер проверяет сам).
+  const canManage = (u: AdminUser) => u.role === 'employee' || (isFull && u.role === 'curator');
   const selectable = shown.filter((u) => canManage(u) && u.id !== me?.id);
   const allOn = selectable.length > 0 && selectable.every((u) => selected.has(u.id));
   useEffect(() => {
@@ -430,7 +435,7 @@ export default function Users() {
       <PageHeader title="Пользователи" subtitle="Сотрудники на адаптации, наставники и администраторы."
                   actions={<>
                     <Button variant="primary" icon={FileSpreadsheet} onClick={() => setStaffing((v) => !v)} data-tour="btn-staffing" aria-expanded={staffing}>Загрузить штатное расписание</Button>
-                    <Button icon={UserPlus} onClick={() => setEditing({ user: null })} data-tour="btn-add-user">Добавить сотрудника</Button>
+                    <Button icon={UserPlus} onClick={() => setEditing({ user: null })} data-tour="btn-add-user">{isFull ? 'Добавить пользователя' : 'Добавить сотрудника'}</Button>
                   </>} />
       <NextStep here="/admin/users" />
       {staffing && <Staffing onDone={load} />}
@@ -457,10 +462,10 @@ export default function Users() {
       <UserDialog open={!!editing} user={editing?.user || null} demo={editing?.demo} users={list} plans={plans} readyProfs={readyProfs} defaultPlanId={defaultPlanId}
                   onClose={() => setEditing(null)}
                   onSaved={(c) => { setEditing(null); if (c) setCreated(c); else toast.ok('Сохранено'); load(); }} />
-      <Dialog open={!!created} onClose={() => setCreated(null)} title="Сотрудник создан"
+      <Dialog open={!!created} onClose={() => setCreated(null)} title={created?.role === 'curator' ? 'Куратор создан' : 'Сотрудник создан'}
               footer={<Button variant="primary" onClick={() => setCreated(null)}>Готово</Button>}>
         <Callout tone="ok" icon={Check}>Логин: <b>{created?.username}</b> · пароль: <code className="nm-code">{created?.temp_password}</code></Callout>
-        <p className="nm-small nm-muted" style={{ margin: 0 }}>Пароль виден в списке и в Excel, пока сотрудник не задаст свой. Сменить его можно в меню «⋯ → Доступ».</p>
+        <p className="nm-small nm-muted" style={{ margin: 0 }}>Пароль виден в списке и в Excel, пока {created?.role === 'curator' ? 'куратор' : 'сотрудник'} не задаст свой. Сменить его можно в меню «⋯ → Доступ».</p>
       </Dialog>
       <CredentialsDialog user={creds} onClose={() => setCreds(null)} onChanged={load} />
       <ScheduleDialog user={schedule} onClose={() => setSchedule(null)} />

@@ -197,7 +197,7 @@ a:hover { color: var(--nm-accent); }
 .nm-seg button[aria-pressed="true"] { background: var(--nm-surface); color: var(--nm-text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .nm-chip { height: 34px; padding: 0 13px; border-radius: var(--nm-r-pill); border: 1px solid var(--nm-line); background: transparent;
            color: var(--nm-text); font: 500 13px/1 var(--nm-font); cursor: pointer; }
-.nm-chip[aria-pressed="true"] { background: var(--nm-text); border-color: var(--nm-text); color: var(--nm-surface); }
+.nm-chip[aria-pressed="true"] { background: var(--nm-text); border-color: var(--nm-text); color: var(--nm-glass-solid); }
 .nm-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: var(--nm-r-pill); font-size: 12px; font-weight: 600; }
 .nm-badge-ok { background: var(--nm-ok-soft); color: var(--nm-ok); }
 .nm-badge-warn { background: var(--nm-warn-soft); color: var(--nm-warn); }

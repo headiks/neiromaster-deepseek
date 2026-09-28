@@ -12,6 +12,7 @@ export const QUESTION_STATUS: Record<string, StatusView> = {
 export const ROLE: Record<string, StatusView> = {
   owner: { tone: "accent", label: "Суперадмин" },
   admin: { tone: "ok", label: "Администратор" },
+  curator: { tone: "warn", label: "Куратор" },
   employee: { tone: "muted", label: "Сотрудник" },
 };
 

@@ -149,7 +149,7 @@ export function StageBoard({ planId, plans, onPlan, onOpenDoc }: { planId: strin
 type Filter = 'all' | 'ready' | 'active' | 'error' | 'private';
 
 export default function Documents() {
-  const { me, isOwner } = useMe();
+  const { me, isFull } = useMe();
   const toast = useToast();
   const { confirm } = useConfirm();
   const [docs, setDocs] = useState<Doc[] | null>(null);
@@ -270,13 +270,13 @@ export default function Documents() {
         || (filter === 'error' && d.status === 'error') || (filter === 'private' && !!d.confidential)));
   }, [list, query, filter]);
   const groups = useMemo(() => {
-    if (!isOwner) return [['', shown] as [string, Doc[]]];
+    if (!isFull) return [['', shown] as [string, Doc[]]];
     const m = new Map<string, Doc[]>();
     shown.forEach((d) => { const k = d.uploaded_by_name || 'Без владельца (загружено до разделения прав)'; m.set(k, [...(m.get(k) || []), d]); });
     return [...m.entries()];
-  }, [shown, isOwner]);
+  }, [shown, isFull]);
   const folderName = (slug: string) => folders.find((f) => f.slug === slug)?.name || slug;
-  const canEdit = (d: Doc) => isOwner || d.uploaded_by === me?.id;
+  const canEdit = (d: Doc) => isFull || d.uploaded_by === me?.id;
   const selectable = shown.filter(canEdit);
   const allOn = selectable.length > 0 && selectable.every((d) => selected.has(d.filename));
   useEffect(() => {   // фильтр/поиск/удаление: отметки только у видимых документов
@@ -375,7 +375,7 @@ export default function Documents() {
           </div>
         )}
         {docs === null ? <Spinner /> : !list.length ? (
-          <Card pad={false}><Empty icon={FileText}>{isOwner ? 'Пока никто из администраторов не загрузил документы.' : 'Пока нет ваших документов — добавьте первый регламент выше.'}</Empty></Card>
+          <Card pad={false}><Empty icon={FileText}>{isFull ? 'Пока в компании никто не загрузил документы.' : 'Пока нет ваших документов — добавьте первый регламент выше.'}</Empty></Card>
         ) : !shown.length ? <Card pad={false}><Empty icon={Search}>Ничего не найдено.</Empty></Card> : (
           <Card pad={false}>
             {groups.map(([owner, items]) => (

@@ -1,6 +1,6 @@
 // Маршруты сайта. Доступ проверяет и сервер (api_pages.py), и клиент: без входа — на /login,
 // с временным паролем — на /setup, админские разделы — только администраторам.
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from './lib/theme';
 import { MeProvider, useMe } from './lib/me';
@@ -25,6 +25,7 @@ import Plans from './pages/admin/Plans';
 import Documents from './pages/admin/Documents';
 import Messages from './pages/admin/Messages';
 import Questions from './pages/admin/Questions';
+import Companies from './pages/admin/Companies';
 import Logs from './pages/service/Logs';
 import PlansDb from './pages/service/PlansDb';
 import NotifyTest from './pages/service/NotifyTest';
@@ -67,6 +68,24 @@ function AdminLayout() {
   );
 }
 
+/** «/» — кабинет сотрудника. Персоналу своего плана нет: сразу в рабочую панель. */
+function Home() {
+  const { isAdmin } = useMe();
+  if (isAdmin) return <Navigate to="/admin" replace />;
+  return <ErrorBoundary where="cabinet"><CabinetProvider><Cabinet /></CabinetProvider></ErrorBoundary>;
+}
+
+/** Стартовый раздел панели: суперадмину — компании, админу и куратору — пользователи. */
+function AdminHome() {
+  const { isOwner } = useMe();
+  return <Navigate to={isOwner ? '/admin/companies' : '/admin/users'} replace />;
+}
+
+function OwnerOnly({ children }: { children: ReactNode }) {
+  const { isOwner } = useMe();
+  return isOwner ? <>{children}</> : <Navigate to="/admin/users" replace />;
+}
+
 function Titles() {
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
@@ -89,9 +108,10 @@ export default function App() {
                 <Route path="/setup" element={<Setup />} />
                 <Route path="/app" element={<ErrorBoundary where="app-download"><AndroidApp /></ErrorBoundary>} />
                 <Route element={<Protected />}>
-                  <Route path="/" element={<ErrorBoundary where="cabinet"><CabinetProvider><Cabinet /></CabinetProvider></ErrorBoundary>} />
-                  <Route path="/admin" element={<Navigate to="/admin/users" replace />} />
+                  <Route path="/" element={<Home />} />
+                  <Route path="/admin" element={<AdminHome />} />
                   <Route element={<AdminLayout />}>
+                    <Route path="/admin/companies" element={<OwnerOnly><Companies /></OwnerOnly>} />
                     <Route path="/admin/users" element={<Users />} />
                     <Route path="/admin/plans" element={<Plans />} />
                     <Route path="/admin/documents" element={<Documents />} />
