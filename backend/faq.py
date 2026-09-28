@@ -164,7 +164,8 @@ def refresh() -> dict:
         return {"skipped": "уже идёт"}
     try:
         while True:
-            res = {**refresh_substages(), **refresh_sections(), "reembedded": qacache.reembed_missing()}
+            res = {"top10": refresh_substages(), "sections": refresh_sections(),
+                   "reembedded": qacache.reembed_missing()}
             print(f"[faq] {res}")
             if r is None or not r.delete("nm:faq:again"):
                 return res
