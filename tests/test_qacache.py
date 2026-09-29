@@ -66,6 +66,9 @@ try:
     with psycopg.connect(TEST_DSN, connect_timeout=3) as _c:
         _c.execute("DROP TABLE IF EXISTS qa_answers, qa_state, section_labels, chunks, sections, "
                    "label_jobs, documents, plan_versions CASCADE")
+        # Свой ключ ПДн (временная папка): отпечаток чужого ключа от предыдущих тестов — долой.
+        _c.execute("DELETE FROM app_settings WHERE key = 'pii_key_fingerprint'") if _c.execute(
+            "SELECT to_regclass('public.app_settings')").fetchone()[0] else None
     DB_OK = True
 except Exception:                    # noqa: BLE001 — любая причина = нет БД
     DB_OK = False

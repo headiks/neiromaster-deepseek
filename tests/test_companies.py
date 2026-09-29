@@ -182,7 +182,7 @@ def test_role_rules(env, world):
     ids = {u["id"] for u in a.get("/users").json()["users"]}
     assert mine["id"] in ids and other["id"] not in ids
     assert a.post(f"/users/{mine['id']}/role", json={"role": "admin"}, headers=ORIGIN).status_code == 403
-    assert a.post(f"/users/{other['id']}/role", json={"role": "curator"}, headers=ORIGIN).status_code == 404
+    assert a.post(f"/users/{other['id']}/role", json={"role": "curator"}, headers=ORIGIN).status_code == 403
     r = a.post(f"/users/{mine['id']}/role", json={"role": "curator"}, headers=ORIGIN)
     assert r.status_code == 200 and r.json()["role"] == "curator", r.text
 

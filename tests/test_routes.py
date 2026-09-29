@@ -24,7 +24,11 @@ PUBLIC = {"/login", "/register", "/api/login", "/api/register", "/api/logout", "
 # redoc_url=None, openapi_url=None) в app.py.
 FRAMEWORK = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 # Маршруты, которые сами решают, куда перенаправить неавторизованного.
-SELF_GUARDED = {"/", "/setup", "/api/me", "/api/setup-credentials", "/api/password"}
+SELF_GUARDED = {"/", "/setup", "/api/me", "/api/setup-credentials", "/api/password",
+                # возврат к суперадмину: проверяет его сессию из куки nm_owner_return сам
+                "/api/return-to-owner",
+                # демо: вне NEIROMASTER_DEMO — 404, в демо — вход без пароля (backend/demo.py)
+                "/api/demo/enter", "/api/demo/state", "/api/demo/tour-done", "/api/demo/lead"}
 
 EXPECTED_SAMPLE = [
     "/", "/login", "/admin", "/admin/{section}", "/s3", "/notify-test", "/queue-test", "/globaltest", "/doc-breakdown", "/documents-board", "/documents-table", "/logs",
