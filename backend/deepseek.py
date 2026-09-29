@@ -7,7 +7,8 @@ docpipe/llm.py: детерминированный вывод (temperature=0), �
 скорости и надёжности запросов к облачной модели.
 
 Ключ/модель/URL — из окружения (или из config, который грузит .env):
-  DEEPSEEK_API_KEY   — ключ (обязателен)
+  DEEPSEEK_API_KEY   — ключ; дополнительные ключи суперадмин добавляет на /globaltest, и
+                       каждый вызов берёт свободный из пула (llmkeys.py)
   DEEPSEEK_MODEL     — модель для генерации/разметки (по умолчанию deepseek-chat)
   DEEPSEEK_BASE_URL  — базовый URL (по умолчанию https://api.deepseek.com)
 
@@ -46,11 +47,10 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     """
     # ВАЖНО: ключ/URL/модель читаем в момент ВЫЗОВА, а не импорта. Иначе, если модуль
     # импортируется до того, как config загрузит .env, ключ был бы пустым навсегда.
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "") or API_KEY
+    import llmkeys
     base_url = (os.environ.get("DEEPSEEK_BASE_URL") or BASE_URL).rstrip("/")
     use_model = model or os.environ.get("DEEPSEEK_MODEL") or MODEL
-    if not api_key or api_key.startswith("sk-клю") or api_key in ("sk-ключ", "sk-key"):
-        raise RuntimeError("DEEPSEEK_API_KEY не задан (env или .env).")
+    llmkeys.pick()                         # нет ни одного рабочего ключа — ошибка сразу
     # ПДн не покидают сервер: в модель уходят метки [ФИО_1], [ТЕЛ_1]…, в ответе они
     # заменяются обратно. Системные промпты — наши, их не трогаем.
     masker = pii.Masker()
@@ -74,11 +74,13 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
     # а не ждать полный бюджет ретраев. Генерация оставляет дефолт (устойчивость).
     max_att = max(1, retries) if retries else MAX_RETRIES
     r = None
+    tried = set()                          # ключи, отказавшие в этом вызове (лимит, баланс)
     for attempt in range(1, max_att + 1):
         try:
             # Глобальный лимитер: не больше DEEPSEEK_MAX_CONCURRENCY вызовов в полёте
-            # на весь кластер — защита от шторма 503 под высокой нагрузкой.
-            with deepseek_slot():
+            # на весь кластер — защита от шторма 503 под высокой нагрузкой. Ключ — свободный
+            # из пула (меньше всего запросов в полёте).
+            with deepseek_slot(), llmkeys.lease(tried) as (key_id, api_key):
                 r = requests.post(
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}",
@@ -89,6 +91,12 @@ def chat(system: str, user: str, *, json_mode: bool = False, model: str = None,
             if attempt == max_att:
                 raise RuntimeError(f"DeepSeek: сеть недоступна после {max_att} попыток: {e}")
             time.sleep(2 * attempt)
+            continue
+        llmkeys.report(key_id, r.status_code, r.text if r.status_code >= 400 else "")
+        if r.status_code in llmkeys.COOLDOWN and attempt < max_att:
+            tried.add(key_id)              # этот ключ на паузе — сразу пробуем другой
+            if r.status_code == 429:
+                time.sleep(attempt)
             continue
         if r.status_code in RETRY_STATUS and attempt < max_att:
             time.sleep(2 * attempt)          # перегрузка/лимит — ждём и повторяем
@@ -161,10 +169,11 @@ def tokens_by_company(days: int = 30) -> dict:
     return total
 
 
-def balance() -> dict:
+def balance(api_key: str | None = None) -> dict:
     """Баланс счёта DeepSeek (GET /user/balance): {'available', 'currency', 'total',
-    'granted', 'topped_up'}. Нет ключа или сети (закрытый контур) — исключение."""
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "") or API_KEY
+    'granted', 'topped_up'}. api_key — конкретный ключ пула (по умолчанию из окружения).
+    Нет ключа или сети (закрытый контур) — исключение."""
+    api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "") or API_KEY
     base_url = (os.environ.get("DEEPSEEK_BASE_URL") or BASE_URL).rstrip("/")
     if not api_key:
         raise RuntimeError("DEEPSEEK_API_KEY не задан")

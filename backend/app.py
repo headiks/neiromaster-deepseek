@@ -228,7 +228,8 @@ async def log_page_views(request, call_next):
 
 def _log_page_view(request, path: str):
     try:
-        user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+        from deps import session_user
+        user = session_user(request)
         activitylog.log("page_view", user=user, request=request, path=path)
     except Exception:
         pass

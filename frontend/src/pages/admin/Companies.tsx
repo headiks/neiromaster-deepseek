@@ -1,17 +1,19 @@
 // Суперадмин: компании-клиенты (у каждой своя схема БД и свой администратор), сводка по ним
 // и баланс DeepSeek. Логин и пароль администратора новой компании показываются один раз.
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Copy, DoorOpen, Plus, RefreshCw, UserCog, Wallet } from 'lucide-react';
+import { Building2, Copy, DoorOpen, KeyRound, Plus, RefreshCw, Trash2, UserCog, Wallet } from 'lucide-react';
 import { api, messageOf } from '../../lib/api';
 import { useToast } from '../../lib/toast';
 import { Button, Callout, Card, Empty, Field, Input, PageHeader, Progress, SectionLabel, Spinner } from '../../ui';
 import { Dialog } from '../../ui/Dialog';
+import { useConfirm } from '../../ui/confirm';
 
 type Company = {
   slug: string; schema: string; company: string; created_at: string; error?: string;
   admins?: number; curators?: number; employees?: number; employees_with_plan?: number;
   documents?: number; plans?: number; messages_delivered?: number; messages_read?: number;
   questions_open?: number; active_users_30d?: number; last_activity?: string; deepseek_tokens_30d?: number;
+  first_logins?: { full_name: string; username: string; password: string }[];
 };
 type Balance = { ok: boolean; error?: string; total?: number; currency?: string; budget?: number; percent_left?: number; available?: boolean };
 type Created = { company: string; schema: string; admin: { full_name: string; username: string; password: string } };
@@ -122,6 +124,7 @@ function AdminsDialog({ pick, onClose }: { pick: { slug: string; company: string
 
 export default function Companies() {
   const toast = useToast();
+  const { confirm } = useConfirm();
   const [items, setItems] = useState<Company[] | null>(null);
   const [balance, setBalance] = useState<Balance | null>(null);
   const [creating, setCreating] = useState(false);
@@ -134,6 +137,23 @@ export default function Companies() {
       else if (admins.length === 1) await loginAs(c.slug, admins[0].id);
       else setPick({ slug: c.slug, company: c.company, admins });
     } catch (e) { toast.error(messageOf(e)); }
+  };
+  const remove = async (c: Company) => {
+    if (!(await confirm({ title: `Удалить компанию «${c.company}»?`, danger: true, ok: 'Удалить навсегда',
+      text: 'Безвозвратно удалятся все её люди, документы (и оригиналы в хранилище), планы, сообщения, вопросы и журнал. Восстановить можно только из резервной копии базы.' }))) return;
+    try {
+      const r = await api.del<{ errors?: string[] }>(`/api/companies/${encodeURIComponent(c.slug)}?confirm=${encodeURIComponent(c.slug)}`);
+      if (r.errors?.length) toast.warn(`Компания удалена, но не всё из хранилища: ${r.errors.join('; ')}`);
+      else toast.ok(`Компания «${c.company}» удалена`);
+      load();
+    } catch (e) { toast.error(messageOf(e)); }
+  };
+  const copyLogin = (c: Company, l: { username: string; password: string }) => {
+    const text = `${c.company}
+Адрес: ${location.origin}
+Логин: ${l.username}
+Пароль: ${l.password}`;
+    navigator.clipboard.writeText(text).then(() => toast.ok('Данные для входа скопированы')).catch(() => toast.error('Не удалось скопировать'));
   };
   const load = useCallback(() => {
     setItems(null);
@@ -165,7 +185,13 @@ export default function Companies() {
                 {items.map((c) => (
                   <tr key={c.schema}>
                     <td><b>{c.company}</b><div className="nm-micro nm-muted">{c.slug} · с {date(c.created_at)}</div>
-                      {c.error && <div className="nm-micro nm-danger-text">{c.error}</div>}</td>
+                      {c.error && <div className="nm-micro nm-danger-text">{c.error}</div>}
+                      {(c.first_logins || []).map((l) => (
+                        <div key={l.username} className="nm-micro nm-first-login" title="Администратор ещё не сменил выданный пароль">
+                          <KeyRound aria-hidden /> {l.username} · <code className="nm-code">{l.password}</code>{' '}
+                          <button type="button" className="nm-link" onClick={() => copyLogin(c, l)}>копировать</button>
+                        </div>
+                      ))}</td>
                     <td>{num(c.curators)}</td>
                     <td>{num(c.employees)}</td>
                     <td>{num(c.employees_with_plan)}</td>
@@ -178,7 +204,8 @@ export default function Companies() {
                     <td className="nm-muted" style={{ whiteSpace: 'nowrap' }}>{date(c.last_activity)}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <Button size="sm" icon={DoorOpen} onClick={() => enter(c.slug).catch((e) => toast.error(messageOf(e)))}>Открыть</Button>{' '}
-                      <Button size="sm" variant="ghost" icon={UserCog} onClick={() => asAdmin(c)}>Войти как администратор</Button>
+                      <Button size="sm" variant="ghost" icon={UserCog} onClick={() => asAdmin(c)}>Войти как администратор</Button>{' '}
+                      <Button size="sm" variant="ghost" iconOnly icon={Trash2} aria-label={`Удалить ${c.company}`} title="Удалить компанию" onClick={() => remove(c)} />
                     </td>
                   </tr>
                 ))}

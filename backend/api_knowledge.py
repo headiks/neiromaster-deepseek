@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import stages
 import questions
 import qacache
+import users
 from deps import require_admin, admin_only
 
 router = APIRouter()
@@ -69,7 +70,7 @@ def get_questions(status: str | None = "open"):
 def resolve_question(qid: str, req: ResolveRequest, actor: dict = Depends(require_admin)):
     """Администратор отвечает на вопрос — ответ уходит в личный кабинет сотрудника."""
     try:
-        entry = questions.resolve(qid, req.answer, actor.get("full_name") or actor.get("username"))
+        entry = questions.resolve(qid, req.answer, users.display_name(actor))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if entry is None:
@@ -106,8 +107,7 @@ def qa_base(source: str | None = None):
 @router.put("/qa-base/{qa_id}", dependencies=admin_only)
 def qa_base_edit(qa_id: int, req: QaEditRequest, actor: dict = Depends(require_admin)):
     try:
-        item = qacache.update(qa_id, req.question, req.answer,
-                              actor.get("full_name") or actor.get("username") or "")
+        item = qacache.update(qa_id, req.question, req.answer, users.display_name(actor))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if item is None:

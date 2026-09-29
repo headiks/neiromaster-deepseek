@@ -20,7 +20,7 @@ import auth
 import security
 import users
 from deps import (BASE_DIR, STATIC_DIR, GT_COOKIE, GT_TTL, gt_check_password, gt_configured, gt_token,
-                  gt_unlocked, page_for_admin, page_for_globaltest, require_admin, spa_html)
+                  gt_unlocked, page_for_admin, page_for_globaltest, require_admin, session_user, spa_html)
 
 router = APIRouter()
 
@@ -36,7 +36,7 @@ TEST_PAGES = ("/s3", "/documents-board", "/documents-table", "/plans-db", "/noti
 @router.get("/", response_class=HTMLResponse)
 def root(request: Request):
     """Личный кабинет сотрудника: сообщения плана, прогресс, ассистент."""
-    user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+    user = session_user(request)
     if user is None:
         return RedirectResponse(url="/login", status_code=303)
     if user.get("must_change_credentials"):
@@ -61,7 +61,7 @@ def register_page():
 @router.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request):
     """Первичная настройка: замена выданного пароля своим."""
-    user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+    user = session_user(request)
     if user is None:
         return RedirectResponse(url="/login", status_code=303)
     if not user.get("must_change_credentials"):

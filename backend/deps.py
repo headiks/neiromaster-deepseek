@@ -66,13 +66,16 @@ def _session_token(request: Request) -> str | None:
     return request.cookies.get(auth.COOKIE_NAME)
 
 
+def session_user(request: Request) -> dict | None:
+    """Пользователь запроса или None. Суперадмин в открытой компании (кука nm_company) — as_owner:
+    его сессия живёт в общей схеме, а запрос уже переключён в схему компании."""
+    return getattr(request.state, "as_owner", None) or auth.get_session_user(_session_token(request))
+
+
 def current_user(request: Request) -> dict:
     """Любой вошедший пользователь. Без валидной сессии — 401. Суперадмин в открытой компании
     (кука nm_company, TenantMiddleware проверил его сессию в общей схеме) — as_owner."""
-    owner = getattr(request.state, "as_owner", None)
-    if owner:
-        return owner
-    user = auth.get_session_user(_session_token(request))
+    user = session_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Требуется вход")
     return user
@@ -176,6 +179,8 @@ def gt_token(user_id: str, now: float | None = None) -> str:
 
 
 def gt_unlocked(request: Request, user: dict | None) -> bool:
+    if users.is_owner(user):
+        return True                 # суперадмину раздел открыт без отдельного пароля
     raw = request.cookies.get(GT_COOKIE) or ""
     exp, _, sig = raw.partition(".")
     if not (user and gt_configured() and exp.isdigit() and int(exp) > time.time()):
@@ -198,7 +203,7 @@ def page_for_globaltest(request: Request):
     page = page_for_admin(request)
     if isinstance(page, RedirectResponse):
         return page
-    user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+    user = session_user(request)
     if not gt_unlocked(request, user):
         return RedirectResponse(url="/globaltest", status_code=303)
     return page
@@ -209,7 +214,7 @@ def page_for_admin(request: Request):
     Страница админки: вошёл -> прошёл первичную настройку -> администратор.
     Один хелпер вместо одинаковых блоков в маршрутах страниц.
     """
-    user = auth.get_session_user(request.cookies.get(auth.COOKIE_NAME))
+    user = session_user(request)
     if user is None:
         return RedirectResponse(url="/login", status_code=303)
     if user.get("must_change_credentials"):

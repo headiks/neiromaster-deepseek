@@ -121,6 +121,21 @@ PUBLIC_STATEMENTS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_logins_user ON public.logins(schema_name, user_id)",
+    # Пул ключей DeepSeek (llmkeys.py): суперадмин добавляет на /globaltest, вызовы берут свободный.
+    """
+    CREATE TABLE IF NOT EXISTS public.llm_keys (
+        id             SERIAL PRIMARY KEY,
+        label          TEXT NOT NULL DEFAULT '',
+        key_enc        TEXT NOT NULL,
+        tail           TEXT NOT NULL DEFAULT '',
+        active         BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_used_at   TIMESTAMPTZ,
+        calls          BIGINT NOT NULL DEFAULT 0,
+        last_error     TEXT,
+        disabled_until TIMESTAMPTZ
+    )
+    """,
     # Заявки с демо-сайта («оставить контакты»), раздел суперадмина «Заявки» (leads.py).
     """
     CREATE TABLE IF NOT EXISTS public.leads (

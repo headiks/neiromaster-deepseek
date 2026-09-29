@@ -420,13 +420,24 @@ def visible_docs(actor: dict, docs: list) -> list:
 
 def visible_users(actor: dict, all_users: list) -> list:
     """
-    Кого актор видит в списке людей. Админ компании — всех. Куратор — только свой отдел
-    (и себя самого, даже если отдел ему не проставили).
+    Кого актор видит в списке людей. Суперадмин — всех. Админ компании — всех, кроме
+    суперадмина (он не виден никому, кроме себя). Куратор — только свой отдел (и себя самого,
+    даже если отдел ему не проставили).
     """
-    if is_full_access(actor):
+    if is_owner(actor):
         return list(all_users)
+    if is_full_access(actor):
+        return [u for u in all_users if not is_superadmin(u)]
     return [u for u in all_users
-            if u.get("id") == actor.get("id") or same_department(actor, u)]
+            if not is_superadmin(u) and (u.get("id") == actor.get("id") or same_department(actor, u))]
+
+
+def display_name(user: dict | None) -> str:
+    """Имя в подписях, которые видят другие (ответ на вопрос, загрузивший документ, правка базы
+    ответов): суперадмин остаётся невидимым — «Администратор»."""
+    if is_superadmin(user):
+        return "Администратор"
+    return (user or {}).get("full_name") or (user or {}).get("username") or ""
 
 
 def can_manage(actor: dict, target: dict) -> bool:
@@ -984,6 +995,9 @@ if __name__ == "__main__":
     assert all(len(x) in (32, 64) for x in superadmin_hash())
     _sa = {"id": "s", "role": ROLE_OWNER, "username": SUPERADMIN_USERNAME}
     assert is_superadmin(_sa) and not is_superadmin(_owner)
+    # суперадмина не видит никто, кроме него самого; в подписях — «Администратор»
+    assert _sa not in visible_users(_cadm, [_sa, _adm]) and _sa not in visible_users(_adm, [_sa, _adm])
+    assert _sa in visible_users(_sa, [_sa, _adm]) and display_name(_sa) == "Администратор"
     try:
         _fixed(_sa)
         assert False

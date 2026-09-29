@@ -78,6 +78,10 @@ def api_login(req: LoginRequest, request: Request, response: Response):
         raise HTTPException(status_code=401, detail=str(e))
     activitylog.log("login", user=user, request=request)
     _set_session_cookie(response, token)
+    # Новый вход — с чистого листа: открытая суперадмином компания и отложенная сессия не
+    # переносятся (иначе кука nm_company от прошлого входа уводила бы запросы в компанию).
+    for name in (auth.COMPANY_COOKIE, auth.OWNER_RETURN_COOKIE):
+        response.delete_cookie(name, path="/")
     return {
         "username": user["username"],
         "role": user["role"],

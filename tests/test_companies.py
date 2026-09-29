@@ -226,11 +226,17 @@ def test_superadmin_opens_company(env, world):
     assert me["role"] == "owner" and me["company"] == "cab_alfa" and me["company_name"] == "ООО Альфа"
     names = {u["full_name"] for u in c.get("/users").json()["users"]}
     assert "Рабочий Роман" in names and "Складской Семён" in names
+    # страницы админки открываются (раньше серверная проверка страниц уводила на /login)
+    assert c.get("/admin/users", follow_redirects=False).status_code == 200
     r = c.post("/documents/upload", files={"file": ("x.md", b"x", "text/markdown")}, headers=ORIGIN)
     assert r.status_code == 403
     assert c.post("/api/companies/exit", headers=ORIGIN).status_code == 200
     c.cookies.delete("nm_company")
     assert c.get("/api/me").json()["company"] == ""
+    # новый вход сбрасывает открытую компанию
+    c.cookies.set("nm_company", "cab_alfa")
+    r = c.post("/api/login", json={"username": world["owner"]["username"], "password": world["owner"]["password"]})
+    assert "nm_company" in r.headers.get("set-cookie", "")
 
 
 def test_company_cookie_needs_owner_session(env, world):
@@ -268,3 +274,47 @@ def test_leads_for_superadmin_only(env, world):
     assert c.post(f"/api/companies/leads/{lid}", json={"status": "done"}, headers=ORIGIN).status_code == 200
     a = _as(env, world, "alfa")
     assert a.get("/api/companies/leads").status_code == 403
+
+
+def test_first_login_shown_then_company_deleted(env, world):
+    c = _as(env, world, "owner")
+    gamma = c.post("/api/companies", json={"company": "ООО Гамма", "slug": "gamma"}, headers=ORIGIN).json()
+    row = next(x for x in c.get("/api/companies").json()["companies"] if x["slug"] == "gamma")
+    assert row["first_logins"] == [{"full_name": gamma["admin"]["full_name"],
+                                    "username": gamma["admin"]["username"], "password": gamma["admin"]["password"]}]
+    alfa = next(x for x in c.get("/api/companies").json()["companies"] if x["slug"] == "alfa")
+    assert alfa["first_logins"] == []                       # сменил пароль — не показываем
+    assert c.delete("/api/companies/gamma", headers=ORIGIN).status_code == 400          # без подтверждения
+    r = c.delete("/api/companies/gamma?confirm=gamma", headers=ORIGIN)
+    assert r.status_code == 200 and r.json()["schema"] == "cab_gamma", r.text
+    assert "gamma" not in {x["slug"] for x in c.get("/api/companies").json()["companies"]}
+    r = c.post("/api/login", json={"username": gamma["admin"]["username"], "password": gamma["admin"]["password"]})
+    assert r.status_code == 401                              # логина больше нет
+    import db
+    assert not db.query("SELECT 1 FROM information_schema.schemata WHERE schema_name = 'cab_gamma'")
+
+
+def test_llm_key_pool_for_superadmin(env, world):
+    """Суперадмин ведёт пул ключей DeepSeek на /globaltest; ключ наружу не отдаётся; вызовы
+    берут свободный; ключ с «нет денег» встаёт на паузу."""
+    c = _as(env, world, "owner")
+    assert c.get("/api/globaltest").json()["unlocked"]                 # без пароля раздела
+    assert c.get("/globaltest", follow_redirects=False).status_code == 200
+    for n in (1, 2):
+        r = c.post("/api/llm-keys", json={"label": f"k{n}", "key": f"sk-test-key-number-{n}-abcdef"}, headers=ORIGIN)
+        assert r.status_code == 200, r.text
+    listed = c.get("/api/llm-keys").json()["keys"]
+    assert {k["tail"] for k in listed if k["source"] == "db"} >= {"cdef"}
+    assert "sk-test" not in str(listed)
+    import llmkeys
+    llmkeys._cache["at"] = 0
+    ids = {k["id"] for k in listed if k["source"] == "db"}
+    with llmkeys.lease() as (a, key_a):
+        with llmkeys.lease() as (b, _):
+            assert a != b and {a, b} <= ids and key_a.startswith("sk-test-key")
+    llmkeys.report(a, 402, "Insufficient Balance")
+    assert all(llmkeys.pick()[0] != a for _ in range(5))                 # на паузе — не выбирается
+    for k in ids:
+        assert c.delete(f"/api/llm-keys/{k}", headers=ORIGIN).status_code == 200
+    a = _as(env, world, "alfa")
+    assert a.get("/api/llm-keys").status_code == 403

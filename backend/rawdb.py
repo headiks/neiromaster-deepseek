@@ -120,6 +120,16 @@ def delete_document(key: str):
         conn.execute("DELETE FROM raw_documents WHERE key = %s", (key,))
 
 
+def delete_prefix(prefix: str) -> int:
+    """Все оригиналы с ключом на prefix (компания удалена: cab_<код>/...)."""
+    if not enabled() or not prefix:
+        return 0
+    with _conn() as conn:
+        rows = conn.execute("DELETE FROM raw_documents WHERE key LIKE %s RETURNING key",
+                            (prefix.replace("%", r"\%").replace("_", r"\_") + "%",)).fetchall()
+    return len(rows)
+
+
 # ---------- Штатные расписания ----------
 def put_staffing(filename: str, content: bytes, uploaded_by: str | None = None):
     """Сохранить исходник загруженной штатки (зашифрованным, если шифрование ПДн включено)."""

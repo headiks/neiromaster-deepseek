@@ -11,7 +11,7 @@ import provisioning
 import security
 import users
 from fastapi import HTTPException
-from deps import current_user, require_admin, logged_in, owner_only
+from deps import current_user, require_admin, require_owner, logged_in, owner_only
 
 router = APIRouter()
 
@@ -53,8 +53,10 @@ def list_activity(event_type: str | None = None, user_id: str | None = None,
     if user_id:
         if allowed is not None and user_id not in allowed:
             raise HTTPException(status_code=403, detail="Пользователь не из вашего отдела")
-        return {"events": activitylog.recent(limit=limit, event_type=event_type, user_id=user_id)}
-    return {"events": activitylog.recent(limit=limit, event_type=event_type, user_ids=allowed)}
+        return {"events": activitylog.recent(limit=limit, event_type=event_type, user_id=user_id,
+                                             hide_superadmin=not users.is_owner(actor))}
+    return {"events": activitylog.recent(limit=limit, event_type=event_type, user_ids=allowed,
+                                         hide_superadmin=not users.is_owner(actor))}
 
 
 def _all_companies(limit: int, event_type: str | None, company: str | None) -> list:
@@ -70,6 +72,54 @@ def _all_companies(limit: int, event_type: str | None, company: str | None) -> l
                                "company_name": names.get(schema, "Суперадмин / общая")})
     events.sort(key=lambda e: e["ts"], reverse=True)
     return events[:max(1, min(int(limit), 1000))]
+
+
+class LlmKeyRequest(BaseModel):
+    label: str = Field(default="", max_length=100)
+    key: str = Field(min_length=20, max_length=200)
+
+
+class LlmKeyUpdate(BaseModel):
+    active: bool | None = None
+    label: str | None = Field(default=None, max_length=100)
+
+
+@router.get("/api/llm-keys", dependencies=owner_only)
+def llm_keys(balance: bool = False):
+    """Пул ключей DeepSeek (суперадмин, /globaltest): без самих ключей — хвост, состояние,
+    запросы в полёте, баланс (balance=1 — по запросу к DeepSeek на каждый ключ)."""
+    import llmkeys
+    return {"keys": llmkeys.listing(with_balance=balance)}
+
+
+@router.post("/api/llm-keys")
+def llm_key_add(req: LlmKeyRequest, actor: dict = Depends(require_owner)):
+    import llmkeys
+    try:
+        res = llmkeys.add(req.label, req.key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    activitylog.log("action", user=actor, path="/api/llm-keys",
+                    detail={"action": "llm_key_add", "id": res["id"], "label": req.label})
+    return res
+
+
+@router.put("/api/llm-keys/{key_id}")
+def llm_key_update(key_id: int, req: LlmKeyUpdate, actor: dict = Depends(require_owner)):
+    import llmkeys
+    if not llmkeys.update(key_id, active=req.active, label=req.label):
+        raise HTTPException(status_code=404, detail="Ключ не найден")
+    return {"ok": True}
+
+
+@router.delete("/api/llm-keys/{key_id}")
+def llm_key_delete(key_id: int, actor: dict = Depends(require_owner)):
+    import llmkeys
+    if not llmkeys.remove(key_id):
+        raise HTTPException(status_code=404, detail="Ключ не найден")
+    activitylog.log("action", user=actor, path=f"/api/llm-keys/{key_id}",
+                    detail={"action": "llm_key_delete", "id": key_id})
+    return {"ok": True}
 
 
 @router.get("/api/llm-usage", dependencies=owner_only)

@@ -103,6 +103,19 @@ def delete(filename: str, key: str = ""):
         _s3().delete_object(Bucket=config.S3_BUCKET, Key=key)
 
 
+def delete_prefix(prefix: str) -> int:
+    """Удалить из бакета все объекты под prefix (компания удалена). No-op без S3."""
+    if not config.S3_ENABLED or not prefix:
+        return 0
+    s3, n = _s3(), 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=config.S3_BUCKET, Prefix=prefix):
+        keys = [{"Key": o["Key"]} for o in page.get("Contents") or []]
+        if keys:
+            s3.delete_objects(Bucket=config.S3_BUCKET, Delete={"Objects": keys, "Quiet": True})
+            n += len(keys)
+    return n
+
+
 def list_objects(prefix: str = "", delimiter: str = "/", max_keys: int = 1000) -> dict:
     """Листинг бакета для просмотра (только метаданные, без содержимого файлов).
     delimiter='/' — «папки» (CommonPrefixes) + файлы текущего уровня, как файловый браузер;

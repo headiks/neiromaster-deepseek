@@ -45,6 +45,8 @@ def company_stats(tokens: dict) -> dict:
                                 "WHERE event_type = 'login' AND ts > now() - interval '30 days'"),
         "last_activity": str(last.get("ts") or ""),
         "deepseek_tokens_30d": tokens.get(db.current_schema() or "public", 0),
+        # данные первого входа админов, ещё не сменивших пароль (суперадмин передаёт клиенту)
+        "first_logins": provisioning.first_logins(),
     }
 
 
@@ -75,6 +77,24 @@ def create_company(req: CompanyRequest, actor: dict = Depends(require_owner)):
     activitylog.log("action", user=actor, path="/api/companies",
                     detail={"action": "company_create", "company": result["company"],
                             "schema": result["schema"], "admin": result["admin"]["username"]})
+    return result
+
+
+@router.delete("/{slug}")
+def delete_company(slug: str, confirm: str = "", actor: dict = Depends(require_owner)):
+    """Удалить компанию безвозвратно. confirm — код компании ещё раз: защита от случайного вызова."""
+    if confirm != slug:
+        raise HTTPException(status_code=400, detail="Подтвердите удаление кодом компании")
+    if db.current_schema() == provisioning.schema_for(slug):
+        raise HTTPException(status_code=400, detail="Сначала выйдите из этой компании")
+    company = provisioning.company_name(provisioning.schema_for(slug))
+    try:
+        result = provisioning.delete_company(slug)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    activitylog.log("action", user=actor, path=f"/api/companies/{slug}",
+                    detail={"action": "company_delete", "company": company, "schema": result["schema"],
+                            "raw": result["raw"], "s3": result["s3"]})
     return result
 
 
@@ -162,10 +182,17 @@ def deepseek_balance():
     """Баланс DeepSeek и доля «сколько осталось». 100 % — NEIROMASTER_DEEPSEEK_BUDGET, если
     задан, иначе наибольший виденный баланс (обновляется после каждого пополнения)."""
     import deepseek
-    try:
-        bal = deepseek.balance()
-    except Exception as e:
-        return {"ok": False, "error": f"Баланс недоступен: {e}"}
+    import llmkeys
+    bals, errors = [], []
+    for _kid, key in llmkeys._all_keys():             # сумма по всему пулу ключей
+        try:
+            bals.append(deepseek.balance(api_key=key))
+        except Exception as e:
+            errors.append(str(e)[:200])
+    if not bals:
+        return {"ok": False, "error": f"Баланс недоступен: {'; '.join(errors) or 'нет ключей DeepSeek'}"}
+    bal = {"total": round(sum(b["total"] for b in bals), 2), "currency": bals[0]["currency"],
+           "available": any(b["available"] for b in bals), "keys": len(bals)}
     budget = float(os.environ.get("NEIROMASTER_DEEPSEEK_BUDGET") or 0)
     if not budget:
         row = db.query("SELECT value FROM app_settings WHERE key = 'deepseek_balance_max'", (), "one")

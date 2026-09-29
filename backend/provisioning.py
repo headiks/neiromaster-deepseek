@@ -226,6 +226,47 @@ def create_company(company: str, slug: str = "", admin_full_name: str = "") -> d
                       "username": admin["username"], "password": password}}
 
 
+def delete_company(slug: str) -> dict:
+    """Удалить компанию целиком и безвозвратно: схему со всеми таблицами (люди, документы,
+    планы, сообщения, вопросы, журнал, сессии), логины, файлы на диске, оригиналы в raw-БД и
+    S3. Сбой внешнего хранилища не мешает удалению из БД — остаток виден в ответе."""
+    import shutil
+    import rawdb
+    import storage
+    schema = schema_for(slug)
+    if not is_company(schema):
+        raise ValueError("Компания не найдена")
+    out = {"slug": slug, "schema": schema, "raw": 0, "s3": 0, "errors": []}
+    for what, fn in (("raw", lambda: rawdb.delete_prefix(f"{schema}/")),
+                     ("s3", lambda: storage.delete_prefix(f"{schema}/"))):
+        try:
+            out[what] = fn()
+        except Exception as e:
+            out["errors"].append(f"{what}: {e}")
+    db.execute(f'DROP SCHEMA IF EXISTS "{_checked_schema(schema)}" CASCADE')
+    db.execute("DELETE FROM public.logins WHERE schema_name = %s", (schema,))
+    db.execute("DELETE FROM public.cabinets WHERE schema_name = %s", (schema,))
+    schemas(fresh=True)
+    for base in (config.DOCS_DIR, config.CONVERTED_DIR):
+        shutil.rmtree(base / schema, ignore_errors=True)
+    return out
+
+
+def _checked_schema(schema: str) -> str:
+    if not schema.startswith(SCHEMA_PREFIX) or not re.fullmatch(r"[a-z0-9_]+", schema):
+        raise ValueError("Недопустимое имя схемы")
+    return schema
+
+
+def first_logins() -> list:
+    """Администраторы ТЕКУЩЕЙ компании, ещё не сменившие выданный пароль: логин и временный
+    пароль (суперадмин передаёт их клиенту). Сменил — пароль больше нигде не хранится."""
+    import users
+    return [{"full_name": u.get("full_name"), "username": u.get("username"), "password": u.get("temp_password")}
+            for u in users.list_users(with_secrets=True)
+            if u.get("role") == users.ROLE_ADMIN and u.get("must_change_credentials") and u.get("temp_password")]
+
+
 def _main(argv):
     if "--list" in argv:
         rows = list_companies()

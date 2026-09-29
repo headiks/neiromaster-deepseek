@@ -393,6 +393,7 @@ def set_confidential(filename: str, confidential: bool) -> dict:
 
 def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] = None,
                        confidential: bool = False) -> Path:
+    import users
     filename = safe_filename(filename)
     ext = Path(filename).suffix.lower()
     if ext not in SUPPORTED_EXT:
@@ -430,7 +431,7 @@ def save_uploaded_file(filename: str, content: bytes, uploader: Optional[dict] =
         # Владелец документа: по нему работает разграничение видимости (админ видит
         # только свои загрузки, суперадмин — все) и строится путь в хранилище.
         uploaded_by=(uploader or {}).get("id"),
-        uploaded_by_name=(uploader or {}).get("full_name") or (uploader or {}).get("username") or "",
+        uploaded_by_name=users.display_name(uploader),
         uploaded_by_role=(uploader or {}).get("role"),
         department=(uploader or {}).get("department") or "",
         storage_path=f"{top}/{own}/{filename}" if top and own else filename,

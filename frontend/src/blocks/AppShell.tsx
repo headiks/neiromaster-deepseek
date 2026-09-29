@@ -3,7 +3,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
-  Building2, CalendarRange, ClipboardList, Database, GraduationCap, House, Inbox, KeyRound, LogOut, MessageCircleQuestion, MessagesSquare, Moon, Settings, Smartphone, Sun, Users,
+  Building2, CalendarRange, ClipboardList, Database, FlaskConical, GraduationCap, House, Inbox, KeyRound, LogOut, MessageCircleQuestion, MessagesSquare, Moon, Settings, Smartphone, Sun, Users,
 } from 'lucide-react';
 import { initials } from '@shared/format';
 import { ROLE } from '@shared/status';
@@ -139,6 +139,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               { label: 'Сменить пароль', icon: KeyRound, onClick: () => setPwOpen(true), hidden: !isAdmin },
               { section: 'Служебное', hidden: !isAdmin },
               { label: 'Журнал действий', icon: ClipboardList, href: '/logs', hidden: !isAdmin },
+              { label: 'Диагностика и ключи DeepSeek', icon: FlaskConical, href: '/globaltest', hidden: !isOwner },
             ]} trigger={(p) => <Button variant="ghost" iconOnly size="sm" icon={Settings} aria-label="Настройки" title="Настройки" data-tour="profile-menu" {...p} />} />
             <Button variant="ghost" iconOnly size="sm" icon={LogOut} aria-label="Выйти" title="Выйти" onClick={logout} />
           </div>

@@ -1,10 +1,13 @@
 // Диагностика: все служебные инструменты в одном месте. Раздел закрыт отдельным паролем
-// (сервер: deps.require_globaltest) — без него ни страницы, ни их API недоступны.
+// (сервер: deps.require_globaltest) — без него ни страницы, ни их API недоступны. Суперадмину
+// открыт всегда, у него здесь же пул ключей DeepSeek.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bell, Database, FlaskConical, HardDrive, LayoutGrid, ListChecks, Lock, LockOpen, ScanText, ScrollText, Table2, type LucideIcon } from 'lucide-react';
 import { api, messageOf } from '../../lib/api';
 import { Button, Callout, Card, Field, Input, PageHeader, Spinner } from '../../ui';
+import { useMe } from '../../lib/me';
+import { LlmKeys } from './LlmKeys';
 
 const DATA: [string, LucideIcon, string, string][] = [
   ['/documents-table', Table2, 'Реестр документов', 'Таблица метаданных обработанных файлов.'],
@@ -55,6 +58,7 @@ function Unlock({ configured, onDone }: { configured: boolean; onDone: () => voi
 }
 
 export default function GlobalTest() {
+  const { isOwner, inCompany } = useMe();
   const [state, setState] = useState<{ configured: boolean; unlocked: boolean } | null>(null);
   const load = () => api.get<{ configured: boolean; unlocked: boolean }>('/api/globaltest').then(setState).catch(() => setState({ configured: false, unlocked: false }));
   useEffect(() => { document.title = 'Диагностика · НейроМастер'; load(); }, []);
@@ -64,7 +68,8 @@ export default function GlobalTest() {
   return (
     <div className="nm-page">
       <PageHeader title="Диагностика" subtitle="Служебные инструменты: тесты и просмотр внутренних данных. Вынесены сюда, чтобы не мешать основной работе."
-                  actions={<Button icon={Lock} onClick={lock}>Закрыть раздел</Button>} />
+                  actions={isOwner ? undefined : <Button icon={Lock} onClick={lock}>Закрыть раздел</Button>} />
+      {isOwner && !inCompany && <><div className="nm-section-label">Модель</div><LlmKeys /></>}
       <div className="nm-section-label">Данные и документы</div>
       <Grid items={DATA} />
       <div className="nm-section-label">Диагностика и тесты</div>
