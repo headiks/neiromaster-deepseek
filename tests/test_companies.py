@@ -283,7 +283,9 @@ def test_first_login_shown_then_company_deleted(env, world):
     assert row["first_logins"] == [{"full_name": gamma["admin"]["full_name"],
                                     "username": gamma["admin"]["username"], "password": gamma["admin"]["password"]}]
     alfa = next(x for x in c.get("/api/companies").json()["companies"] if x["slug"] == "alfa")
-    assert alfa["first_logins"] == []                       # сменил пароль — не показываем
+    shown = {l["username"] for l in alfa["first_logins"]}
+    assert world["alfa"]["admin"]["username"] not in shown   # сменил пароль — не показываем
+    assert "adminov_a_a" in shown                            # второй админ ещё не входил
     assert c.delete("/api/companies/gamma", headers=ORIGIN).status_code == 400          # без подтверждения
     r = c.delete("/api/companies/gamma?confirm=gamma", headers=ORIGIN)
     assert r.status_code == 200 and r.json()["schema"] == "cab_gamma", r.text
