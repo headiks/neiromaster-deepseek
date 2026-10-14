@@ -103,6 +103,13 @@ def _migrate_legacy():
             print(f"Миграция: перенесено/исправлено {what}: {n}")
 
 
+def _rerender_texts():
+    """Правила сборки текста (msgconvert.tidy, кнопки связи) — и для уже сохранённых сообщений."""
+    n = planner.rerender_saved_texts()
+    if n:
+        print(f"Сообщения плана пересобраны по текущим правилам: {n}")
+
+
 def _prune_orphans():
     """Самоочистка «призрачных» источников: docpipe-документы, которых уже нет в реестре,
     продолжали бы цитироваться в генерации и ответах. Защита от вайпа при пустом реестре —
@@ -150,6 +157,7 @@ async def lifespan(app: FastAPI):
         _step("посев структуры знаний", _seed_knowledge)
         _step("пайплайн разметки docpipe", _init_docpipe)
         _step("миграция старых данных", _migrate_legacy)
+        _step("пересборка текстов сообщений", _rerender_texts)
         _step("учётка суперадмина", users.ensure_owner)
         _step("очистка осиротевших меток docpipe", _prune_orphans)
         _requeue_without_redis()
@@ -162,6 +170,7 @@ async def lifespan(app: FastAPI):
                 _step(f"компания {schema}: осиротевшие метки docpipe", _prune_orphans)
                 _requeue_without_redis()
                 _step(f"компания {schema}: автоназначение плана", _autoassign_plan)
+                _step(f"компания {schema}: пересборка текстов сообщений", _rerender_texts)
         # Демо-экземпляр (NEIROMASTER_DEMO=1): демо-компания с учётками и документами.
         _step("демо-компания", demo.ensure_seeded)
         if not demo.enabled():

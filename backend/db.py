@@ -284,6 +284,9 @@ SCHEMA_STATEMENTS = (
     # Вовлечённость (stats.py): первый показ на экране и суммарное время на экране, мс.
     "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS first_view_at TIMESTAMPTZ",
     "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS view_ms INT NOT NULL DEFAULT 0",
+    # Позиция в плане (этап -> подэтап): сообщения одного времени (пачка за день, догонка
+    # после позднего назначения) показываются строго в порядке этапов, а не вперемешку.
+    "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS seq INT",
     # Push-токены устройств сотрудника (Expo Push): одно устройство = один токен.
     # По ним шлём пуш при доставке сообщения плана. token — PK (при переустановке
     # приложения приходит новый; старый протухнет и будет вычищен по ответу Expo).
