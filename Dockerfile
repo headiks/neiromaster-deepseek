@@ -68,7 +68,11 @@ COPY --chown=app:app . .
 # разборе. Для полностью офлайн-обработки: `docling-tools models download` на этапе сборки.
 ENV HF_HOME=/app/.cache/huggingface \
     EASYOCR_MODULE_PATH=/app/.cache/easyocr
+# OCR docling (rapidocr) докачивает свои модели в папку пакета при первом разборе PDF —
+# от пользователя app туда писать нельзя («Permission denied ... rapidocr/models»).
 RUN mkdir -p data/documents data/converted data/processed data/secrets .cache \
- && chown -R app:app data .cache
+ && chown -R app:app data .cache \
+ && d="$(python -c 'import os, rapidocr; print(os.path.join(os.path.dirname(rapidocr.__file__), "models"))')" \
+ && mkdir -p "$d" && chown -R app:app "$d"
 USER app
 CMD ["python", "backend/worker.py"]
