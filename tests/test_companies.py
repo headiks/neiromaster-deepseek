@@ -320,3 +320,23 @@ def test_llm_key_pool_for_superadmin(env, world):
         assert c.delete(f"/api/llm-keys/{k}", headers=ORIGIN).status_code == 200
     a = _as(env, world, "alfa")
     assert a.get("/api/llm-keys").status_code == 403
+
+
+def test_shared_standard_plans(env, world):
+    """Суперадмин отмечает план «для всех компаний»; компания видит его и берёт себе копию."""
+    c = _as(env, world, "owner")
+    stages = [{"title": "Первый день", "anchor": "from_start", "duration": {"value": 1, "unit": "days"},
+               "substages": [{"title": "Пропуск", "kind": "message", "brief": "Где получить пропуск",
+                              "schedule": {"day": 1, "time": "09:00"}}]}]
+    r = c.post("/plans", json={"title": "Стандарт: водитель", "shared": True, "stages": stages}, headers=ORIGIN)
+    assert r.status_code == 200 and r.json()["shared"], r.text
+    assert c.get("/plans/shared").json()["plans"] == []      # в общей схеме — это его обычный список
+    a = _as(env, world, "alfa")
+    shared = a.get("/plans/shared").json()["plans"]
+    src = next(p for p in shared if p["title"] == "Стандарт: водитель")
+    copy = a.post(f"/plans/shared/{src['plan_id']}/use", headers=ORIGIN).json()
+    assert copy["plan_id"] != src["plan_id"] and not copy["shared"] and copy["title"] == "Стандарт: водитель"
+    assert copy["plan_id"] in {p["plan_id"] for p in a.get("/plans").json()["plans"]}
+    # админ компании «для всех» не отметит: флаг остаётся как был
+    r = a.post("/plans", json={"title": "Своё", "shared": True, "stages": stages}, headers=ORIGIN)
+    assert not r.json()["shared"]

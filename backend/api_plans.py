@@ -25,6 +25,7 @@ class PlanRequest(BaseModel):
     start_date: str | None = Field(default=None, max_length=32)
     timezone: str | None = Field(default=None, max_length=64)
     group_daily: bool = False        # сообщения одного дня — одной сессией
+    shared: bool = False             # стандартный план для всех компаний (только суперадмин)
     stages: list = Field(default_factory=list, max_length=50)
     # updated_at плана, который правил администратор: не совпал — план уже изменил кто-то
     # другой, сохранение вернёт 409 (оптимистичная блокировка).
@@ -41,6 +42,39 @@ def get_catalog():
 def get_plans():
     import autoplan
     return {"plans": planner.list_plans(), "default_plan_id": autoplan.get_default_plan_id()}
+
+
+def _shared_flag(req_shared: bool, user: dict, existing: dict | None = None) -> bool:
+    """Отметку «стандартный для всех» ставит и снимает только суперадмин в общей схеме;
+    остальные сохраняют план с прежним значением."""
+    if users.is_owner(user) and not db.current_schema():
+        return bool(req_shared)
+    return bool((existing or {}).get("shared"))
+
+
+@router.get("/plans/shared", dependencies=admin_only)
+def list_shared_plans():
+    """Стандартные планы суперадмина — в выборе плана любой компании (в общей схеме они и так
+    в списке планов)."""
+    if not db.current_schema():
+        return {"plans": []}
+    return {"plans": [{"plan_id": p.get("plan_id"), "title": p.get("title"), "role": p.get("role"),
+                       "description": p.get("description"), "stages": len(p.get("stages") or []),
+                       "substages": sum(len(s.get("substages") or []) for s in p.get("stages") or [])}
+                      for p in planner.shared_plans()]}
+
+
+@router.post("/plans/shared/{plan_id}/use")
+def use_shared_plan(plan_id: str, user: dict = Depends(require_admin)):
+    """Добавить стандартный план в свою компанию — своей копией."""
+    if not db.current_schema():
+        raise HTTPException(status_code=400, detail="Стандартные планы и так лежат в общей схеме")
+    plan = planner.copy_shared_plan(plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Стандартный план не найден")
+    activitylog.log("action", user=user, path=f"/plans/shared/{plan_id}/use",
+                    detail={"action": "plan_from_shared", "source": plan_id, "plan_id": plan["plan_id"]})
+    return plan
 
 
 @router.post("/plans/{plan_id}/set-default")
@@ -60,7 +94,9 @@ def set_default_plan(plan_id: str, user: dict = Depends(require_admin)):
 
 @router.post("/plans")
 def create_plan(req: PlanRequest, user: dict = Depends(require_admin)):
-    plan = planner.assign_topics(planner.normalize_plan(req.model_dump(exclude={"expected_updated_at"})))
+    payload = req.model_dump(exclude={"expected_updated_at"})
+    payload["shared"] = _shared_flag(req.shared, user)
+    plan = planner.assign_topics(planner.normalize_plan(payload))
     planner.save_plan(plan)
     activitylog.log("action", user=user, path="/plans",
                     detail={"action": "plan_create", "plan_id": plan.get("id"),
@@ -114,6 +150,7 @@ def update_plan(plan_id: str, req: PlanRequest, user: dict = Depends(require_adm
             "updated_at": e.current.get("updated_at")})
     payload = req.model_dump(exclude={"expected_updated_at"})
     payload["created_at"] = existing.get("created_at")
+    payload["shared"] = _shared_flag(req.shared, user, existing)
     plan = planner.assign_topics(planner.normalize_plan(payload, plan_id=plan_id), prev=existing)
     planner.save_plan(plan)
     # Время/день/длительность могли измениться -> ещё не отправленные сообщения всех

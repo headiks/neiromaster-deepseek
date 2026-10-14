@@ -358,6 +358,9 @@ def normalize_plan(raw: dict, plan_id: Optional[str] = None) -> dict:
         "timezone": raw.get("timezone") if _valid_tz(raw.get("timezone")) else DEFAULT_TIMEZONE,
         # Все сообщения одного дня — одной «сессией» (в одно время, одним уведомлением).
         "group_daily": bool(raw.get("group_daily")),
+        # Стандартный план суперадмина (общая схема): виден всем компаниям в выборе плана,
+        # компания берёт себе копию (api_plans.use_shared_plan). Ставит только суперадмин.
+        "shared": bool(raw.get("shared")),
         "created_at": raw.get("created_at") or now,
         "updated_at": now,
         "stages": [],
@@ -526,6 +529,7 @@ def duplicate_plan(plan_id: str, new_title: Optional[str] = None) -> Optional[di
     src = dict(src)
     src.pop("plan_id", None)     # normalize_plan выдаст свежий id
     src.pop("created_at", None)  # и свежие даты
+    src.pop("shared", None)      # копия — обычный план, не стандартный для всех
     src["title"] = (new_title or "").strip() or f"{src.get('title', 'План адаптации')} (копия)"
     return save_plan(normalize_plan(src))
 
@@ -590,8 +594,26 @@ def list_plans() -> list:
             "substages": sum(len(s.get("substages") or []) for s in plan.get("stages") or []),
             "updated_at": plan.get("updated_at"),
             "generated": r["generated"],
+            "shared": bool(plan.get("shared")),
         })
     return sorted(plans, key=lambda p: p.get("updated_at") or "", reverse=True)
+
+
+def shared_plans() -> list:
+    """Стандартные планы суперадмина (public.plans с shared) — для выбора в любой компании."""
+    rows = db.query("SELECT data FROM public.plans WHERE (data->>'shared')::boolean "
+                    "ORDER BY data->>'title'") or []
+    return [r["data"] for r in rows]
+
+
+def copy_shared_plan(plan_id: str) -> Optional[dict]:
+    """Копия стандартного плана в ТЕКУЩУЮ схему (компанию): дальше компания правит свою копию,
+    правки суперадмина её не трогают. Тексты сообщений не копируются — они по документам компании."""
+    src = next((p for p in shared_plans() if p.get("plan_id") == plan_id), None)
+    if src is None:
+        return None
+    raw = {k: v for k, v in src.items() if k not in ("plan_id", "created_at", "shared")}
+    return save_plan(assign_topics(normalize_plan(raw)))
 
 
 def delete_plan(plan_id: str) -> bool:

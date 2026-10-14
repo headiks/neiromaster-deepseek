@@ -16,13 +16,16 @@ import {
 } from '../../ui';
 import { useConfirm } from '../../ui/confirm';
 import { NextStep } from '../../blocks/NextStep';
+import { useMe } from '../../lib/me';
 
 const NEW = '';
 const TEMPLATE = '__template';
+const SHARED = 'shared:';           // стандартный план суперадмина: shared:<plan_id>
+type SharedPlan = { plan_id: string; title: string; role?: string; description?: string; stages: number; substages: number };
 
 /** Выбор плана: как выпадающий список, но у каждого сохранённого плана — «Удалить». */
-function PlanPicker({ value, plans, onOpen, onDelete }: {
-  value: string; plans: PlanSummary[]; onOpen: (id: string) => void; onDelete: (p: PlanSummary) => void;
+function PlanPicker({ value, plans, shared, onOpen, onDelete }: {
+  value: string; plans: PlanSummary[]; shared: SharedPlan[]; onOpen: (id: string) => void; onDelete: (p: PlanSummary) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -41,10 +44,16 @@ function PlanPicker({ value, plans, onOpen, onDelete }: {
           <ul className="nm-combo-list" role="listbox" aria-label="Планы">
             <li role="option" aria-selected={value === NEW}><button type="button" className="nm-combo-pick" autoFocus onClick={() => pick(NEW)}>＋ Создать свой план</button></li>
             <li role="option" aria-selected={false}><button type="button" className="nm-combo-pick" onClick={() => pick(TEMPLATE)}>＋ Стандартный план (все этапы, ≈3 месяца)</button></li>
+            {shared.length > 0 && <li className="nm-combo-note">Стандартные планы НейроМастера</li>}
+            {shared.map((p) => (
+              <li key={p.plan_id} role="option" aria-selected={false}>
+                <button type="button" className="nm-combo-pick" onClick={() => pick(SHARED + p.plan_id)}>＋ {name(p as PlanSummary)} · {p.substages} сообщ.</button>
+              </li>
+            ))}
             {plans.length > 0 && <li className="nm-combo-note">Сохранённые планы</li>}
             {plans.map((p) => (
               <li key={p.plan_id} role="option" aria-selected={p.plan_id === value}>
-                <button type="button" className="nm-combo-pick" onClick={() => pick(p.plan_id)}>{name(p)}</button>
+                <button type="button" className="nm-combo-pick" onClick={() => pick(p.plan_id)}>{name(p)}{p.shared ? ' · для всех компаний' : ''}</button>
                 <button type="button" className="nm-combo-del" title="Удалить план" aria-label={`Удалить план «${p.title}»`}
                         onClick={() => { setOpen(false); onDelete(p); }}><Trash2 style={{ width: 15, height: 15 }} /></button>
               </li>
@@ -91,6 +100,7 @@ function payload(plan: Plan) {
   return {
     title: plan.title || 'План адаптации',
     group_daily: !!plan.group_daily,
+    shared: !!plan.shared,
     stages: plan.stages.map((s) => ({
       id: s.id || null, catalog_id: s.catalog_id, title: s.title, description: s.description || '', anchor: s.anchor, duration: s.duration,
       substages: s.substages.map((x) => ({ id: x.id || null, catalog_id: x.catalog_id, title: x.title, kind: x.kind, brief: x.brief, source: x.source, tags: x.tags || [], schedule: x.schedule })),
@@ -224,6 +234,9 @@ export default function Plans() {
   const navigate = useNavigate();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [plans, setPlans] = useState<PlanSummary[]>([]);
+  const [shared, setShared] = useState<SharedPlan[]>([]);
+  const { isOwner, inCompany } = useMe();
+  const ownerPublic = isOwner && !inCompany;
   const [plan, setPlan] = useState<Plan>(emptyPlan);
   const [selected, setSelected] = useState(NEW);
   const [status, setStatus] = useState('');
@@ -237,6 +250,7 @@ export default function Plans() {
 
   useEffect(() => { document.title = 'Планы · НейроМастер'; }, []);
   const refreshPlans = useCallback(() => api.get<{ plans: PlanSummary[] }>('/plans').then((d) => setPlans(d.plans || [])), []);
+  useEffect(() => { api.get<{ plans: SharedPlan[] }>('/plans/shared').then((d) => setShared(d.plans || [])).catch(() => {}); }, []);
   useEffect(() => {
     Promise.all([api.get<Catalog>('/catalog'), refreshPlans()]).then(([c]) => {
       setCatalog(c);
@@ -258,6 +272,17 @@ export default function Plans() {
   }, [plan.plan_id, plan.updated_at]);
 
   const open = async (id: string) => {
+    if (id.startsWith(SHARED)) {
+      const src = shared.find((p) => SHARED + p.plan_id === id);
+      if (!(await confirm({ title: `Добавить «${src?.title || 'стандартный план'}»?`, text: 'В компанию добавится своя копия стандартного плана — её можно править, изменения суперадмина её не затронут. Тексты сообщений сгенерируются по документам компании.', ok: 'Добавить' }))) return;
+      try {
+        const d = await api.post<Plan>(`/plans/shared/${enc(id.slice(SHARED.length))}/use`);
+        setPlan(withUids(d)); setSelected(d.plan_id!);
+        await refreshPlans();
+        setStatus('Стандартный план добавлен в компанию — отредактируйте под задачу.');
+      } catch (e) { setStatus(messageOf(e)); }
+      return;
+    }
     if (id === TEMPLATE) {
       if (!(await confirm({ title: 'Создать стандартный план?', text: 'В нём будут все этапы и подэтапы с датами отправки — дальше его можно поправить под себя.', ok: 'Создать' }))) return;
       setStatus('Создаю стандартный план…');
@@ -380,7 +405,7 @@ export default function Plans() {
         <div className="nm-field-row">
           <div data-tour="plan-select">
             <Field label="План">
-              <PlanPicker value={selected} plans={plans} onOpen={open} onDelete={removePlan} />
+              <PlanPicker value={selected} plans={plans} shared={shared} onOpen={open} onDelete={removePlan} />
             </Field>
           </div>
           <div data-tour="plan-title">
@@ -391,6 +416,12 @@ export default function Plans() {
           <Checkbox label="Сообщения одного дня — одной сессией" checked={!!plan.group_daily} onChange={(v) => setPlan({ ...plan, group_daily: v })} />
           <Help text="Все сообщения, запланированные на один день, придут вместе — во время первого из них и одним уведомлением, а не россыпью каждые час-два." />
         </div>
+        {ownerPublic && (
+          <div className="nm-row">
+            <Checkbox label="Стандартный план — для всех компаний" checked={!!plan.shared} onChange={(v) => setPlan({ ...plan, shared: v })} />
+            <Help text="После сохранения план появится у каждой компании в выборе плана («Стандартные планы НейроМастера»). Компания добавляет себе копию — ваши дальнейшие правки уже добавленные копии не меняют." />
+          </div>
+        )}
         <div className="nm-row-between nm-small nm-muted">
           <span>Этапов: {plan.stages.length} · сообщений: {messages} · длительность после выхода: {totalDays} дн.</span>
           {!plan.stages.length && <span>Не знаете, с чего начать — выберите «Стандартный план» и поправьте его.</span>}

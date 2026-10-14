@@ -24,7 +24,7 @@ export type AdminUser = {
   created_at?: string;
 };
 
-export type PlanSummary = { plan_id: string; title: string; role?: string; generated?: boolean; updated_at?: string };
+export type PlanSummary = { plan_id: string; title: string; role?: string; generated?: boolean; updated_at?: string; shared?: boolean };
 
 export type Duration = { value: number; unit: 'hours' | 'days' | 'weeks' | 'months' };
 
@@ -57,6 +57,7 @@ export type Plan = {
   title: string;
   role?: string;
   group_daily?: boolean;
+  shared?: boolean;           // стандартный план суперадмина — виден всем компаниям
   updated_at?: string;
   stages: Stage[];
   __demo?: boolean;
