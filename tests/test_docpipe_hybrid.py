@@ -93,7 +93,7 @@ def test_model_only_chooses_among_candidates(monkeypatch):
 
 def test_refine_ignores_ids_outside_candidates(monkeypatch):
     import deepseek
-    monkeypatch.setattr(pipeline, "REFINE", "local")
+    monkeypatch.setattr(pipeline, "REFINE", "deepseek")
     monkeypatch.setattr(pipeline, "_refine_off_until", 0.0)
     monkeypatch.setattr(deepseek, "chat", lambda *a, **k: '{"pick": ["b", "выдуманный"]}')
     m = type("M", (), {"profiles": [{"id": "a"}, {"id": "b"}]})()
