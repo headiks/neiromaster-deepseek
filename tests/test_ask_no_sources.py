@@ -45,7 +45,6 @@ def test_cached_answer_without_route_passes_response_model(monkeypatch):
     """Готовый ответ faq/section/human несёт в meta только sources — /ask не должен падать."""
     import qacache
     import rag
-    monkeypatch.setattr(rag.deepseek, "offline", lambda: False)
     monkeypatch.setattr(rag, "resolve_question", lambda q, h: {"standalone_question": q, "context_used": False})
     monkeypatch.setattr(qacache, "get", lambda q, p: {"answer": "Ответ специалиста.", "qa_id": 1,
                                                       "qa_source": "human"})
