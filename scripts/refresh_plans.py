@@ -7,19 +7,30 @@
 и известным catalog_id). Расписание, порядок, заголовки и ручные подэтапы не трогаются.
 Сгенерированные ответы не меняются — после обновления запусти «Догенерировать».
 
+Обходит общую схему и все компании (у каждой свои планы).
+
 Запуск на сервере:
-    source .venv/bin/activate
-    python refresh_plans.py
+    docker compose exec web python scripts/refresh_plans.py
 """
 import _path  # noqa: F401,E402 — backend/ в sys.path
 # ВАЖНО: config импортируется ПЕРВЫМ — при импорте он читает .env.production/.env в
 # окружение. Иначе db.py (импортируется из planner) зафиксирует DSN по умолчанию
 # (neiromaster:neiromaster) ещё до загрузки секретов и упрётся в ошибку пароля.
 import config  # noqa: F401  (нужен ради побочного эффекта: загрузка .env)
+import db
 import planner
+import provisioning
 
 
 def main():
+    refresh_schema("общая схема")
+    for schema in provisioning.schemas(fresh=True):
+        with db.use_schema(schema):
+            refresh_schema(schema)
+
+
+def refresh_schema(where: str):
+    print(f"== {where}")
     plans = planner.list_plans()
     if not plans:
         print("Планов нет.")
