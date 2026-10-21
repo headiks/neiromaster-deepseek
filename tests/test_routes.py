@@ -102,7 +102,7 @@ def test_every_private_route_requires_login():
         if not guarded:
             src = str(inspect.signature(endpoint))
             guarded = any(name in src for name in
-                          ("require_admin", "require_owner", "require_setup_done", "current_user"))
+                          ("require_admin", "require_owner", "require_full_access", "require_setup_done", "current_user"))
         if not guarded:
             # страницы отдают редирект на /login внутри обработчика
             guarded = any(g in (inspect.getsource(endpoint) or "") for g in ("page_for_admin", "page_for_globaltest"))
