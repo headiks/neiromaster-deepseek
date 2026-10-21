@@ -61,6 +61,8 @@ def test_tidy_long_lists_and_internal_systems():
     q = msgconvert.tidy_payload(p)
     assert q["intro"] == "Получите СИЗ." and q["items"] == [{"id": "b", "text": "Взять каску"}]
     assert msgconvert.tidy_payload(q) == q and msgconvert.tidy_payload(None) is None
+    m = msgconvert.tidy_payload({"type": "message", "text": "Возьмите каску. Выдача в транзакции ZSIZ."})
+    assert m["text"] == "Возьмите каску."
 
 
 def test_contacts_only_when_asked_to_reach_out():

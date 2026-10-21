@@ -225,7 +225,10 @@ def tidy_payload(payload):
     if not isinstance(payload, dict):
         return payload
     t = lambda v: tidy(v) if isinstance(v, str) else v  # noqa: E731
-    p = {**payload, "intro": t(payload.get("intro"))} if "intro" in payload else dict(payload)
+    p = dict(payload)
+    for k in ("intro", "text"):                               # text — у обычного сообщения (to_message)
+        if k in p:
+            p[k] = t(p[k])
     if isinstance(p.get("items"), list):
         items = [{**i, "text": t(i.get("text"))} if isinstance(i, dict) else i for i in p["items"]]
         p["items"] = [i for i in items if not isinstance(i, dict) or i.get("text")]   # вычищенный пункт — долой
