@@ -60,6 +60,8 @@ def register_page():
 
 @router.get("/help", response_class=HTMLResponse)
 @router.get("/help/admin", response_class=HTMLResponse)
+@router.get("/help/admin-memo", response_class=HTMLResponse)
+@router.get("/help/company", response_class=HTMLResponse)
 def help_page():
     """Инструкции для новичка и администратора — открыты без входа: ссылку отправляют заказчику."""
     return spa_html()

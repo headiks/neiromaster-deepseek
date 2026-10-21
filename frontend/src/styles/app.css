@@ -480,3 +480,6 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
   body { background: #fff !important; color: #000 !important; }
   .nm-guide { max-width: none; padding: 0; }
 }
+.nm-guide-nav { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: -8px 0 24px; font-size: 14px; }
+.nm-guide-nav a { color: var(--nm-muted); }
+.nm-guide-nav a.active { color: var(--nm-text); font-weight: 600; }
