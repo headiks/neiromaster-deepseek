@@ -8,13 +8,13 @@ import { Button, Logo } from '../../ui';
 function Page({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   useEffect(() => { document.title = `${title} · НейроМастер`; }, [title]);
   return (
-    <main className="nm-help">
-      <header className="nm-help-head">
+    <main className="nm-guide">
+      <header className="nm-guide-head">
         <span className="nm-row" style={{ gap: 10 }}><Logo /><b>НейроМастер</b></span>
         <Button size="sm" icon={Printer} onClick={() => window.print()} className="nm-noprint">Распечатать / сохранить PDF</Button>
       </header>
       <h1>{title}</h1>
-      <p className="nm-help-lead">{subtitle}</p>
+      <p className="nm-guide-lead">{subtitle}</p>
       {children}
     </main>
   );
@@ -108,7 +108,7 @@ export function AdminGuide() {
         <><b>В тексте ошибка или лишнее.</b> «Сообщения» → «Редактировать» у нужного сообщения. Если ошибка в самом документе — исправьте документ и загрузите заново.</>,
         <><b>Как всё выглядит для новичка.</b> См. <Link to="/help">инструкцию для новичка</Link>.</>,
       ]} />
-      <p className="nm-help-foot">Вопросы по работе системы — вашему контактному лицу в НейроМастере.</p>
+      <p className="nm-guide-foot">Вопросы по работе системы — вашему контактному лицу в НейроМастере.</p>
     </Page>
   );
 }

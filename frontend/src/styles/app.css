@@ -467,16 +467,16 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .nm-first-login .lucide { width: 12px; height: 12px; }
 
 /* ---------- Инструкции (/help, /help/admin) ---------- */
-.nm-help { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; line-height: 1.6; font-size: 16px; }
-.nm-help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
-.nm-help h1 { font-size: var(--nm-fs-h1); margin: 0 0 8px; letter-spacing: var(--nm-h-tracking); }
-.nm-help h2 { font-size: var(--nm-fs-h2); margin: 32px 0 8px; }
-.nm-help h3 { font-size: 17px; margin: 20px 0 6px; }
-.nm-help-lead { color: var(--nm-muted); font-size: 17px; margin: 0; }
-.nm-help li { margin: 6px 0; }
-.nm-help-foot { margin-top: 32px; color: var(--nm-muted); }
+.nm-guide { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; line-height: 1.6; font-size: 16px; }
+.nm-guide-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
+.nm-guide h1 { font-size: var(--nm-fs-h1); margin: 0 0 8px; letter-spacing: var(--nm-h-tracking); }
+.nm-guide h2 { font-size: var(--nm-fs-h2); margin: 32px 0 8px; }
+.nm-guide h3 { font-size: 17px; margin: 20px 0 6px; }
+.nm-guide-lead { color: var(--nm-muted); font-size: 17px; margin: 0; }
+.nm-guide li { margin: 6px 0; }
+.nm-guide-foot { margin-top: 32px; color: var(--nm-muted); }
 @media print {
   .nm-noprint { display: none !important; }
   body { background: #fff !important; color: #000 !important; }
-  .nm-help { max-width: none; padding: 0; }
+  .nm-guide { max-width: none; padding: 0; }
 }
