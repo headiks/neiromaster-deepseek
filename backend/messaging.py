@@ -294,6 +294,21 @@ def push_test(employee_id: str, title: str = "", body: str = "",
     return row_id
 
 
+def retidy_delivered() -> int:
+    """Уже доставленные сообщения — по текущим правилам текста (msgconvert.tidy): правки сборки
+    текста доходят и до того, что сотрудник уже видит во «Входящих». -> число обновлённых."""
+    import msgconvert
+    n = 0
+    for r in db.query("SELECT id, body, payload FROM scheduled_messages "
+                      "WHERE status IN ('delivered', 'read')") or []:
+        body, payload = msgconvert.tidy(r["body"]), msgconvert.tidy_payload(r["payload"])
+        if body != r["body"] or payload != r["payload"]:
+            db.execute("UPDATE scheduled_messages SET body = %s, payload = %s WHERE id = %s",
+                       (body, Json(payload) if payload is not None else None, r["id"]))
+            n += 1
+    return n
+
+
 def mark_read(employee_id: str, message_row_id: str) -> bool:
     """message_row_id — id строки инбокса. Принимаем и голый message_id: так отмечали
     уже установленные версии приложения (строка = <сотрудник>:<message_id>)."""

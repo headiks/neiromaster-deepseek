@@ -108,6 +108,9 @@ def _rerender_texts():
     n = planner.rerender_saved_texts()
     if n:
         print(f"Сообщения плана пересобраны по текущим правилам: {n}")
+    n = messaging.retidy_delivered()
+    if n:
+        print(f"Уже доставленные сообщения приведены к текущим правилам: {n}")
 
 
 def _prune_orphans():

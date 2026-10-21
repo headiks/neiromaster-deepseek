@@ -220,6 +220,23 @@ def fresh_points(text: str, points) -> list:
     return out
 
 
+def tidy_payload(payload):
+    """Уже доставленное сообщение (payload из convert) — по текущим правилам tidy()."""
+    if not isinstance(payload, dict):
+        return payload
+    t = lambda v: tidy(v) if isinstance(v, str) else v  # noqa: E731
+    p = {**payload, "intro": t(payload.get("intro"))} if "intro" in payload else dict(payload)
+    if isinstance(p.get("items"), list):
+        items = [{**i, "text": t(i.get("text"))} if isinstance(i, dict) else i for i in p["items"]]
+        p["items"] = [i for i in items if not isinstance(i, dict) or i.get("text")]   # вычищенный пункт — долой
+    if isinstance(p.get("questions"), list):
+        p["questions"] = [{**q, "text": t(q.get("text")), "explanation": t(q.get("explanation")),
+                           "options": [{**o, "text": t(o.get("text"))} if isinstance(o, dict) else o
+                                       for o in q.get("options") or []]}
+                          if isinstance(q, dict) else q for q in p["questions"]]
+    return p
+
+
 def _clean(content: dict) -> dict:
     """Копия envelope, где всё, что видит сотрудник, прошло tidy()."""
     c = dict(content or {})

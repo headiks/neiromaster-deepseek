@@ -55,6 +55,12 @@ def test_tidy_long_lists_and_internal_systems():
     assert t == "Спецодежду выдают на складе ПП. Распишитесь в карточке."
     assert msgconvert.tidy(t) == t
     assert msgconvert.drop_internal("Информация о транзакции хранится в базе.") == ""
+    # уже доставленное сообщение: пункты чек-листа и вопросы — тоже, повторно ничего не меняется
+    p = {"type": "checklist", "intro": "Получите СИЗ. Выдача отражается в SAP ERP.",
+         "items": [{"id": "a", "text": "Расписаться в ведомости НН.МБ-7.1"}, {"id": "b", "text": "Взять каску"}]}
+    q = msgconvert.tidy_payload(p)
+    assert q["intro"] == "Получите СИЗ." and q["items"] == [{"id": "b", "text": "Взять каску"}]
+    assert msgconvert.tidy_payload(q) == q and msgconvert.tidy_payload(None) is None
 
 
 def test_contacts_only_when_asked_to_reach_out():
