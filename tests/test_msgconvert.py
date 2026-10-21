@@ -45,6 +45,18 @@ def test_tidy_table_enums_paragraphs_and_terms():
     assert msgconvert.tidy(t) == t                                     # идемпотентно
 
 
+def test_tidy_long_lists_and_internal_systems():
+    """Замечания заказчика: «НЕЛЬЗЯ: а; б; в…» простынёй и «транзакции в СИЗ» в тексте новичку."""
+    items = [f"пункт номер {i} о том, чего делать нельзя на участке" for i in range(6)]
+    t = msgconvert.tidy("НЕЛЬЗЯ: " + "; ".join(items) + ".")
+    assert t.split("\n")[0] == "НЕЛЬЗЯ:" and t.count("\n• ") == 6
+    t = msgconvert.tidy("Спецодежду выдают на складе ПП. Выдача СИЗ на складах отражается в SAP ERP "
+                        "(транзакция ZSIZ/ZSIZ_V2) с формированием ведомости НН.МБ-7.1. Распишитесь в карточке.")
+    assert t == "Спецодежду выдают на складе ПП. Распишитесь в карточке."
+    assert msgconvert.tidy(t) == t
+    assert msgconvert.drop_internal("Информация о транзакции хранится в базе.") == ""
+
+
 def test_contacts_only_when_asked_to_reach_out():
     roles = lambda s: [c["role"] for c in msgconvert.contacts(s)]
     assert roles("Если что-то неясно — напишите наставнику.") == ["mentor"]

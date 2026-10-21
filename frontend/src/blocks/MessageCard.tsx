@@ -6,6 +6,7 @@ import { useRef, useState } from 'react';
 import { Check, MessageCircle } from 'lucide-react';
 import type { ContactRole, Msg } from '@shared/types';
 import { msgKicker, msgTime } from '@shared/format';
+import { ADDRESSEE, CONTACT_ROLES } from '@shared/status';
 import { isChecklist, isPicked, isQuestions, msgStats } from '@shared/progress';
 import { Button, Card, Progress, Textarea } from '../ui';
 import { ContactDialog } from './ContactDialog';
@@ -76,19 +77,17 @@ export function MessageCard({ m, onAnswer, wide }: { m: Msg; onAnswer: (m: Msg, 
   }
   const ratio = stats.kind === 'checklist' ? stats.done / (stats.total || 1)
     : stats.kind === 'quiz' || stats.kind === 'survey' ? stats.answered / (stats.total || 1) : 0;
-  const contacts = p?.contacts || [];
   return (
     <div ref={ref}>
     <Card as="article" aria-label={msgKicker(m)}>
       <div className="nm-card-kicker"><span>{msgKicker(m)}</span><time>{msgTime(m)}</time></div>
       {body}
-      {contacts.length > 0 && (
-        <div className="nm-row">
-          {contacts.map((c) => (
-            <Button key={c.role} size="sm" icon={MessageCircle} onClick={() => setContact(c.role)}>{c.label}</Button>
-          ))}
-        </div>
-      )}
+      <div className="nm-row" style={{ gap: 6 }}>
+        <span className="nm-small nm-muted">Написать:</span>
+        {CONTACT_ROLES.map((r) => (
+          <Button key={r} size="sm" variant="ghost" icon={MessageCircle} onClick={() => setContact(r)}>{ADDRESSEE[r].to}</Button>
+        ))}
+      </div>
       {stats.label && (
         <div className="nm-card-foot">
           {stats.kind !== 'text' && <Progress value={ratio} tone="ok" small label={stats.label} />}

@@ -15,6 +15,8 @@ export const ADDRESSEE: Record<string, { to: string; title: string }> = {
   manager: { to: "Руководителю", title: "Вопрос руководителю" },
   hr: { to: "В отдел кадров", title: "Вопрос в отдел кадров" },
 };
+/** Кнопки «Написать: наставнику / руководителю / в отдел кадров» — под каждым сообщением. */
+export const CONTACT_ROLES = ["mentor", "manager", "hr"] as const;
 
 export const ROLE: Record<string, StatusView> = {
   owner: { tone: "accent", label: "Суперадмин" },

@@ -58,6 +58,13 @@ def register_page():
     return spa_html()
 
 
+@router.get("/help", response_class=HTMLResponse)
+@router.get("/help/admin", response_class=HTMLResponse)
+def help_page():
+    """Инструкции для новичка и администратора — открыты без входа: ссылку отправляют заказчику."""
+    return spa_html()
+
+
 @router.get("/setup", response_class=HTMLResponse)
 def setup_page(request: Request):
     """Первичная настройка: замена выданного пароля своим."""

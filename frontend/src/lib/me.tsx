@@ -28,7 +28,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
   }, []);
   const reload = useCallback(async () => {
     // На входе и регистрации сессии нет — не спрашиваем (иначе 401 в консоли).
-    if (['/login', '/register'].includes(location.pathname)) { setLoading(false); return; }
+    if (['/login', '/register', '/help', '/help/admin'].includes(location.pathname)) { setLoading(false); return; }
     try {
       setMe(await api.me());
       setError(null);

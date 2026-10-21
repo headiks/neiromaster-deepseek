@@ -2,7 +2,8 @@
 // уведомления, больничный), «Как пользоваться», выход. Пароль сотрудник не меняет —
 // только администратор.
 import React, { useEffect, useState } from "react";
-import { Platform, View } from "react-native";
+import { Linking, Platform, View } from "react-native";
+import { API_BASE } from "../config";
 import { initials, ruDate } from "../../../shared/format";
 import { useData } from "../data";
 import { S, useTheme } from "../theme";
@@ -78,6 +79,7 @@ export default function Settings({ onLoggedOut, onHelp }: { onLoggedOut: () => v
              value={sick} onChange={setSick} disabled={sickBusy} />
       </GlassCard>
       <Button title="Как пользоваться" variant="secondary" icon={<HelpIcon color={c.text} size={19} />} onPress={onHelp} />
+      <Button title="Памятка новичку" variant="secondary" onPress={() => Linking.openURL(`${API_BASE}/help`)} />
       <Button title="Выйти" variant="danger" icon={<LogOutIcon color={c.danger} size={19} />}
               onPress={async () => { await unregisterForPush(); await logout(); onLoggedOut(); }} />
       <Txt v="small" color={c.muted} style={{ textAlign: "center" }}>Забыли пароль или нужно его сменить — обратитесь к администратору.</Txt>

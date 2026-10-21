@@ -385,6 +385,8 @@ def _strip_doc_refs(text: str) -> str:
     for rx in _SOURCE_HINT_RES:
         out = rx.sub("", out)
     out = re.sub(r"[ \t]+\n", "\n", out)
+    import msgconvert                         # SAP, транзакции, номера форм — не для новичка
+    out = "\n".join(msgconvert.drop_internal(line) for line in out.split("\n"))
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 _NO_INFO = ("точных сведений", "сведений об этом у меня нет")

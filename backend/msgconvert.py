@@ -54,7 +54,10 @@ def _list(value) -> list:
 _TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
 _ENUM_ITEM = re.compile(r"(?:^|(?<=\s))(\d{1,2})\)\s")
 _SENT_END = re.compile(r"(?:(?<=\w\w\w[.!?…])|(?<=[»)][.!?…]))\s+(?=[«\"(А-ЯЁA-Z])")
-PARA_MAX = 420          # длиннее — режем абзац по предложениям
+PARA_MAX = 300          # длиннее — режем абзац по предложениям (заказчик: «тяжело читать»)
+# Внутренняя кухня учётных систем (SAP, транзакции ZSIZ, формы НН.МБ-7.1): новичку с ней делать
+# нечего, а модель тянет её из регламентов вопреки промпту — предложение вырезаем целиком.
+_INTERNAL = re.compile(r"(?i:транзакц)|\bSAP\b|\bERP\b|\bZ[A-Z][A-Z0-9_]+\b|НН\.МБ")
 
 
 def _is_table_sep(line: str) -> bool:
@@ -84,6 +87,26 @@ def _split_enums(line: str) -> str:
     if len(nums) < 2 or nums[:2] != ["1", "2"]:
         return line
     return re.sub(r"\s+(?=\d{1,2}\)\s)", "\n", line)
+
+
+def _split_items(line: str) -> str:
+    """«НЕЛЬЗЯ: а; б; в» длиной в абзац -> заголовок и пункты столбиком."""
+    if len(line) <= PARA_MAX // 2 or line.count("; ") < 2 or line.lstrip().startswith(("•", "☐", "-")):
+        return line
+    head, colon, rest = line.partition(": ")
+    if not colon or len(head) > 60:
+        head, rest = "", line
+    items = [i.strip() for i in rest.split("; ") if i.strip()]
+    return "\n".join(([head + ":"] if head else []) + ["• " + i for i in items])
+
+
+def drop_internal(line: str) -> str:
+    """Строка без предложений про учётные системы и транзакции (_INTERNAL)."""
+    if not _INTERNAL.search(line):
+        return line
+    # Делим грубее, чем _SENT_END («ПП.», «7.1.» — тоже конец): иначе строка ушла бы целиком.
+    sents = re.split(r"(?<=[.!?…])\s+(?=[«\"(А-ЯЁA-Z])", line)
+    return " ".join(s for s in sents if not _INTERNAL.search(s)).strip()
 
 
 def _paragraphs(line: str) -> str:
@@ -142,8 +165,9 @@ def tidy(text: str) -> str:
     text = _s(text)
     if not text:
         return text
-    lines = _untable(text).split("\n")
-    text = "\n".join(_paragraphs(part) for line in lines for part in _split_enums(line).split("\n"))
+    parts = [p for line in _untable(text).split("\n")
+             for e in _split_enums(line).split("\n") for p in _split_items(e).split("\n")]
+    text = "\n".join(_paragraphs(drop_internal(p)) for p in parts)
     for rx, repl in _GLOSSARY:
         text = rx.sub(repl, text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()

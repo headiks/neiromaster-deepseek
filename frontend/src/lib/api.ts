@@ -2,7 +2,7 @@
 // 401 на любой странице, кроме входа, — сессия истекла: на форму входа.
 import { ApiError, createClient, errorText } from '@shared/api';
 
-const PUBLIC = ['/login', '/register', '/app'];
+const PUBLIC = ['/login', '/register', '/app', '/help', '/help/admin'];
 
 // Демо-сайт — только просмотр: изменяющий запрос не уходит, человек видит «недоступно».
 // Тот же список разрешённого проверяет сервер (backend/demo.py → verdict).

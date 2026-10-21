@@ -6,6 +6,7 @@ import React, { useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 import type { ContactRole, Msg } from "../../../shared/types";
 import { msgKicker, msgTime } from "../../../shared/format";
+import { ADDRESSEE, CONTACT_ROLES } from "../../../shared/status";
 import { isChecklist, isPicked, isQuestions, msgStats } from "../../../shared/progress";
 import { font, S, useTheme } from "../theme";
 import { Button, GlassCard, Progress, Txt } from "../ui";
@@ -91,7 +92,6 @@ export default function MessageCard({ m, onAnswer }: { m: Msg; onAnswer: (m: Msg
   }
   const ratio = stats.kind === "checklist" ? stats.done / (stats.total || 1)
     : stats.kind === "quiz" || stats.kind === "survey" ? stats.answered / (stats.total || 1) : 0;
-  const contacts = p?.contacts || [];
   return (
     <View ref={viewRef} collapsable={false}>
     <GlassCard>
@@ -100,11 +100,10 @@ export default function MessageCard({ m, onAnswer }: { m: Msg; onAnswer: (m: Msg
         <Txt v="micro" color={c.muted}>{msgTime(m)}</Txt>
       </View>
       {body}
-      {contacts.length ? (
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: S.sm }}>
-          {contacts.map((ct) => <Button key={ct.role} title={ct.label} variant="secondary" onPress={() => setContact(ct.role)} />)}
-        </View>
-      ) : null}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: S.sm }}>
+        <Txt v="small" color={c.muted}>Написать:</Txt>
+        {CONTACT_ROLES.map((r) => <Button key={r} title={ADDRESSEE[r].to} variant="secondary" onPress={() => setContact(r)} />)}
+      </View>
       {stats.label ? (
         <View style={{ flexDirection: "row", alignItems: "center", gap: S.md, marginTop: 2 }}>
           {stats.kind !== "text" ? <View style={{ width: 48 }}><Progress value={ratio} tone="ok" height={4} /></View> : null}
