@@ -31,13 +31,14 @@ const EMPTY: Profile = { full_name: '', position: '', department: '', phone: '',
 const ROLE_CONFIRM: Record<string, string> = {
   admin: 'Сделать администратором? Доступ ко всей компании: люди, планы, документы; заводит админов и кураторов.',
   curator: 'Сделать куратором? Доступ к документам, планам и людям своего отдела; заводит кураторов и сотрудников отдела.',
+  mentor: 'Сделать наставником? Увидит своих подопечных (у кого он указан наставником) и будет оценивать их по завершении этапов.',
   employee: 'Сделать обычным сотрудником? Доступ к админке пропадёт.',
 };
-const ROLE_OPTION: Record<string, string> = { employee: 'Сотрудник', curator: 'Куратор отдела', admin: 'Администратор компании' };
-const ROLE_NEW: Record<string, string> = { employee: 'Новый сотрудник', curator: 'Новый куратор', admin: 'Новый администратор' };
+const ROLE_OPTION: Record<string, string> = { employee: 'Сотрудник', mentor: 'Наставник', curator: 'Куратор отдела', admin: 'Администратор компании' };
+const ROLE_NEW: Record<string, string> = { employee: 'Новый сотрудник', mentor: 'Новый наставник', curator: 'Новый куратор', admin: 'Новый администратор' };
 /** Какие роли выдаёт актор (сервер проверяет сам): админ — админов, кураторов, сотрудников;
  *  куратор — кураторов и сотрудников своего отдела. */
-const assignableFor = (isFull: boolean) => (isFull ? ['employee', 'curator', 'admin'] : ['employee', 'curator']);
+const assignableFor = (isFull: boolean) => (isFull ? ['employee', 'mentor', 'curator', 'admin'] : ['employee', 'mentor', 'curator']);
 
 // ---------------------------------------------------------------- статистика сотрудника
 type Stats = {
@@ -298,7 +299,7 @@ function UserDialog({ open, user, users, plans, readyProfs, defaultPlanId, onClo
           <Field label="Телефон"><Input type="tel" value={f.phone} onChange={(e) => set('phone')(e.target.value)} placeholder="+7 900 000-00-00" /></Field>
           <Field label="Email"><Input type="email" value={f.email} onChange={(e) => set('email')(e.target.value)} placeholder="ivanov@company.ru" /></Field>
           {showRole && (
-            <Field label="Роль" help="Администратор — вся компания, заводит админов и кураторов. Куратор — свой отдел: нетиповые вопросы и ЧС, заводит кураторов и сотрудников отдела. Сотрудник — только свой кабинет.">
+            <Field label="Роль" help="Администратор — вся компания, заводит админов и кураторов. Куратор — свой отдел: нетиповые вопросы и ЧС, заводит кураторов и сотрудников отдела. Наставник — видит своих подопечных и оценивает их по завершении этапов. Сотрудник — только свой кабинет.">
               <Select value={role} onChange={(e) => setRole(e.target.value)}>
                 {assignable.map((r) => <option key={r} value={r}>{ROLE_OPTION[r]}</option>)}
               </Select>

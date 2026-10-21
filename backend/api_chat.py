@@ -205,6 +205,11 @@ def ask(req: QuestionRequest, request: Request, user: dict = Depends(require_set
         result = handle_question(question, history=history, current_stage_ids=_current_stage_ids(user),
                                  position=user.get("position"))
         result = _route_to_human(result, user)
+        if user.get("role") == users.ROLE_EMPLOYEE:           # аналитика вопросов новичков
+            import analytics
+            import rag
+            analytics.log_question(user, question, "escalated" if result.get("escalated")
+                                   else "answered" if rag.has_answer(result.get("answer")) else "no_answer")
         result["elapsed_time"] = time.time() - start
         result["session_id"] = session_id
         append_history(session_id, question, result.get("answer"), owner_id=user["id"])

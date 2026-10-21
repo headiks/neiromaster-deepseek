@@ -52,9 +52,10 @@ import api_people
 import api_activity
 import api_queue
 import api_companies
+import api_analytics
 
 ROUTERS = (api_pages, api_accounts, api_chat, api_documents,
-           api_knowledge, api_plans, api_people, api_activity, api_queue, api_companies, demo)
+           api_knowledge, api_plans, api_people, api_activity, api_queue, api_companies, api_analytics, demo)
 
 
 def _step(name: str, fn):

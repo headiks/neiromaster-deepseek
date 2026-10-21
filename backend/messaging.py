@@ -209,6 +209,8 @@ def dispatch_all() -> int:
             try:
                 ensure_all()
                 total += dispatch_due()
+                import reviews
+                reviews.ensure_requests()          # этап завершён -> наставнику запрос оценки
             except Exception as e:
                 print(f"[scheduler] схема {schema or 'public'}: {e}")
     return total

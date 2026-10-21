@@ -45,6 +45,19 @@ def root(request: Request):
     # сотрудника с приветствием: своего плана адаптации у них нет.
     if users.is_admin(user):
         return RedirectResponse(url="/admin", status_code=303)
+    if user.get("role") == users.ROLE_MENTOR:
+        return RedirectResponse(url="/mentor", status_code=303)
+    return spa_html()
+
+
+@router.get("/mentor", response_class=HTMLResponse)
+def mentor_page(request: Request):
+    """«Подопечные» наставника (и админа/куратора, у которых есть подопечные)."""
+    user = session_user(request)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if user.get("must_change_credentials"):
+        return RedirectResponse(url="/setup", status_code=303)
     return spa_html()
 
 

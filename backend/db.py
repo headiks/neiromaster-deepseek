@@ -287,6 +287,38 @@ SCHEMA_STATEMENTS = (
     # Позиция в плане (этап -> подэтап): сообщения одного времени (пачка за день, догонка
     # после позднего назначения) показываются строго в порядке этапов, а не вперемешку.
     "ALTER TABLE scheduled_messages ADD COLUMN IF NOT EXISTS seq INT",
+    # Оценка наставника по завершении этапа (reviews.py): запрос создаёт планировщик
+    # (status=requested), наставник заполняет (done). Одна оценка на сотрудника и этап.
+    """
+    CREATE TABLE IF NOT EXISTS stage_reviews (
+        id           TEXT PRIMARY KEY,
+        employee_id  TEXT NOT NULL,
+        stage_id     TEXT NOT NULL,
+        stage_title  TEXT NOT NULL DEFAULT '',
+        mentor_id    TEXT,
+        status       TEXT NOT NULL DEFAULT 'requested',
+        scores       JSONB,
+        metrics      JSONB,
+        decision     TEXT,
+        comment      TEXT,
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        done_at      TIMESTAMPTZ,
+        UNIQUE (employee_id, stage_id)
+    )
+    """,
+    # Журнал вопросов ассистенту — для аналитики (организационные / рабочие, что без ответа).
+    # Текст вопроса зашифрован, как прочие ПДн; категорию проставляет analytics при показе.
+    """
+    CREATE TABLE IF NOT EXISTS ask_log (
+        id        BIGSERIAL PRIMARY KEY,
+        ts        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        user_id   TEXT,
+        question  TEXT NOT NULL,
+        outcome   TEXT NOT NULL,
+        category  TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_ask_log_ts ON ask_log(ts)",
     # Push-токены устройств сотрудника (Expo Push): одно устройство = один токен.
     # По ним шлём пуш при доставке сообщения плана. token — PK (при переустановке
     # приложения приходит новый; старый протухнет и будет вычищен по ответу Expo).

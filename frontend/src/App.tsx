@@ -29,6 +29,8 @@ import Messages from './pages/admin/Messages';
 import Questions from './pages/admin/Questions';
 import Companies from './pages/admin/Companies';
 import Leads from './pages/admin/Leads';
+import Analytics from './pages/admin/Analytics';
+import Mentees from './pages/mentor/Mentees';
 import Logs from './pages/service/Logs';
 import PlansDb from './pages/service/PlansDb';
 import NotifyTest from './pages/service/NotifyTest';
@@ -74,8 +76,9 @@ function AdminLayout() {
 
 /** «/» — кабинет сотрудника. Персоналу своего плана нет: сразу в рабочую панель. */
 function Home() {
-  const { isAdmin } = useMe();
+  const { isAdmin, me } = useMe();
   if (isAdmin) return <Navigate to="/admin" replace />;
+  if (me?.role === 'mentor') return <Navigate to="/mentor" replace />;
   return <ErrorBoundary where="cabinet"><CabinetProvider><Cabinet /></CabinetProvider></ErrorBoundary>;
 }
 
@@ -118,10 +121,12 @@ export default function App() {
                 <Route element={<Protected />}>
                   <Route path="/" element={<Home />} />
                   <Route path="/admin" element={<AdminHome />} />
+                  <Route path="/mentor" element={<AppShell><ErrorBoundary where="mentor"><Mentees /></ErrorBoundary></AppShell>} />
                   <Route element={<AdminLayout />}>
                     <Route path="/admin/companies" element={<OwnerOnly><Companies /></OwnerOnly>} />
                     <Route path="/admin/leads" element={<OwnerOnly><Leads /></OwnerOnly>} />
                     <Route path="/admin/users" element={<Users />} />
+                    <Route path="/admin/analytics" element={<Analytics />} />
                     <Route path="/admin/plans" element={<Plans />} />
                     <Route path="/admin/documents" element={<Documents />} />
                     <Route path="/admin/messages" element={<Messages />} />

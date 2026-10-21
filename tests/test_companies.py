@@ -340,3 +340,74 @@ def test_shared_standard_plans(env, world):
     # админ компании «для всех» не отметит: флаг остаётся как был
     r = a.post("/plans", json={"title": "Своё", "shared": True, "stages": stages}, headers=ORIGIN)
     assert not r.json()["shared"]
+
+
+def test_mentor_reviews_tests_and_questions(env, world):
+    """Наставник: этап завершён -> запрос оценки и уведомление; оценивает только своих.
+    Аналитика: статусы мини-тестов и пересдача; журнал вопросов по категориям."""
+    import db
+    import reviews
+    import analytics
+    from psycopg.types.json import Json
+    a = _as(env, world, "alfa")
+    stages = [{"title": "Первая неделя", "anchor": "from_start", "duration": {"value": 7, "unit": "days"},
+               "substages": [{"title": "Пропуск", "kind": "message", "brief": "Пропуск", "schedule": {"day": 1, "time": "09:00"}}]}]
+    plan = a.post("/plans", json={"title": "План наставника", "stages": stages}, headers=ORIGIN).json()
+    stage_id = plan["stages"][0]["id"]
+    mentor = a.post("/users", json={"full_name": "Наставников Николай Николаевич", "role": "mentor"}, headers=ORIGIN).json()
+    assert mentor["role"] == "mentor"
+    emp = a.post("/users", json={"full_name": "Новиков Новик Новикович", "position": "Водитель",
+                                 "mentor": "Наставников Николай Николаевич"}, headers=ORIGIN).json()
+    quiz = {"type": "quiz", "questions": [{"id": "q1", "text": "?", "options": [{"id": "o1", "text": "да", "correct": True},
+                                                                                {"id": "o2", "text": "нет"}]}]}
+    with db.use_schema("cab_alfa"):
+        # план — прямо в базе: назначение через API строит расписание фоном (гонка с тестом)
+        db.execute("UPDATE users SET plan_id = %s WHERE id = %s", (plan["plan_id"], emp["id"]))
+        db.execute("INSERT INTO scheduled_messages (id, employee_id, plan_id, message_id, stage_id, title, body, "
+                   "send_at, status, delivered_at) VALUES (%s, %s, %s, 'm1', %s, 'Первая неделя — Пропуск', 'x', "
+                   "now(), 'delivered', now())", (emp["id"] + ":m1", emp["id"], plan["plan_id"], stage_id))
+        db.execute("INSERT INTO scheduled_messages (id, employee_id, plan_id, message_id, stage_id, title, body, kind, "
+                   "payload, answers, send_at, status, delivered_at) VALUES (%s, %s, %s, 'm2', %s, 'Первая неделя — Тест', "
+                   "'x', 'quiz', %s, %s, now(), 'read', now())",
+                   (emp["id"] + ":m2", emp["id"], plan["plan_id"], stage_id, Json(quiz), Json({"q1": "o2"})))
+        assert reviews.ensure_requests() == 1 and reviews.ensure_requests() == 0      # запрос — один раз
+        note = db.query("SELECT title FROM scheduled_messages WHERE employee_id = %s AND plan_id IS NULL",
+                        (mentor["id"],), "one")
+        assert note and "Новиков" in note["title"]                                     # наставник уведомлён
+        analytics.log_question({"id": emp["id"]}, "Когда выдают аванс?", "answered")
+        analytics.log_question({"id": emp["id"]}, "Как правильно настроить станок?", "no_answer")
+    # наставник входит и оценивает
+    _first_login(a, mentor["username"], mentor["temp_password"], "mentor-pass-123")
+    assert a.get("/api/me").json()["mentees"] == 1
+    card = a.get("/api/mentor/mentees").json()["mentees"][0]
+    st = card["stages"][0]
+    assert st["completed"] and st["review"]["status"] == "requested"
+    assert [m["key"] for m in card["metrics"]] == ["norm", "defects", "violations"]
+    scores = {k: 4 for k, _ in reviews.CRITERIA}
+    assert a.post(f"/api/reviews/{emp['id']}/{stage_id}", json={"scores": {"safety": 5}, "decision": "ready"},
+                  headers=ORIGIN).status_code == 400                                  # не все критерии
+    r = a.post(f"/api/reviews/{emp['id']}/{stage_id}", json={"scores": scores, "metrics": {"norm": "92"},
+               "decision": "risk", "comment": "Медленно"}, headers=ORIGIN)
+    assert r.status_code == 200 and r.json()["status"] == "done" and r.json()["metrics"] == {"norm": 92.0}
+    assert a.get("/admin/users", follow_redirects=False).status_code in (302, 303)   # админки у наставника нет
+    # чужой новичок наставнику недоступен
+    other = next(u for u in _as(env, world, "alfa").get("/users").json()["users"] if u["full_name"] == "Рабочий Роман")
+    _login(a, mentor["username"], "mentor-pass-123")
+    assert a.post(f"/api/reviews/{other['id']}/{stage_id}", json={"scores": scores, "decision": "ready"},
+                  headers=ORIGIN).status_code == 404
+    # аналитика у админа компании
+    a = _as(env, world, "alfa")
+    row = next(e for e in a.get("/api/analytics/reviews").json()["employees"] if e["id"] == emp["id"])
+    assert row["last"]["decision"] == "risk" and row["last"]["avg"] == 4.0
+    t = next(x for x in a.get("/api/analytics/tests").json()["tests"] if x["employee_id"] == emp["id"])
+    assert t["status"] == "failed" and (t["right"], t["total"]) == (0, 1)
+    assert a.post(f"/api/analytics/tests/{t['id']}/retake", headers=ORIGIN).status_code == 200
+    t = next(x for x in a.get("/api/analytics/tests").json()["tests"] if x["employee_id"] == emp["id"])
+    assert t["status"] == "waiting"
+    q = a.get("/api/analytics/questions").json()
+    e = q["by_employee"][emp["id"]]
+    assert (e["total"], e["org"], e["work"], e["unanswered"]) == (2, 1, 1, 1)
+    assert {i["question"] for i in q["items"]} >= {"Когда выдают аванс?", "Как правильно настроить станок?"}
+    # чужая компания этих данных не видит
+    b = _as(env, world, "beta")
+    assert emp["id"] not in b.get("/api/analytics/questions").json()["by_employee"]

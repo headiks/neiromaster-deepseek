@@ -174,8 +174,8 @@ def test_last_company_admin_guard():
 def test_role_rules():
     """Админ заводит админов, кураторов, сотрудников; куратор — кураторов и сотрудников отдела."""
     adm = {"id": "c", "role": "admin", "department": ""}
-    assert users.assignable_roles(adm) == ("admin", "curator", "employee")
-    assert users.assignable_roles(CUR_LOG) == ("curator", "employee")
+    assert users.assignable_roles(adm) == ("admin", "curator", "mentor", "employee")
+    assert users.assignable_roles(CUR_LOG) == ("curator", "mentor", "employee")
     assert users.can_manage(adm, {"id": "c2", "role": "admin"}) and not users.can_manage(adm, OWNER)
     assert users.can_manage(CUR_LOG, {"id": "c3", "role": "curator", "department": "Логистика"})
     assert not users.can_manage(CUR_LOG, CUR_SVAR) and not users.can_manage(CUR_LOG, adm)

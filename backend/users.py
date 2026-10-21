@@ -44,6 +44,8 @@ LEGACY_EMPLOYEES_PATH = DATA_DIR / "employees.json"
 #              компании, статистика, заявки, журнал всех компаний; открывает любую компанию.
 #   admin    — администратор компании: вся компания, заводит админов, кураторов, сотрудников.
 #   curator  — куратор отдела: только свой отдел, заводит кураторов и сотрудников отдела.
+#   mentor   — наставник: раздел «Подопечные» — новички, у которых он указан наставником,
+#              их ход адаптации и оценка по завершении этапа (reviews.py). Админ-панели нет.
 #   employee — сотрудник: свой кабинет.
 
 # Суперадмин: логин и пароль заданы жёстко, в коде — только scrypt-хэш «соль:хэш» пароля.
@@ -55,8 +57,9 @@ SUPERADMIN_HASH = "f5433e89ab3860d5230b947bbe679536:3e7d4e91f9abed9543cde7f83158
 ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
 ROLE_CURATOR = "curator"
+ROLE_MENTOR = "mentor"
 ROLE_EMPLOYEE = "employee"
-ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
+ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE)
 ADMIN_ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_CURATOR)     # есть админ-панель
 FULL_ACCESS_ROLES = (ROLE_OWNER, ROLE_ADMIN)             # видят всю свою схему, не только отдел
 
@@ -362,13 +365,32 @@ def is_curator(user: dict) -> bool:
 
 
 def assignable_roles(actor: dict) -> tuple:
-    """Какие роли актор вправе выдавать. Админ компании (и суперадмин) — админов, кураторов и
-    сотрудников; куратор — кураторов и сотрудников своего отдела. Роль owner не выдаётся."""
+    """Какие роли актор вправе выдавать. Админ компании (и суперадмин) — админов, кураторов,
+    наставников и сотрудников; куратор — кураторов, наставников и сотрудников своего отдела.
+    Роль owner не выдаётся."""
     if is_full_access(actor):
-        return (ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
+        return (ROLE_ADMIN, ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE)
     if is_curator(actor):
-        return (ROLE_CURATOR, ROLE_EMPLOYEE)
+        return (ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE)
     return ()
+
+
+def mentor_of(employee: dict, all_users: list | None = None) -> Optional[dict]:
+    """Наставник сотрудника — пользователь, чьё ФИО указано в карточке в поле «Наставник».
+    shortcut: связь по ФИО (поле — текст для подстановки в сообщения); однофамильцы с одинаковым
+    ФИО неразличимы — при появлении таких перейти на mentor_id."""
+    name = (employee.get("mentor") or "").strip().lower()
+    if not name:
+        return None
+    return next((u for u in (all_users if all_users is not None else list_users())
+                 if (u.get("full_name") or "").strip().lower() == name and u["id"] != employee.get("id")), None)
+
+
+def mentees(mentor: dict, all_users: list | None = None) -> list:
+    """Подопечные наставника: сотрудники, у которых он указан наставником."""
+    name = (mentor.get("full_name") or "").strip().lower()
+    return [u for u in (all_users if all_users is not None else list_users())
+            if name and u.get("role") == ROLE_EMPLOYEE and (u.get("mentor") or "").strip().lower() == name]
 
 
 def dir_slug(user) -> str:
@@ -451,8 +473,8 @@ def can_manage(actor: dict, target: dict) -> bool:
     if is_owner(actor) or target.get("id") == actor.get("id"):
         return True
     if is_full_access(actor):
-        return target.get("role") in (ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
-    return target.get("role") in (ROLE_CURATOR, ROLE_EMPLOYEE) and same_department(actor, target)
+        return target.get("role") in (ROLE_ADMIN, ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE)
+    return target.get("role") in (ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE) and same_department(actor, target)
 
 
 def ensure_can_manage(actor: dict, target: dict):
@@ -989,8 +1011,12 @@ if __name__ == "__main__":
     assert len(visible_users(_cadm, _all)) == 5
     assert can_manage(_cadm, _adm) and can_manage(_cadm, _all[3]) and not can_manage(_cadm, _owner)
     assert can_manage(_cadm, {"id": "c2", "role": ROLE_ADMIN})
-    assert assignable_roles(_cadm) == (ROLE_ADMIN, ROLE_CURATOR, ROLE_EMPLOYEE)
-    assert assignable_roles(_adm) == (ROLE_CURATOR, ROLE_EMPLOYEE) and assignable_roles(_all[2]) == ()
+    assert assignable_roles(_cadm) == (ROLE_ADMIN, ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE)
+    assert assignable_roles(_adm) == (ROLE_CURATOR, ROLE_MENTOR, ROLE_EMPLOYEE) and assignable_roles(_all[2]) == ()
+    # наставник и подопечные — по ФИО в поле «Наставник»
+    _m = {"id": "m", "role": ROLE_MENTOR, "full_name": "Петров Пётр"}
+    _n = {"id": "n", "role": ROLE_EMPLOYEE, "full_name": "Новиков Н", "mentor": " петров пётр "}
+    assert mentor_of(_n, [_m, _n]) is _m and mentees(_m, [_m, _n]) == [_n] and mentor_of(_m, [_m]) is None
     # суперадмин из кода: хэш разбирается, учётку через интерфейс не поменять
     assert all(len(x) in (32, 64) for x in superadmin_hash())
     _sa = {"id": "s", "role": ROLE_OWNER, "username": SUPERADMIN_USERNAME}

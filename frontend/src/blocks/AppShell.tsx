@@ -3,7 +3,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
-  BookOpen, Building2, CalendarRange, ClipboardList, Database, FlaskConical, GraduationCap, House, Inbox, KeyRound, LogOut, MessageCircleQuestion, MessagesSquare, Moon, Settings, Smartphone, Sun, Users,
+  BarChart3, BookOpen, Building2, UserCheck, CalendarRange, ClipboardList, Database, FlaskConical, GraduationCap, House, Inbox, KeyRound, LogOut, MessageCircleQuestion, MessagesSquare, Moon, Settings, Smartphone, Sun, Users,
 } from 'lucide-react';
 import { initials } from '@shared/format';
 import { ROLE } from '@shared/status';
@@ -23,6 +23,7 @@ export const ADMIN_NAV = [
   { to: '/admin/documents', label: 'Документы', icon: Database, tour: 'nav-documents' },
   { to: '/admin/messages', label: 'Сообщения', icon: MessagesSquare, tour: 'nav-messages' },
   { to: '/admin/questions', label: 'Вопросы', icon: MessageCircleQuestion, tour: 'nav-questions' },
+  { to: '/admin/analytics', label: 'Аналитика', icon: BarChart3, tour: 'nav-analytics' },
 ];
 
 export async function logout() {
@@ -90,7 +91,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       <aside className="nm-sidebar" aria-label="Навигация">
         <a className="nm-brand" href="/" onClick={(e) => { e.preventDefault(); navigate('/'); }}><Logo /><span>НейроМастер</span></a>
         <nav className="nm-nav" aria-label="Разделы">
-          {!isAdmin && (
+          {(me?.role === 'mentor' || (isAdmin && !!me?.mentees)) && (
+            <div className="nm-nav-group">
+              <div className="nm-nav-label">Наставник</div>
+              <NavLink to="/mentor" className="nm-nav-item">
+                <span><UserCheck aria-hidden />Подопечные</span><Count n={me?.mentees} />
+              </NavLink>
+            </div>
+          )}
+          {!isAdmin && me?.role !== 'mentor' && (
             <div className="nm-nav-group">
               <div className="nm-nav-label">Сотрудник</div>
               <NavLink to="/" end className="nm-nav-item" data-tour="nav-cabinet">

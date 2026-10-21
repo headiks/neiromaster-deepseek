@@ -139,7 +139,9 @@ def api_me(request: Request, user: dict = Depends(current_user)):
     return {**users.public_view(user),
             # Суперадмин в открытой компании / админ, за которого вошёл суперадмин.
             "company": schema or "", "company_name": provisioning.company_name(schema) if schema else "",
-            "owner_return": bool(request.cookies.get(auth.OWNER_RETURN_COOKIE))}
+            "owner_return": bool(request.cookies.get(auth.OWNER_RETURN_COOKIE)),
+            # Сколько новичков у него подопечными — пункт «Подопечные» в меню. Сотруднику не считаем.
+            "mentees": len(users.mentees(user)) if user.get("role") != users.ROLE_EMPLOYEE else 0}
 
 
 @router.post("/api/return-to-owner")
@@ -226,6 +228,8 @@ def api_ask_person(body: DirectQuestion, request: Request, user: dict = Depends(
         raise HTTPException(status_code=400, detail="Неизвестный адресат")
     security.limit(request, "ask-person", 10, 60, key=user["id"])
     entry = questions.record(user, text, None, questions.REASON_DIRECT, addressee=body.to)
+    import analytics
+    analytics.log_question(user, text, "to_person")
     return {"question": {k: entry[k] for k in ("id", "created_at", "question", "status", "addressee")}}
 
 
