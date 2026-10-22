@@ -411,7 +411,8 @@ def test_mentor_reviews_tests_and_questions(env, world):
     # чужая компания этих данных не видит
     b = _as(env, world, "beta")
     assert emp["id"] not in b.get("/api/analytics/questions").json()["by_employee"]
-    # сводка по выборке, карточка сотрудника и Excel-отчёт
+    # сводка по выборке, карточка сотрудника и Excel-отчёт (клиент общий — снова входим в alfa)
+    a = _as(env, world, "alfa")
     ov = a.get("/api/analytics/overview", params={"mentor": "наставников николай николаевич"}).json()
     assert [r["id"] for r in ov["employees"]] == [emp["id"]]
     row = ov["employees"][0]
@@ -421,10 +422,10 @@ def test_mentor_reviews_tests_and_questions(env, world):
     assert "Водитель" in a.get("/api/analytics/filters").json()["positions"]
     card = a.get(f"/api/analytics/employee/{emp['id']}").json()
     assert card["full_name"] == emp["full_name"] and len(card["tests"]) == 1 and len(card["questions"]) == 2
-    assert b.get(f"/api/analytics/employee/{emp['id']}").status_code == 404
     rep = a.get("/api/analytics/report.xlsx", params={"position": "Водитель"})
     assert rep.status_code == 200 and rep.content[:2] == b"PK"
     import io
     from openpyxl import load_workbook
     cells = [c.value for line in load_workbook(io.BytesIO(rep.content)).active.iter_rows() for c in line]
     assert emp["full_name"] in cells and "Выборка: Должность: Водитель" in cells
+    assert _as(env, world, "beta").get(f"/api/analytics/employee/{emp['id']}").status_code == 404
