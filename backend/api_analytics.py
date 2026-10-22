@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 import activitylog
 import analytics
+import demo
 import reviews
 import stats
 import users
@@ -40,8 +41,9 @@ def _people(actor: dict, f: dict | None = None) -> list:
     """Сотрудники (новички), которых актор видит в аналитике, — с фильтром выборки."""
     f = f or {}
     same = lambda a, b: (a or "").strip().casefold() == b.casefold()
+    # песочницы посетителей демо — не новички компании, в аналитике только мешают
     return [u for u in users.visible_users(actor, users.list_users()) if u.get("role") == users.ROLE_EMPLOYEE
-            and all(same(u.get(k), f[k]) for k in ("department", "mentor", "position") if k in f)
+            and not demo.is_sandbox(u) and all(same(u.get(k), f[k]) for k in ("department", "mentor", "position") if k in f)
             and (f.get("q", "").casefold() in (u.get("full_name") or "").casefold())]
 
 
