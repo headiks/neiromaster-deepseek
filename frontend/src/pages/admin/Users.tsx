@@ -14,7 +14,7 @@ import { useToast } from '../../lib/toast';
 import type { AdminUser, PlanSummary, ScheduleMessage } from '../../lib/types';
 import { useTourHooks } from '../../tour';
 import {
-  Badge, Button, Callout, Card, Empty, Field, Input, PageHeader, Progress, Select, Spinner, StatusBadge, Textarea,
+  Badge, Button, Callout, Card, Empty, Field, Input, PageHeader, Select, Spinner, StatusBadge, Textarea,
 } from '../../ui';
 import { DataTable, type Column } from '../../ui/DataTable';
 import { Dialog } from '../../ui/Dialog';
@@ -23,6 +23,7 @@ import { Combobox } from '../../ui/Combobox';
 import { Menu } from '../../ui/Menu';
 import { useConfirm } from '../../ui/confirm';
 import { NextStep } from '../../blocks/NextStep';
+import { EmployeeCard, mainReading, toneOf, type Stats } from '../../blocks/EmployeeCard';
 
 const PROFILE_FIELDS = ['full_name', 'position', 'department', 'phone', 'email', 'mentor', 'manager', 'plan_id', 'start_date', 'notes'] as const;
 type Profile = Record<(typeof PROFILE_FIELDS)[number], string>;
@@ -39,74 +40,6 @@ const ROLE_NEW: Record<string, string> = { employee: 'Новый сотрудн�
 /** Какие роли выдаёт актор (сервер проверяет сам): админ — админов, кураторов, сотрудников;
  *  куратор — кураторов и сотрудников своего отдела. */
 const assignableFor = (isFull: boolean) => (isFull ? ['employee', 'mentor', 'curator', 'admin'] : ['employee', 'mentor', 'curator']);
-
-// ---------------------------------------------------------------- статистика сотрудника
-type Stats = {
-  stage: string; progress: number; delivered: number; total: number; read: number; reaction_min: number | null;
-  reading: { read: number; skim: number; scroll: number };
-  tests: { given: number; passed: number; percent: number | null }; engagement: number | null;
-};
-type StatsDetail = Stats & { messages: { id: string; title: string; kind: string; delivered_at: string; opened_at: string;
-  reaction_min: number | null; view_s: number; expected_s: number; reading: 'read' | 'skim' | 'scroll' | null;
-  quiz?: { right: number; answered: number; total: number } }[] };
-const READING: Record<string, { tone: 'ok' | 'warn' | 'danger'; label: string }> = {
-  read: { tone: 'ok', label: 'читает' }, skim: { tone: 'warn', label: 'бегло' }, scroll: { tone: 'danger', label: 'пролистывает' },
-};
-const toneOf = (v: number | null | undefined, ok = 70, warn = 40) => (v == null ? 'muted' : v >= ok ? 'ok' : v >= warn ? 'warn' : 'danger');
-const minutes = (m: number | null | undefined) => (m == null ? '—' : m < 60 ? `${m} мин` : m < 48 * 60 ? `${Math.round(m / 60)} ч` : `${Math.round(m / 1440)} дн`);
-const mainReading = (r: Stats['reading']) => {
-  const [k, n] = Object.entries(r).sort((a, b) => b[1] - a[1])[0] || [];
-  return n ? READING[k] : null;
-};
-
-function StatsDialog({ user, onClose }: { user: AdminUser | null; onClose: () => void }) {
-  const [d, setD] = useState<StatsDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    setD(null); setError(null);
-    if (user) api.get<StatsDetail>(`/users/${enc(user.id)}/stats`).then(setD).catch((e) => setError(messageOf(e)));
-  }, [user]);
-  if (!user) return null;
-  const main = d ? mainReading(d.reading) : null;
-  return (
-    <Dialog open onClose={onClose} wide title={`Статистика: ${user.full_name}`}
-            subtitle="Этап, мини-тесты и вовлечённость: как быстро открывает новые сообщения и читает ли их (время на экране против нужного для чтения)."
-            footer={<Button variant="primary" onClick={onClose}>Закрыть</Button>}>
-      {error ? <Callout tone="danger">{error}</Callout> : !d ? <Spinner /> : !d.total ? (
-        <Callout tone="accent">Сообщений плана у сотрудника пока нет — статистика появится после первых сообщений.</Callout>
-      ) : (
-        <div className="nm-stack" style={{ gap: 14 }}>
-          <div className="nm-stat-grid">
-            <div><div className="nm-micro nm-muted">Этап</div><b>{d.stage || '—'}</b>
-              <Progress value={d.progress} small label="Пройдено по плану" /><div className="nm-micro nm-muted">{d.delivered} из {d.total} сообщений</div></div>
-            <div><div className="nm-micro nm-muted">Мини-тесты</div>
-              <b>{d.tests.percent == null ? '—' : `${d.tests.percent}% верных`}</b>
-              <div className="nm-micro nm-muted">пройдено {d.tests.passed} из {d.tests.given}</div></div>
-            <div><div className="nm-micro nm-muted">Вовлечённость</div>
-              <Badge tone={toneOf(d.engagement)}>{d.engagement == null ? '—' : `${d.engagement} / 100`}</Badge>
-              <div className="nm-micro nm-muted">прочитано {d.read} из {d.delivered} · открывает через {minutes(d.reaction_min)}{main ? ` · ${main.label}` : ''}</div></div>
-          </div>
-          <div className="nm-table-wrap">
-            <table className="nm-edit-table" style={{ fontSize: 13 }}>
-              <thead><tr><th>Сообщение</th><th>Открыл через</th><th>На экране</th><th>Чтение</th><th>Тест</th></tr></thead>
-              <tbody>
-                {d.messages.map((m) => (
-                  <tr key={m.id}>
-                    <td>{m.title}</td>
-                    <td className="nm-muted">{m.opened_at ? minutes(m.reaction_min) : 'не открыл'}</td>
-                    <td className="nm-muted">{m.view_s ? `${m.view_s} с из ~${m.expected_s} с` : '—'}</td>
-                    <td>{m.reading ? <Badge tone={READING[m.reading].tone}>{READING[m.reading].label}</Badge> : '—'}</td>
-                    <td>{m.quiz ? (m.quiz.answered ? `${m.quiz.right} из ${m.quiz.total}` : 'не пройден') : ''}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </Dialog>
-  );
-}
 
 // ---------------------------------------------------------------- штатное расписание
 type StaffRow = { full_name?: string; position?: string; department?: string; start_date?: string; exists?: boolean; foreign?: boolean };
@@ -472,7 +405,9 @@ export default function Users() {
         : null) },
     { key: 'user', width: 'minmax(220px, 2.2fr)', title: 'Пользователь', render: (u) => (
       <>
-        <div className="nm-cell-title">{u.full_name}</div>
+        <div className="nm-cell-title">{u.role === 'employee'
+          ? <button type="button" className="nm-link" style={{ color: 'inherit', fontWeight: 'inherit' }} onClick={() => setStatsOf(u)} title="Карточка сотрудника">{u.full_name}</button>
+          : u.full_name}</div>
         <div className="nm-cell-sub">{u.username ? <>@{u.username}{u.temp_password && <> · пароль: <code className="nm-code">{u.temp_password}</code></>}</>
           : <span className="nm-warn-text">нет логина — выдайте доступ</span>}</div>
         <div className="nm-cell-sub">{[u.position, u.department].filter(Boolean).join(' · ') || '—'}{!u.active && <span className="nm-warn-text"> · не подтверждён</span>}</div>
@@ -492,7 +427,7 @@ export default function Users() {
       if (!s || !s.delivered) return u.role === 'employee' ? <span className="nm-muted nm-small">нет сообщений</span> : null;
       const main = mainReading(s.reading);
       return (
-        <button type="button" className="nm-stat-cell" onClick={() => setStatsOf(u)} title="Подробная статистика">
+        <button type="button" className="nm-stat-cell" onClick={() => setStatsOf(u)} title="Карточка сотрудника">
           <span className="nm-cell-sub">{s.stage || '—'} · {Math.round(s.progress * 100)}%</span>
           <span className="nm-row" style={{ gap: 6 }}>
             <Badge tone={toneOf(s.tests.percent)}>{s.tests.percent == null ? 'тестов нет' : `тесты ${s.tests.percent}%`}</Badge>
@@ -510,7 +445,7 @@ export default function Users() {
           {manage && <Button size="sm" icon={Pencil} onClick={() => setEditing({ user: u })}>Изменить</Button>}
           <Menu label={`Действия: ${u.full_name}`} items={[
             { label: 'Расписание', icon: CalendarDays, onClick: () => setSchedule(u) },
-            { label: 'Статистика', icon: BarChart3, onClick: () => setStatsOf(u), hidden: u.role !== 'employee' },
+            { label: 'Карточка сотрудника', icon: BarChart3, onClick: () => setStatsOf(u), hidden: u.role !== 'employee' },
             { label: 'Доступ (новый пароль)', icon: KeyRound, onClick: () => setCreds(u), hidden: !manage },
             { label: 'Приостановить (больничный)', icon: Pause, onClick: () => pause(u, true), hidden: !manage || u.role !== 'employee' || !u.plan_id || u.status === 'paused' },
             { label: 'Возобновить', icon: Play, onClick: () => pause(u, false), hidden: !manage || u.role !== 'employee' || !u.plan_id || u.status !== 'paused' },
@@ -563,7 +498,7 @@ export default function Users() {
       </Dialog>
       <CredentialsDialog user={creds} onClose={() => setCreds(null)} onChanged={load} />
       <ScheduleDialog user={schedule} onClose={() => setSchedule(null)} />
-      <StatsDialog user={statsOf} onClose={() => setStatsOf(null)} />
+      <EmployeeCard id={statsOf?.id || null} onClose={() => setStatsOf(null)} />
     </div>
   );
 }

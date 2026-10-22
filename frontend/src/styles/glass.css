@@ -42,6 +42,8 @@
   --nm-ok:        #157a4c;  --nm-ok-soft:     rgba(21, 122, 76, 0.12);
   --nm-warn:      #8f5d00;  --nm-warn-soft:   rgba(230, 160, 20, 0.16);
   --nm-danger:    #cf2e2e;  --nm-danger-soft: rgba(207, 46, 46, 0.10);
+  /* Ряды графиков (категории, не статусы); пара проверена на различимость при дальтонизме */
+  --nm-series-1:  #4c6fff;  --nm-series-2:  #c26a12;
 
   /* Типографика */
   --nm-font: "Manrope Variable", "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -93,6 +95,7 @@ html[data-theme="dark"] {
   --nm-ok:     #63e0a3; --nm-ok-soft:     rgba(99, 224, 163, 0.13);
   --nm-warn:   #ffcc66; --nm-warn-soft:   rgba(255, 204, 102, 0.13);
   --nm-danger: #ff8080; --nm-danger-soft: rgba(255, 128, 128, 0.13);
+  --nm-series-1: #6b84f0; --nm-series-2: #cf7a2e;
 }
 
 /* ---------- База ---------- */

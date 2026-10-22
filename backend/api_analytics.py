@@ -3,7 +3,10 @@
 Доступ: оценку ставит наставник новичка (users.mentor_of) или администратор/куратор, который
 вправе им управлять. Аналитику видят администраторы и кураторы — по видимым им сотрудникам
 (куратор — свой отдел)."""
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 import activitylog
@@ -23,9 +26,23 @@ class ReviewRequest(BaseModel):
     comment: str = Field(default="", max_length=2000)
 
 
-def _people(actor: dict) -> list:
-    """Сотрудники (новички), которых актор видит в аналитике."""
-    return [u for u in users.visible_users(actor, users.list_users()) if u.get("role") == users.ROLE_EMPLOYEE]
+FILTERS = {"department": "Подразделение", "mentor": "Наставник", "position": "Должность", "q": "ФИО содержит"}
+
+
+def filters(department: str = "", mentor: str = "", position: str = "", q: str = "") -> dict:
+    """Выборка аналитики и отчёта: подразделение / наставник / должность — точное совпадение
+    (без регистра), q — часть ФИО."""
+    return {k: v.strip()[:200] for k, v in
+            {"department": department, "mentor": mentor, "position": position, "q": q}.items() if v.strip()}
+
+
+def _people(actor: dict, f: dict | None = None) -> list:
+    """Сотрудники (новички), которых актор видит в аналитике, — с фильтром выборки."""
+    f = f or {}
+    same = lambda a, b: (a or "").strip().casefold() == b.casefold()
+    return [u for u in users.visible_users(actor, users.list_users()) if u.get("role") == users.ROLE_EMPLOYEE
+            and all(same(u.get(k), f[k]) for k in ("department", "mentor", "position") if k in f)
+            and (f.get("q", "").casefold() in (u.get("full_name") or "").casefold())]
 
 
 def _brief(u: dict) -> dict:
@@ -89,9 +106,9 @@ def save_review(employee_id: str, stage_id: str, req: ReviewRequest, user: dict 
 
 # ---------- Раздел «Аналитика» ----------
 @router.get("/api/analytics/reviews")
-def analytics_reviews(actor: dict = Depends(require_admin)):
+def analytics_reviews(f: dict = Depends(filters), actor: dict = Depends(require_admin)):
     """Оценки наставников по видимым новичкам: последняя оценка, решения, ждущие оценки."""
-    people = _people(actor)
+    people = _people(actor, f)
     all_users = users.list_users()
     out = []
     for emp in people:
@@ -125,8 +142,8 @@ def put_metrics(req: MetricsRequest, actor: dict = Depends(require_full_access))
 
 
 @router.get("/api/analytics/tests")
-def analytics_tests(actor: dict = Depends(require_admin)):
-    people = _people(actor)
+def analytics_tests(f: dict = Depends(filters), actor: dict = Depends(require_admin)):
+    people = _people(actor, f)
     return {"tests": analytics.tests([u["id"] for u in people]), "people": {u["id"]: _brief(u) for u in people},
             "pass_percent": round(analytics.PASS * 100)}
 
@@ -144,8 +161,84 @@ def retake_test(row_id: str, actor: dict = Depends(require_admin)):
 
 
 @router.get("/api/analytics/questions")
-def analytics_questions(days: int = 30, actor: dict = Depends(require_admin)):
-    people = _people(actor)
+def analytics_questions(days: int = 30, f: dict = Depends(filters), actor: dict = Depends(require_admin)):
+    people = _people(actor, f)
     return {**analytics.questions([u["id"] for u in people], days),
             "people": {u["id"]: _brief(u) for u in people},
+            "categories": analytics.CATEGORIES, "outcomes": analytics.OUTCOMES}
+
+
+@router.get("/api/analytics/filters")
+def analytics_filters(actor: dict = Depends(require_admin)):
+    """Значения для фильтров выборки — из видимых актору новичков."""
+    people = _people(actor)
+    pick = lambda k: sorted({(u.get(k) or "").strip() for u in people} - {""}, key=str.casefold)
+    return {"departments": pick("department"), "mentors": pick("mentor"), "positions": pick("position")}
+
+
+def _overview(people: list) -> dict:
+    """Строка на новичка: этап, тесты, вовлечённость, оценка наставника, вопросы, зона риска."""
+    all_users = users.list_users()
+    ids = [u["id"] for u in people]
+    summ = stats.summary(ids)
+    tests_of, by_title = analytics.tests_by(ids)
+    asked = analytics.questions(ids, 365)
+    zero_t = {"given": 0, "passed": 0, "failed": 0, "overdue": 0, "waiting": 0}
+    zero_q = {"total": 0, "org": 0, "work": 0, "unknown": 0, "unanswered": 0}
+    rows = []
+    for emp in people:
+        s = summ.get(emp["id"]) or {}
+        # shortcut: оценки — запрос на новичка (как в analytics_reviews); на тысячах людей — одной выборкой
+        revs = reviews.for_employee(emp["id"])
+        done = [r for r in revs if r["status"] == "done"]
+        last = done[-1] if done else None
+        row = {**_brief(emp), "mentor_user": bool(users.mentor_of(emp, all_users)),
+               "stage": s.get("stage"), "progress": s.get("progress"), "delivered": s.get("delivered", 0),
+               "engagement": s.get("engagement"), "reading": s.get("reading"),
+               "tests": {**(tests_of.get(emp["id"]) or zero_t), "percent": (s.get("tests") or {}).get("percent")},
+               "review": {"stage_title": last["stage_title"], "avg": reviews.average(last["scores"]),
+                          "decision": last["decision"],
+                          "decision_label": reviews.DECISIONS.get(last["decision"] or "")} if last else None,
+               "pending_reviews": sum(r["status"] == "requested" for r in revs),
+               "questions": asked["by_employee"].get(emp["id"]) or zero_q}
+        row["risks"] = analytics.risks(row)
+        rows.append(row)
+    return {"employees": rows, "tests_by_title": by_title, "weeks": asked["by_week"],
+            "decisions": reviews.DECISIONS, "low_engagement": analytics.LOW_ENGAGEMENT}
+
+
+@router.get("/api/analytics/overview")
+def analytics_overview(f: dict = Depends(filters), actor: dict = Depends(require_admin)):
+    """«Сводка»: данные по новичкам выборки для графиков и списка «в зоне риска»."""
+    return _overview(_people(actor, f))
+
+
+@router.get("/api/analytics/report.xlsx")
+def analytics_report(f: dict = Depends(filters), actor: dict = Depends(require_admin)):
+    """Excel-отчёт по выборке: вся компания, подразделение, подопечные наставника, должность."""
+    import db
+    import provisioning
+    rows = _overview(_people(actor, f))["employees"]
+    scope = "; ".join(f"{FILTERS[k]}: {v}" for k, v in f.items()) or (
+        "вся компания" if users.is_full_access(actor) else f"отдел {actor.get('department') or ''}".strip())
+    schema = db.current_schema()
+    company = provisioning.company_name(schema) if schema else ""
+    activitylog.log("action", user=actor, path="/api/analytics/report.xlsx",
+                    detail={"action": "analytics_report", "rows": len(rows), **f})
+    disposition = 'attachment; filename="report.xlsx"; filename*=UTF-8''' + quote("отчёт_по_адаптации.xlsx")
+    return Response(content=analytics.report_xlsx(rows, scope, company),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": disposition})
+
+
+@router.get("/api/analytics/employee/{employee_id}")
+def analytics_employee(employee_id: str, actor: dict = Depends(require_admin)):
+    """Карточка новичка: статистика, оценки наставника по этапам, тесты, вопросы, зона риска."""
+    emp = next((u for u in _people(actor) if u["id"] == employee_id), None)
+    if emp is None:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+    row = _overview([emp])["employees"][0]
+    return {**_card(emp), "stats": stats.detail(employee_id), "overview": row,
+            "tests": analytics.tests([employee_id]),
+            "questions": analytics.questions([employee_id], 365)["items"],
             "categories": analytics.CATEGORIES, "outcomes": analytics.OUTCOMES}
