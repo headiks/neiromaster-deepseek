@@ -133,6 +133,19 @@ def test_no_blocking_async_handlers():
     assert not blocking, f"async-обработчики без await (сделать def): {blocking}"
 
 
+def test_admin_sections_match_frontend():
+    """Каждый раздел /admin/<x> из App.tsx открывается и по прямой ссылке (иначе обновление
+    страницы перекидывает на /admin)."""
+    import re
+    from pathlib import Path
+    import api_pages
+    app_tsx = Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx"
+    if not app_tsx.is_file():
+        return
+    routes_ = set(re.findall(r'path="/admin/([a-z-]+)"', app_tsx.read_text(encoding="utf-8")))
+    assert routes_ <= set(api_pages.ADMIN_SECTIONS), f"нет в ADMIN_SECTIONS: {routes_ - set(api_pages.ADMIN_SECTIONS)}"
+
+
 def test_admin_pages_are_admin_only():
     import inspect
     for r in routes(load_app()):

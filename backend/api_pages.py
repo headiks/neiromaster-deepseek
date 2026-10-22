@@ -25,7 +25,7 @@ from deps import (BASE_DIR, STATIC_DIR, GT_COOKIE, GT_TTL, gt_check_password, gt
 router = APIRouter()
 
 # Разделы админки (/admin/<раздел>) и служебные страницы — все внутри SPA.
-ADMIN_SECTIONS = ("users", "plans", "documents", "messages", "questions", "companies")
+ADMIN_SECTIONS = ("users", "plans", "documents", "messages", "questions", "companies", "analytics", "leads")
 # Журнал действий — рабочий инструмент администратора. Тесты и диагностика — только через
 # /globaltest с отдельным паролем (deps.page_for_globaltest).
 SERVICE_PAGES = ("/logs", "/globaltest")

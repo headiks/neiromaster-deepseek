@@ -73,6 +73,29 @@ QUESTIONS = (
     ("Сидоров Павел Андреевич", "Что делать, если путевой лист не подписан медиком?", None),
     ("Орлов Дмитрий Олегович", "Положена ли компенсация за личный телефон?", None),
 )
+# «Аналитика» демо: наставник и итог его оценки последнего этапа у подопечных
+# (more_time — последний этап ещё ждёт оценки), журнал вопросов ассистенту (ФИО, вопрос, итог, дней назад).
+MENTOR = "Морозов Сергей Викторович"
+MENTEES = {"Иванов Алексей Петрович": "ready", "Петрова Мария Сергеевна": "ready",
+           "Сидоров Павел Андреевич": "more_time", "Орлов Дмитрий Олегович": "risk"}
+REVIEW_COMMENTS = {"ready": "Работает аккуратно, замечаний нет.",
+                   "more_time": "Нужно ещё потренироваться на маршруте, путается в путевых листах.",
+                   "risk": "Дважды опоздал на смену, на инструктаже невнимателен."}
+ASKED = (
+    ("Иванов Алексей Петрович", "Когда выдают аванс и зарплату?", "answered", 52),
+    ("Иванов Алексей Петрович", "Как правильно оформить путевой лист перед рейсом?", "answered", 45),
+    ("Петрова Мария Сергеевна", "Где получить спецодежду и СИЗ?", "answered", 38),
+    ("Петрова Мария Сергеевна", "Какой режим работы и отдыха водителя в рейсе?", "answered", 33),
+    ("Сидоров Павел Андреевич", "Как добраться до проходной от остановки автобуса?", "answered", 30),
+    ("Сидоров Павел Андреевич", "Что делать при поломке оборудования в рейсе?", "escalated", 26),
+    ("Сидоров Павел Андреевич", "Кому обратиться, если не пришла зарплата?", "no_answer", 21),
+    ("Кузнецова Анна Игоревна", "Как пройти медосмотр перед сменой?", "answered", 9),
+    ("Кузнецова Анна Игоревна", "Какие нормы загрузки автомобиля?", "answered", 7),
+    ("Кузнецова Анна Игоревна", "Как правильно проверить тормоза перед выездом?", "answered", 4),
+    ("Орлов Дмитрий Олегович", "Можно ли взять отгул в первую неделю?", "no_answer", 4),
+    ("Орлов Дмитрий Олегович", "Где столовая и когда обед?", "answered", 2),
+    ("Орлов Дмитрий Олегович", "Нужен ли допуск к работе на погрузчике?", "escalated", 1),
+)
 
 
 def enabled() -> bool:
@@ -355,6 +378,7 @@ def prepare(poll: float = 20, timeout: float = 6 * 3600):
     try:
         with db.use_schema(schema()):
             if db.query("SELECT 1 FROM app_settings WHERE key = 'demo_prepared'", (), "one"):
+                _analytics()                 # освежить при каждом старте: время идёт, тексты пересоздаются
                 return
             _prepare(poll, time.time() + timeout)
     except Exception as e:
@@ -390,7 +414,7 @@ def _prepare(poll: float, deadline: float):
         _wait(lambda: (planner.get_job(job["job_id"]) or {}).get("status") not in ("queued", "running"),
               poll, deadline, "генерация плана не закончилась")
     messaging.ensure_all()
-    _history()
+    _analytics()
     _questions()
     db.execute("INSERT INTO app_settings (key, value) VALUES ('demo_prepared', '1') "
                "ON CONFLICT (key) DO NOTHING")
@@ -439,6 +463,54 @@ def _answers(payload: dict | None, accuracy: float, rnd: random.Random) -> dict:
         pick = right if (right and (rnd.random() < accuracy or not wrong)) else (wrong or opts)
         out[q["id"]] = rnd.choice(pick)["id"]
     return out
+
+
+def _analytics():
+    """Данные «Аналитики» демо. История чтения и ответы на тесты — заново (тексты сообщений
+    могли пересоздаться, а новые сообщения — прийти), наставник с оценками этапов, журнал
+    вопросов. Повторный запуск ничего не дублирует."""
+    import analytics
+    import reviews
+    import users
+    _history()
+    people = {u["full_name"]: u for u in users.list_users()}
+    admin = next((u for u in people.values() if u.get("username") == ACCOUNTS[0][1]), None)
+    mentor = people.get(MENTOR) or users.create_user(
+        {"full_name": MENTOR, "department": DEPARTMENT, "position": "Старший водитель"},
+        actor=admin, role=users.ROLE_MENTOR)
+    rnd = random.Random("demo-reviews")
+    for name, decision in MENTEES.items():
+        emp = people.get(name)
+        if not emp:
+            continue
+        if emp.get("mentor") != MENTOR:
+            emp = users.update_profile(emp["id"], {**emp, "mentor": MENTOR})
+        have = {r["stage_id"]: r["status"] for r in reviews.for_employee(emp["id"])}
+        stages = [s for s in reviews.stages_of(emp) if s["completed"]]
+        for i, stage in enumerate(stages):
+            last = i == len(stages) - 1
+            if have.get(stage["id"]) == "done":
+                continue
+            if last and decision == "more_time":          # последний этап ждёт оценки наставника
+                db.execute("INSERT INTO stage_reviews (id, employee_id, stage_id, stage_title, mentor_id) "
+                           "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (employee_id, stage_id) DO NOTHING",
+                           (secrets.token_hex(16), emp["id"], stage["id"], stage["title"], mentor["id"]))
+                continue
+            decided = decision if last or decision == "ready" else ("more_time" if decision == "risk" else "ready")
+            base = {"ready": 4, "more_time": 3, "risk": 2}[decided]
+            scores = {k: max(1, min(5, base + rnd.choice((0, 0, 1, -1)))) for k, _ in reviews.CRITERIA}
+            metrics = {m["key"]: (rnd.randint(85, 105) if decided == "ready" else rnd.randint(60, 85))
+                       if m["key"] == "norm" else rnd.randint(0, 1 if decided == "ready" else 3)
+                       for m in reviews.metrics_for(emp.get("position"))}
+            reviews.save(emp, stage, mentor, scores, metrics, decided, REVIEW_COMMENTS[decided])
+    ids = [people[n]["id"] for n in {a[0] for a in ASKED} if n in people]
+    if ids and not db.query("SELECT 1 FROM ask_log WHERE user_id = ANY(%s) LIMIT 1", (ids,), "one"):
+        for name, text, outcome, days in ASKED:
+            if name in people:
+                db.execute("INSERT INTO ask_log (ts, user_id, question, outcome, category) "
+                           "VALUES (now() - make_interval(days => %s), %s, %s, %s, %s)",
+                           (days, people[name]["id"], users._encrypt_field(text), outcome,
+                            analytics.classify(text)))
 
 
 def _questions():

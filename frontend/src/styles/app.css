@@ -490,9 +490,9 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .nm-dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
 .nm-dash h3 { font-size: 16px; margin: 0 0 12px; }
 .nm-bars { display: grid; gap: 8px; }
-.nm-bar-row { display: grid; grid-template-columns: minmax(90px, 38%) 1fr 76px; align-items: center; gap: 10px; font-size: 13px; }
+.nm-bar-row { display: grid; grid-template-columns: minmax(90px, 34%) 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
 .nm-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nm-bar-value { text-align: right; color: var(--nm-muted); font-variant-numeric: tabular-nums; }
+.nm-bar-value { min-width: 48px; white-space: nowrap; text-align: right; color: var(--nm-muted); font-variant-numeric: tabular-nums; }
 .nm-bar-track { height: 10px; border-radius: 4px; background: var(--nm-fill); overflow: hidden; }
 .nm-bar-fill { display: block; height: 100%; border-radius: 4px; background: var(--nm-series-1); }
 .nm-stack-bar { display: flex; gap: 2px; height: 12px; border-radius: 4px; overflow: hidden; background: var(--nm-fill); }
@@ -507,7 +507,7 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: .45; cu
 .nm-bar-row:hover .nm-bar-label, .nm-col:hover .nm-col-label { color: var(--nm-text); }
 @media (max-width: 640px) {
   .nm-dash { grid-template-columns: 1fr; }
-  .nm-bar-row { grid-template-columns: 1fr 64px; }
+  .nm-bar-row { grid-template-columns: 1fr auto; }
   .nm-bar-row > .nm-bar-label { grid-column: 1 / -1; }
   .nm-col-label { font-size: 10px; }
 }

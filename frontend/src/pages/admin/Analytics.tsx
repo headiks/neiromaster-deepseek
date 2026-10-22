@@ -132,9 +132,9 @@ function SummaryTab({ qs, open, byPosition }: TabProps & { byPosition: boolean }
               : <span className="nm-small nm-muted">Несданных тестов нет.</span>}</div>
         </Card>
         <Card><h3>Вопросы ассистенту по неделям</h3>
-          <Columns label="Вопросы по неделям" cols={weeks}
+          {!weeks.some((w) => Object.values(w.values).some(Boolean)) ? <span className="nm-small nm-muted">За 12 недель вопросов не было.</span> : <Columns label="Вопросы по неделям" cols={weeks}
                    series={[{ key: 'org', label: 'Организационные', color: C.s1 }, { key: 'work', label: 'Рабочие', color: C.s2 },
-                            { key: 'unknown', label: 'Не определено', color: C.none }]} /></Card>
+                            { key: 'unknown', label: 'Не определено', color: C.none }]} />}</Card>
         <Card><h3>Решения наставников {byPosition ? 'по должностям' : 'по подразделениям'}</h3>
           {decisionRows.length ? <ShareRows label="Решения наставников" rows={decisionRows} legend={decSegs(rows)} />
             : <span className="nm-small nm-muted">Оценок наставников пока нет.</span>}</Card>
